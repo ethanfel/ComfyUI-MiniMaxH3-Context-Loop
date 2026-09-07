@@ -462,6 +462,8 @@ function mount(node) {
     const project = () => String(
         runNameWidget?.value ?? runNameInput.value ?? "",
     ).trim();
+    // Review Gate capture must target the committed Run, never a rename draft.
+    node._h3ProjectAssetCurrentProject = project;
     const validProjectName = (value) => (
         /^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,94}[A-Za-z0-9])?$/.test(
             String(value ?? "").trim(),

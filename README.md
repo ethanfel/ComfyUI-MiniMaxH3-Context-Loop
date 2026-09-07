@@ -26,6 +26,8 @@ scene can be reviewed, retried, checkpointed, resumed, and assembled later.
 - Saves each accepted take to disk, so a stopped or failed run can resume.
 - Provides scene review, alternate takes, branch management, final assembly,
   masked editing, and deferred upscaling.
+- Captures a frame from a saved Review Gate preview into the Project Asset
+  Carousel as a new tagged picture, without replacing the original take.
 
 Models are not included.
 
@@ -59,6 +61,11 @@ specialized fallback for loop-only modes.
 6. At **Review Gate**, choose **Approve & continue**, **Retry**, **Reroll seed**,
    or **Approve & stop**.
 7. The active **Assemble** node writes the final MP4 after the last scene.
+
+To reuse a still as a reference, scrub the saved Review Gate preview, click
+**Capture frame…**, check the destination project and tag, then **Save to
+Carousel**. Reusing a tag creates a numbered take. Capture requires `ffmpeg`
+and follows the destination project's workflow-ownership rules.
 
 For a screen-by-screen explanation, expected output paths, and common first-run
 problems, use the [Getting started guide](docs/GETTING_STARTED.md).

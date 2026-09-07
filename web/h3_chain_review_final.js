@@ -1,6 +1,9 @@
 import {app} from "/scripts/app.js";
 import {api} from "/scripts/api.js";
 import {
+    canCaptureFrame, captureCarousels, captureTargetProject, carouselProject,
+} from "./h3_review_capture_core.mjs?v=0.7.0";
+import {
     parsePlanJson,
     planToJson,
     promptValueToText,
@@ -182,8 +185,9 @@ function injectStyles() {
     style.id = "h3-chain-review-style";
     style.textContent = `
         .h3r-root { box-sizing:border-box; display:flex; flex-direction:column; gap:8px;
-            min-height:500px; padding:9px; overflow:auto; border:1px solid #56637e;
-            border-radius:8px; background:#181a20; color:#e8eaf0; font:12px/1.35 system-ui,sans-serif; }
+            min-height:500px; padding:9px; overflow:auto; position:relative;
+            border:1px solid #56637e; border-radius:8px; background:#181a20;
+            color:#e8eaf0; font:12px/1.35 system-ui,sans-serif; }
         .h3r-root * { box-sizing:border-box; }
         .h3r-root [hidden] { display:none !important; }
         .h3r-head { display:flex; align-items:center; justify-content:space-between; gap:8px; }
@@ -201,6 +205,39 @@ function injectStyles() {
             width:40px; height:2px; border-top:1px solid #7e899f;
             border-bottom:1px solid #4f586b; }
         .h3r-video-grip:hover { background:linear-gradient(180deg,#313848,#1d212b); }
+        .h3r-capture-row { display:flex; align-items:center; gap:7px; }
+        .h3r-capture-button { flex:0 0 auto; padding:6px 10px; border:1px solid #63708b;
+            border-radius:5px; background:#232837; color:#eef1f7; cursor:pointer; }
+        .h3r-capture-button:hover { background:#343b4b; }
+        .h3r-capture-button:disabled { opacity:.42; cursor:not-allowed; }
+        .h3r-capture-status { color:#aeb5c5; opacity:.8; overflow:hidden;
+            text-overflow:ellipsis; white-space:nowrap; }
+        .h3r-capture-dialog { position:absolute; inset:0; z-index:30; display:flex;
+            align-items:center; justify-content:center; background:rgba(6,7,10,.72); }
+        .h3r-capture-card { display:flex; flex-direction:column; gap:9px; width:min(320px, 92%);
+            max-height:90%; overflow-y:auto; padding:12px; border:1px solid #56637e;
+            border-radius:8px; background:#181c26; box-shadow:0 8px 28px rgba(0,0,0,.5); }
+        .h3r-capture-preview { width:100%; max-height:180px; object-fit:contain;
+            border:1px solid #343b4b; border-radius:6px; background:#08090c; }
+        .h3r-capture-title { font-weight:700; color:#a9c2ff; }
+        .h3r-capture-field { display:flex; flex-direction:column; gap:4px; color:#aeb5c5; }
+        .h3r-capture-tag-row { display:flex; gap:0; position:relative; }
+        .h3r-capture-tag { flex:1 1 auto; min-width:0; width:100%; padding:6px 7px;
+            border:1px solid #56637e; border-right:0; border-radius:5px 0 0 5px;
+            background:#101218; color:#eef1f7; }
+        .h3r-capture-tag-picker { flex:0 0 auto; width:28px; padding:6px 0;
+            border:1px solid #56637e; border-radius:0 5px 5px 0; background:#232837;
+            color:#eef1f7; cursor:pointer; }
+        .h3r-capture-tag-picker:hover { background:#343b4b; }
+        .h3r-capture-tag-menu { position:absolute; top:calc(100% + 3px); left:0; right:0;
+            z-index:40; max-height:150px; overflow-y:auto; border:1px solid #56637e;
+            border-radius:5px; background:#101218; box-shadow:0 6px 18px rgba(0,0,0,.5); }
+        .h3r-capture-tag-option { display:block; width:100%; text-align:left; border:0; background:transparent; padding:6px 8px; color:#eef1f7; cursor:pointer; }
+        .h3r-capture-tag-option:hover { background:#232837; }
+        .h3r-capture-tag-empty { padding:6px 8px; color:#8b93a6; }
+        .h3r-capture-hint { color:#8b93a6; font-size:11px; }
+        .h3r-capture-error { color:#ff9a9a; }
+        .h3r-capture-actions { display:flex; justify-content:flex-end; gap:7px; }
         .h3r-label { display:flex; flex-direction:column; gap:4px; color:#aeb5c5; }
         .h3r-prompt { width:100%; min-height:120px; resize:vertical; padding:7px;
             border:1px solid #56637e; border-radius:5px; background:#101218; color:#eef1f7; }
@@ -850,6 +887,256 @@ function mount(node) {
         setVideoHeight(DEFAULT_VIDEO_HEIGHT, true);
     });
 
+    const captureRow = document.createElement("div");
+    captureRow.className = "h3r-capture-row";
+    const captureButton = document.createElement("button");
+    captureButton.type = "button";
+    captureButton.className = "h3r-capture-button";
+    captureButton.textContent = "Capture frame…";
+    captureButton.title = "Scrub the preview above to the desired frame, then save it as a project asset in the Asset Carousel.";
+    const captureStatus = document.createElement("span");
+    captureStatus.className = "h3r-capture-status";
+    captureRow.append(captureButton, captureStatus);
+
+    async function fetchExistingTags(project) {
+        const response = await api.fetchApi(
+            `/minimax_h3_context_loop/project-assets?${new URLSearchParams({project, create: "false"})}`);
+        const catalog = await response.json();
+        if (!response.ok) throw new Error(catalog.error || `HTTP ${response.status}`);
+        return [...new Set((catalog.assets ?? [])
+            .map((item) => String(item.tag || "").trim()).filter(Boolean))];
+    }
+
+    let captureBusy = false;
+    function closeCaptureDialog() {
+        root.querySelector(".h3r-capture-dialog")?.remove();
+        video.pause();
+    }
+
+    async function openCaptureDialog() {
+        if (captureBusy) return;
+        if (!canCaptureFrame(video)) {
+            captureStatus.textContent = "Wait for a saved preview frame to finish loading or seeking.";
+            return;
+        }
+        const item = {...video.h3CaptureItem};
+        const sourceGraph = node.graph;
+        const carousels = captureCarousels(sourceGraph);
+        video.pause();
+        const captureTime = video.currentTime;
+        let project = "";
+        try {
+            project = captureTargetProject(node);
+        } catch (_error) {
+            project = "";
+        }
+        closeCaptureDialog();
+
+        const canvas = document.createElement("canvas");
+        canvas.width = video.videoWidth || 640;
+        canvas.height = video.videoHeight || 360;
+        const context2d = canvas.getContext("2d");
+        try { context2d?.drawImage(video, 0, 0, canvas.width, canvas.height); }
+        catch (_error) { /* tainted or unavailable frame; dialog still works */ }
+
+        const overlay = document.createElement("div");
+        overlay.className = "h3r-capture-dialog";
+        const card = document.createElement("div");
+        card.className = "h3r-capture-card";
+        const title = document.createElement("div");
+        title.className = "h3r-capture-title";
+        title.textContent = `Save frame at ${captureTime.toFixed(2)}s`;
+        const projectField = document.createElement("label");
+        projectField.className = "h3r-capture-field";
+        projectField.append("Carousel project");
+        const projectInput = document.createElement("input");
+        projectInput.className = "h3r-capture-tag";
+        projectInput.value = project;
+        projectInput.placeholder = "e.g. sammys_house";
+        projectInput.title = "The Asset Carousel node's own project name, which can differ " +
+            "from the Plan's run_name. Only an unambiguous upstream project is selected " +
+            "automatically. Otherwise enter the destination project explicitly.";
+        projectField.append(projectInput);
+        const preview = document.createElement("img");
+        preview.className = "h3r-capture-preview";
+        try { preview.src = canvas.toDataURL("image/png"); } catch (_error) {}
+        const tagField = document.createElement("label");
+        tagField.className = "h3r-capture-field";
+        tagField.append("Tag");
+        const tagInput = document.createElement("input");
+        tagInput.className = "h3r-capture-tag";
+        tagInput.placeholder = "e.g. hero_pose";
+        tagInput.autocomplete = "off";
+        const tagPickerRow = document.createElement("div");
+        tagPickerRow.className = "h3r-capture-tag-row";
+        const tagPickerButton = document.createElement("button");
+        tagPickerButton.type = "button";
+        tagPickerButton.className = "h3r-capture-tag-picker";
+        tagPickerButton.textContent = "▾";
+        tagPickerButton.title = "Choose from existing tags";
+        const tagMenu = document.createElement("div");
+        tagMenu.className = "h3r-capture-tag-menu";
+        tagMenu.hidden = true;
+        let knownTags = [];
+        let tagLookup = 0;
+        let tagLookupStatus = "Enter a destination project.";
+        async function loadTags() {
+            const sequence = ++tagLookup;
+            const target = projectInput.value.trim();
+            knownTags = [];
+            tagLookupStatus = target ? "Loading tags…" : "Enter a destination project.";
+            renderTagMenu(tagInput.value);
+            if (!target) return;
+            try {
+                const tags = await fetchExistingTags(target);
+                if (sequence !== tagLookup || !overlay.isConnected) return;
+                knownTags = tags;
+                tagLookupStatus = "No tags yet.";
+            } catch (lookupError) {
+                if (sequence !== tagLookup || !overlay.isConnected) return;
+                tagLookupStatus = `Could not load tags: ${lookupError.message || lookupError}`;
+            }
+            renderTagMenu(tagInput.value);
+        }
+        projectInput.addEventListener("input", () => { void loadTags(); });
+        function renderTagMenu(filter = "") {
+            const needle = filter.trim().toLowerCase();
+            const matches = needle
+                ? knownTags.filter((tag) => tag.toLowerCase().includes(needle))
+                : knownTags;
+            tagMenu.replaceChildren(...matches.map((tag) => {
+                const option = document.createElement("button");
+                option.type = "button";
+                option.className = "h3r-capture-tag-option";
+                option.textContent = tag;
+                option.addEventListener("mousedown", (event) => event.preventDefault());
+                option.addEventListener("click", () => {
+                    tagInput.value = tag;
+                    tagMenu.hidden = true;
+                    tagInput.focus();
+                });
+                return option;
+            }));
+            if (!matches.length) {
+                const empty = document.createElement("div");
+                empty.className = "h3r-capture-tag-empty";
+                empty.textContent = knownTags.length ? "No matching tags." : tagLookupStatus;
+                tagMenu.append(empty);
+            }
+        }
+        tagPickerButton.addEventListener("mousedown", (event) => event.preventDefault());
+        tagPickerButton.addEventListener("click", () => {
+            const opening = tagMenu.hidden;
+            tagInput.focus();
+            tagMenu.hidden = !opening;
+            if (opening) renderTagMenu(tagInput.value);
+        });
+        tagInput.addEventListener("input", () => {
+            tagMenu.hidden = false;
+            renderTagMenu(tagInput.value);
+        });
+        tagPickerRow.addEventListener("focusout", (event) => {
+            if (!tagPickerRow.contains(event.relatedTarget)) tagMenu.hidden = true;
+        });
+        tagPickerRow.append(tagInput, tagPickerButton, tagMenu);
+        tagField.append(tagPickerRow);
+        const hint = document.createElement("div");
+        hint.className = "h3r-capture-hint";
+        hint.textContent = "Choose an existing tag (or type a new one) to save this as an " +
+            "updated take — a number is appended automatically (e.g. char-sammy1, " +
+            "char-sammy2, ...) so every take stays in the Carousel.";
+        const error = document.createElement("div");
+        error.className = "h3r-capture-error";
+        error.hidden = true;
+        const actionsRow = document.createElement("div");
+        actionsRow.className = "h3r-capture-actions";
+        const cancelButton = document.createElement("button");
+        cancelButton.type = "button";
+        cancelButton.className = "h3r-button";
+        cancelButton.textContent = "Cancel";
+        const saveButton = document.createElement("button");
+        saveButton.type = "button";
+        saveButton.className = "h3r-button";
+        saveButton.textContent = "Save to Carousel";
+        actionsRow.append(cancelButton, saveButton);
+        card.append(title, projectField, preview, tagField, hint, error, actionsRow);
+        overlay.append(card);
+        root.append(overlay);
+        tagInput.focus();
+
+        void loadTags();
+
+        cancelButton.addEventListener("click", () => { if (!captureBusy) overlay.remove(); });
+        overlay.addEventListener("click", (event) => {
+            if (!captureBusy && event.target === overlay) overlay.remove();
+        });
+        saveButton.addEventListener("click", async () => {
+            if (captureBusy) return;
+            const tag = tagInput.value.trim();
+            const targetProject = projectInput.value.trim();
+            error.hidden = true;
+            if (!targetProject) {
+                error.textContent = "Carousel project cannot be blank.";
+                error.hidden = false;
+                projectInput.focus();
+                return;
+            }
+            if (node.graph !== sourceGraph) {
+                error.textContent = "The Review Gate changed workflows. Reopen frame capture.";
+                error.hidden = false;
+                return;
+            }
+            captureBusy = true;
+            for (const control of [saveButton, cancelButton, projectInput, tagInput,
+                tagPickerButton, captureButton]) control.disabled = true;
+            tagMenu.hidden = true;
+            saveButton.textContent = "Saving…";
+            try {
+                const requestOptions = await projectMutationOptions(node, targetProject, {
+                    method: "POST",
+                    headers: {"Content-Type": "application/json"},
+                    body: JSON.stringify({
+                        project: targetProject,
+                        filename: item.filename,
+                        subfolder: item.subfolder ?? "",
+                        type: item.type ?? "output",
+                        time_seconds: captureTime,
+                        tag,
+                    }),
+                });
+                if (node.graph !== sourceGraph) {
+                    throw new Error("The Review Gate changed workflows. Reopen frame capture.");
+                }
+                const response = await api.fetchApi(
+                    "/minimax_h3_context_loop/project-assets/capture-frame", requestOptions);
+                const body = await response.json();
+                if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
+                const savedProject = body.catalog?.project ?? targetProject;
+                captureStatus.textContent =
+                    `Saved @${body.asset?.tag ?? tag} to the ${savedProject} Asset Carousel.`;
+                overlay.remove();
+                // Refresh is not part of the save transaction. If it fails,
+                // do not offer to save again and create a duplicate asset.
+                const refreshes = await Promise.allSettled(carousels.filter((carousel) =>
+                    carousel.graph && carouselProject(carousel) === savedProject
+                ).map((carousel) => Promise.resolve().then(() => carousel._h3ProjectAssetRefresh?.())));
+                if (refreshes.some((result) => result.status === "rejected")) {
+                    captureStatus.textContent += " Refresh the Carousel to see it.";
+                }
+            } catch (captureError) {
+                error.textContent = captureError.message || String(captureError);
+                error.hidden = false;
+            } finally {
+                captureBusy = false;
+                for (const control of [saveButton, cancelButton, projectInput, tagInput,
+                    tagPickerButton, captureButton]) control.disabled = false;
+                saveButton.textContent = "Save to Carousel";
+            }
+        });
+    }
+
+    captureButton.addEventListener("click", () => { void openCaptureDialog(); });
+
     const prefix = document.createElement("pre");
     prefix.className = "h3r-prefix";
     prefix.hidden = true;
@@ -1082,7 +1369,7 @@ function mount(node) {
     resume.append(resumeTitle, resumeRow, resumeStatus, revisionsPanel);
 
     root.append(
-        head, videoPanel, prefix, promptNotice, promptLabel,
+        head, videoPanel, captureRow, prefix, promptNotice, promptLabel,
         seedRow, candidateRow, actions, status, deferred, resume,
     );
 
@@ -1109,6 +1396,7 @@ function mount(node) {
         const resumePlayback = preservePosition && !video.paused;
         const revision = ++previewLoadRevision;
         video.dataset.source = source;
+        video.h3CaptureItem = item;
         video.src = source;
         video.load();
         if (preservePosition) {
