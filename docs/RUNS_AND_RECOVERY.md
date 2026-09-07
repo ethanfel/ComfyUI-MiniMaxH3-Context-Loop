@@ -967,8 +967,10 @@ Each complete scene is committed to a continuous image sequence plus
 numbering, bit depth, profile, source manifest, and PNG hashes. Interrupted
 decode/save operations roll back that scene and keep every earlier scene intact.
 Resume at the next missing scene with the same folder/settings. Exact repeated
-scenes can be reused; `cached` checks previous PNG size/mtime and `strict` also
-hashes them. Incoming VIDEO files are always hashed. Different takes, changed
+scenes can be reused; `cached` skips hashing when previous PNG size/mtime match,
+but verifies SHA-256 if only the timestamp differs. `strict` always hashes.
+A timestamp difference alone never invalidates byte-identical PNGs or WAVs.
+Incoming VIDEO files are always hashed. Different takes, changed
 settings, missing/modified PNGs, untracked frames or out-of-order scenes never
 overwrite a sequence: select a new folder/export name, or resume the missing
 scene. With reuse disabled, use a new folder for a fresh export. Abrupt process
@@ -980,6 +982,14 @@ If a network share rejects them (including permission denied / errno 13), the
 exporter falls back to an exclusive file copy with a 1 MiB buffer. Existing
 files are never replaced, and genuine write-permission or storage failures
 still stop the export; no filesystem permissions or project ownership change.
+
+The sequence is a verified export, not an editable working copy. Editing a
+saved PNG makes its checksum differ and prevents VIDEO-mode reuse or append
+when detected, including when exporting a later scene. Even metadata-only edits
+or recompressing identical pixels can change the file hash. Existing PNGs are
+never overwritten. Keep intentional retouches in a separate working copy;
+the VIDEO passthrough still contains the incoming video, not edits made to the
+PNG files. This node does not currently adopt edits into its saved index.
 
 ## Re-decode checkpoints to PNG and WAV
 

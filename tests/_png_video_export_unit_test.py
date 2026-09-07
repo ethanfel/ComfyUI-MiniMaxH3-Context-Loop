@@ -6,6 +6,7 @@ import errno
 from fractions import Fraction
 import importlib
 import json
+import os
 from pathlib import Path
 import tempfile
 import threading
@@ -16,7 +17,7 @@ import weakref
 from _upscale_chain_unit_test import load_package, folder_paths
 import av
 import numpy as np
-from PIL import Image
+from PIL import Image, PngImagePlugin
 from comfy_api.latest import InputImpl
 
 package, chain, upscale = load_package()
@@ -177,6 +178,77 @@ class PNGVideoTests(unittest.TestCase):
         os.utime(path, ns=(saved.st_atime_ns, saved.st_mtime_ns))
         with self.assertRaisesRegex(ValueError, "missing or changed"):
             self.export(2, checkpoint_verification="strict")
+
+    def test_timestamp_only_changes_reuse_and_append_without_rewriting_pngs(self):
+        for verification in ("cached", "strict"):
+            with self.subTest(verification=verification):
+                result = self.export(output_folder=verification)
+                directory = Path(result["result"][0])
+                record_before = (directory / "export.json").read_bytes()
+                for path in directory.glob("frame_*.png"):
+                    saved = path.stat()
+                    os.utime(path, ns=(saved.st_atime_ns, saved.st_mtime_ns + 49_000_000_000))
+                before = {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in directory.glob("frame_*.png")}
+                with patch.object(chain, "_write_png", side_effect=AssertionError("timestamp drift rewrote PNGs")), patch.object(
+                        chain, "_file_sha256", wraps=chain._file_sha256) as hasher:
+                    reused = self.export(output_folder=verification, checkpoint_verification=verification)
+                self.assertIs(reused["result"][4], self.video)
+                self.assertIn("reused", reused["result"][2])
+                hashed = {Path(call.args[0]) for call in hasher.call_args_list}
+                self.assertTrue(set(before) <= hashed, "changed timestamps must trigger SHA-256 verification")
+                self.assertEqual((directory / "export.json").read_bytes(), record_before)
+                self.assertEqual(self.export(2, output_folder=verification, checkpoint_verification=verification)["result"][1], 6)
+                self.assertEqual(before, {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in before})
+
+    def test_cached_unchanged_stat_still_skips_png_hashing(self):
+        self.export()
+        original = chain._file_sha256
+
+        def hash_file(path):
+            if Path(path).suffix == ".png":
+                raise AssertionError("unchanged cached PNG was unnecessarily hashed")
+            return original(path)
+
+        with patch.object(chain, "_file_sha256", hash_file):
+            self.assertIn("reused", self.export()["result"][2])
+
+    def test_changed_timestamp_does_not_hide_changed_png_content(self):
+        for verification in ("cached", "strict"):
+            with self.subTest(verification=verification):
+                result = self.export(output_folder=verification)
+                directory = Path(result["result"][0])
+                path = directory / "frame_00000001.png"
+                saved = path.stat()
+                data = path.read_bytes()
+                path.write_bytes(data[:-1] + bytes([data[-1] ^ 1]))
+                os.utime(path, ns=(saved.st_atime_ns, saved.st_mtime_ns + 49_000_000_000))
+                before = {p: p.read_bytes() for p in directory.iterdir() if p.is_file()}
+                with self.assertRaisesRegex(ValueError, "missing or changed") as failure:
+                    self.export(2, output_folder=verification, checkpoint_verification=verification)
+                self.assertIn("scene 1", str(failure.exception))
+                self.assertIn(str(path), str(failure.exception))
+                self.assertEqual(before, {p: p.read_bytes() for p in directory.iterdir() if p.is_file()})
+
+    def test_intentional_png_edits_are_preserved_but_not_silently_adopted(self):
+        for verification in ("cached", "strict"):
+            for kind in ("pixels", "metadata"):
+                with self.subTest(verification=verification, kind=kind):
+                    folder = "%s_%s" % (verification, kind)
+                    result = self.export(output_folder=folder)
+                    directory = Path(result["result"][0])
+                    path = directory / "frame_00000001.png"
+                    with Image.open(path) as original:
+                        edited = original.copy()
+                    if kind == "pixels":
+                        old = edited.getpixel((0, 0))
+                        edited.putpixel((0, 0), (old[0] ^ 255, old[1], old[2]))
+                    metadata = PngImagePlugin.PngInfo()
+                    metadata.add_text("edit_note", "User intentionally saved this frame")
+                    edited.save(path, pnginfo=metadata, compress_level=9)
+                    before = {p: p.read_bytes() for p in directory.iterdir() if p.is_file()}
+                    with self.assertRaisesRegex(ValueError, "missing or changed"):
+                        self.export(2, output_folder=folder, checkpoint_verification=verification)
+                    self.assertEqual(before, {p: p.read_bytes() for p in directory.iterdir() if p.is_file()})
 
     def test_input_guards_and_failed_frame_clock(self):
         with self.assertRaisesRegex(ValueError, "file-backed"):

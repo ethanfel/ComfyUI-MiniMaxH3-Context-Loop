@@ -196,7 +196,9 @@ def export_video(chain, video, state, export_name, output_folder, first_frame_nu
                         raise ValueError("PNG sequence contains an invalid frame address.")
                     _safe_path(root, directory / item["file"])
                     if not chain._png_export_file_unchanged(str(directory), item, verification):
-                        raise ValueError("An existing PNG is missing or changed; choose a new folder to preserve this export.")
+                        raise ValueError("An existing PNG is missing or changed (scene %d: %s); "
+                                         "choose a new folder to preserve this export. No files were overwritten." %
+                                         (clip["index"], directory / item["file"]))
                 expected_scene += 1
                 expected_frame += clip["delivered_frames"]
         tracked = {item["file"] for clip in clips for item in clip["files"]}

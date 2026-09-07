@@ -141,6 +141,24 @@ class IncrementalExportTests(unittest.TestCase):
         self.assertEqual(reused, sixteen)
         self.assertEqual(self.png_state(eight), before)
 
+    def test_timestamp_only_changes_reuse_png_and_wav_without_decoding(self):
+        output, _, _ = self.export()
+        for path in [*output.glob("frame_*.png"), output / "audio.wav"]:
+            saved = path.stat()
+            os.utime(path, ns=(saved.st_atime_ns, saved.st_mtime_ns + 49_000_000_000))
+        png_before = self.png_state(output)
+        wav_before = ((output / "audio.wav").stat().st_mtime_ns, (output / "audio.wav").read_bytes())
+        calls = self.video.calls, self.audio.calls
+        for verification in ("cached", "strict"):
+            with self.subTest(verification=verification):
+                reused, record, result = self.export(checkpoint_verification=verification)
+                self.assertEqual(reused, output)
+                self.assertEqual((self.video.calls, self.audio.calls), calls)
+                self.assertEqual(self.png_state(output), png_before)
+                self.assertEqual(((output / "audio.wav").stat().st_mtime_ns, (output / "audio.wav").read_bytes()), wav_before)
+                self.assertEqual(record["new_frame_count"], 0)
+                self.assertIn("WAV reused", result[2])
+
     def test_append_exports_only_new_pngs_and_rebuilds_frame_locked_audio(self):
         output, _, _ = self.export()
         before = self.png_state(output)

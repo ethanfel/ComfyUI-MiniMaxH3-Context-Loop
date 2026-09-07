@@ -25487,11 +25487,14 @@ def _png_export_file_unchanged(
     if os.path.islink(path) or not os.path.isfile(path):
         return False
     stat = os.stat(path)
-    if (stat.st_size <= 0 or stat.st_size != record.get("size") or
-            stat.st_mtime_ns != record.get("mtime_ns")):
+    if stat.st_size <= 0 or stat.st_size != record.get("size"):
         return False
-    return (verification != "strict" or
-            _file_sha256(path) == record.get("sha256"))
+    # Timestamps are a cache hint, not content identity: network copies can
+    # change them without changing any bytes. A cache miss must verify the
+    # saved digest, while strict mode always hashes regardless of timestamps.
+    if verification == "cached" and stat.st_mtime_ns == record.get("mtime_ns"):
+        return True
+    return _file_sha256(path) == record.get("sha256")
 
 
 def _png_export_source_identity(segment: dict[str, Any]) -> dict[str, Any]:
