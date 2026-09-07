@@ -1,8 +1,8 @@
 {
-  "id": "579a2af1-de41-5ea1-bee1-faef684ae42b",
+  "id": "5199cf77-62a9-51da-9c61-39b62a1e9536",
   "revision": 0,
-  "last_node_id": 44,
-  "last_link_id": 84,
+  "last_node_id": 43,
+  "last_link_id": 83,
   "nodes": [
     {
       "id": 1,
@@ -68,7 +68,7 @@
           "name": "flow",
           "type": "H3_CHAIN_UPSCALE_FLOW",
           "links": [
-            27
+            26
           ]
         },
         {
@@ -94,9 +94,9 @@
         "Node name for S&R": "MiniMaxH3ChainUpscaleAdapter"
       },
       "widgets_values": [
-        "h3_lbh_3d_derope",
+        "h3_derope_native",
         "h3_latent",
-        "{\"upscaler\":\"LBH 3D\",\"target_megapixels\":1.5,\"derope\":\"MAINodes adaptive pixel smear\",\"oracle\":\"balanced q0.75 dmax4\",\"pass2_steps\":10,\"inject\":0.5,\"audio_init\":0.5,\"audio_output\":\"original performance\",\"total_steps\":20,\"scheduler\":\"simple\",\"sampler\":\"res_multistep\"}",
+        "{\"stage\":\"derope\",\"derope\":\"MAINodes adaptive pixel smear\",\"resolution\":\"source\",\"upscaler\":\"none\",\"oracle\":\"custom q0.85 dmax4 ramp bridge8\",\"sampler\":\"res_multistep\",\"scheduler\":\"simple\",\"total_steps\":20,\"inject\":0.5,\"pass2_steps\":10,\"audio_init\":0.5,\"audio_output\":\"original performance\"}",
         1,
         0,
         true,
@@ -130,13 +130,13 @@
           "type": "H3_CHAIN_UPSCALE_STATE",
           "links": [
             5,
-            23,
-            28,
-            42,
-            54,
-            56,
-            74,
-            79
+            22,
+            27,
+            41,
+            53,
+            55,
+            73,
+            78
           ]
         },
         {
@@ -148,17 +148,17 @@
           "name": "source_video_latent",
           "type": "LATENT",
           "links": [
-            33,
-            36,
-            40,
-            81
+            32,
+            35,
+            39,
+            80
           ]
         },
         {
           "name": "source_audio_latent",
           "type": "LATENT",
           "links": [
-            38
+            37
           ]
         },
         {
@@ -202,8 +202,8 @@
           "name": "raw_frames",
           "type": "INT",
           "links": [
-            41,
-            77
+            40,
+            76
           ]
         },
         {
@@ -267,7 +267,7 @@
         "Node name for S&R": "UNETLoader"
       },
       "widgets_values": [
-        "minimax_h3_fl2va_pruned_int8_convrot.safetensors",
+        "minimax_h3_ref2va_pruned_int8_convrot.safetensors",
         "default"
       ]
     },
@@ -335,8 +335,8 @@
           "name": "MODEL",
           "type": "MODEL",
           "links": [
-            14,
-            62
+            13,
+            61
           ]
         }
       ],
@@ -404,10 +404,10 @@
           "type": "VAE",
           "links": [
             8,
-            22,
-            37,
-            49,
-            71
+            21,
+            36,
+            48,
+            70
           ]
         }
       ],
@@ -423,8 +423,8 @@
       "id": 9,
       "type": "MiniMaxH3ChainUpscaleReferenceConditioning",
       "pos": [
-        4230,
-        180
+        3720,
+        588
       ],
       "size": [
         360,
@@ -478,7 +478,7 @@
           "name": "positive",
           "type": "CONDITIONING",
           "links": [
-            35
+            34
           ]
         },
         {
@@ -538,7 +538,7 @@
           "name": "NOISE",
           "type": "NOISE",
           "links": [
-            16
+            15
           ]
         }
       ],
@@ -553,73 +553,28 @@
     },
     {
       "id": 11,
-      "type": "MinimaxH3LatentUpscaler3D",
-      "pos": [
-        3720,
-        180
-      ],
-      "size": [
-        360,
-        276
-      ],
-      "flags": {},
-      "order": 10,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "latent",
-          "type": "*",
-          "link": 13
-        }
-      ],
-      "outputs": [
-        {
-          "name": "latent",
-          "type": "*",
-          "links": [
-            55
-          ]
-        }
-      ],
-      "title": "LBH 3D Latent Upscaler",
-      "properties": {
-        "Node name for S&R": "MinimaxH3LatentUpscaler3D"
-      },
-      "widgets_values": [
-        "minimax_h3_latent_upscaler_3d_fp16.safetensors",
-        "megapixels",
-        1.5,
-        32,
-        true,
-        true,
-        "cuda",
-        "fp16"
-      ]
-    },
-    {
-      "id": 12,
       "type": "BasicGuider",
       "pos": [
-        4740,
-        180
+        4230,
+        512
       ],
       "size": [
         360,
         104
       ],
       "flags": {},
-      "order": 11,
+      "order": 10,
       "mode": 0,
       "inputs": [
         {
           "name": "model",
           "type": "MODEL",
-          "link": 14
+          "link": 13
         },
         {
           "name": "conditioning",
           "type": "CONDITIONING",
-          "link": 15
+          "link": 14
         }
       ],
       "outputs": [
@@ -627,7 +582,7 @@
           "name": "GUIDER",
           "type": "GUIDER",
           "links": [
-            17
+            16
           ]
         }
       ],
@@ -638,7 +593,7 @@
       "widgets_values": []
     },
     {
-      "id": 13,
+      "id": 12,
       "type": "KSamplerSelect",
       "pos": [
         1500,
@@ -649,7 +604,7 @@
         108
       ],
       "flags": {},
-      "order": 12,
+      "order": 11,
       "mode": 0,
       "inputs": [],
       "outputs": [
@@ -657,7 +612,7 @@
           "name": "SAMPLER",
           "type": "SAMPLER",
           "links": [
-            18
+            17
           ]
         }
       ],
@@ -670,44 +625,44 @@
       ]
     },
     {
-      "id": 14,
+      "id": 13,
       "type": "SamplerCustomAdvanced",
       "pos": [
         4740,
-        384
+        180
       ],
       "size": [
         360,
         164
       ],
       "flags": {},
-      "order": 13,
+      "order": 12,
       "mode": 0,
       "inputs": [
         {
           "name": "noise",
           "type": "NOISE",
-          "link": 16
+          "link": 15
         },
         {
           "name": "guider",
           "type": "GUIDER",
-          "link": 17
+          "link": 16
         },
         {
           "name": "sampler",
           "type": "SAMPLER",
-          "link": 18
+          "link": 17
         },
         {
           "name": "sigmas",
           "type": "SIGMAS",
-          "link": 19
+          "link": 18
         },
         {
           "name": "latent_image",
           "type": "LATENT",
-          "link": 20
+          "link": 19
         }
       ],
       "outputs": [
@@ -715,8 +670,8 @@
           "name": "output",
           "type": "LATENT",
           "links": [
-            21,
-            63
+            20,
+            62
           ]
         },
         {
@@ -732,29 +687,29 @@
       "widgets_values": []
     },
     {
-      "id": 15,
+      "id": 14,
       "type": "VAEDecode",
       "pos": [
-        5250,
-        180
+        4740,
+        444
       ],
       "size": [
         360,
         104
       ],
       "flags": {},
-      "order": 14,
+      "order": 13,
       "mode": 0,
       "inputs": [
         {
           "name": "samples",
           "type": "LATENT",
-          "link": 21
+          "link": 20
         },
         {
           "name": "vae",
           "type": "VAE",
-          "link": 22
+          "link": 21
         }
       ],
       "outputs": [
@@ -762,7 +717,7 @@
           "name": "IMAGE",
           "type": "IMAGE",
           "links": [
-            65
+            64
           ]
         }
       ],
@@ -773,39 +728,39 @@
       "widgets_values": []
     },
     {
-      "id": 16,
+      "id": 15,
       "type": "MiniMaxH3ChainUpscaleSegmentSave",
       "pos": [
-        6270,
-        180
+        5760,
+        404
       ],
       "size": [
         360,
         144
       ],
       "flags": {},
-      "order": 15,
+      "order": 14,
       "mode": 0,
       "inputs": [
         {
           "name": "state",
           "type": "H3_CHAIN_UPSCALE_STATE",
-          "link": 23
+          "link": 22
         },
         {
           "name": "images",
           "type": "IMAGE",
-          "link": 24
+          "link": 23
         },
         {
           "name": "upscaled_latent",
           "type": "LATENT",
-          "link": 25
+          "link": 24
         },
         {
           "name": "recovered_audio",
           "type": "AUDIO",
-          "link": 26
+          "link": 25
         }
       ],
       "outputs": [
@@ -813,7 +768,7 @@
           "name": "segment",
           "type": "H3_CHAIN_UPSCALE_SEGMENT",
           "links": [
-            30
+            29
           ]
         },
         {
@@ -829,44 +784,44 @@
       "widgets_values": []
     },
     {
-      "id": 17,
+      "id": 16,
       "type": "MiniMaxH3ChainUpscaleLoopEnd",
       "pos": [
         6270,
-        424
+        180
       ],
       "size": [
         360,
         164
       ],
       "flags": {},
-      "order": 16,
+      "order": 15,
       "mode": 0,
       "inputs": [
         {
           "name": "flow",
           "type": "H3_CHAIN_UPSCALE_FLOW",
-          "link": 27
+          "link": 26
         },
         {
           "name": "state",
           "type": "H3_CHAIN_UPSCALE_STATE",
-          "link": 28
+          "link": 27
         },
         {
           "name": "images",
           "type": "IMAGE",
-          "link": 29
+          "link": 28
         },
         {
           "name": "segment",
           "type": "H3_CHAIN_UPSCALE_SEGMENT",
-          "link": 30
+          "link": 29
         },
         {
           "name": "upscaled_latent",
           "type": "LATENT",
-          "link": 31
+          "link": 30
         }
       ],
       "outputs": [
@@ -874,7 +829,7 @@
           "name": "manifest",
           "type": "H3_CHAIN_MANIFEST",
           "links": [
-            32
+            31
           ]
         },
         {
@@ -900,24 +855,24 @@
       "widgets_values": []
     },
     {
-      "id": 18,
+      "id": 17,
       "type": "MiniMaxH3ChainAssemble",
       "pos": [
-        6780,
-        180
+        6270,
+        444
       ],
       "size": [
         440,
         360
       ],
       "flags": {},
-      "order": 17,
+      "order": 16,
       "mode": 0,
       "inputs": [
         {
           "name": "manifest",
           "type": "H3_CHAIN_MANIFEST",
-          "link": 32
+          "link": 31
         },
         {
           "name": "source_audio",
@@ -948,7 +903,7 @@
       },
       "widgets_values": [
         "plan",
-        "h3_upscaled_%date:yyyy-MM-dd%",
+        "h3_derope_%date:yyyy-MM-dd%",
         256,
         false,
         "",
@@ -958,34 +913,34 @@
       ]
     },
     {
-      "id": 19,
+      "id": 18,
       "type": "H3ConditioningSyncFromLatents",
       "pos": [
         4230,
-        1288
+        180
       ],
       "size": [
         360,
         232
       ],
       "flags": {},
-      "order": 18,
+      "order": 17,
       "mode": 0,
       "inputs": [
         {
           "name": "original_latent",
           "type": "LATENT",
-          "link": 33
+          "link": 32
         },
         {
           "name": "upscaled_latent",
           "type": "LATENT",
-          "link": 34
+          "link": 33
         },
         {
           "name": "positive",
           "type": "CONDITIONING",
-          "link": 35
+          "link": 34
         },
         {
           "name": "negative",
@@ -998,7 +953,7 @@
           "name": "positive",
           "type": "CONDITIONING",
           "links": [
-            15
+            14
           ]
         },
         {
@@ -1037,7 +992,7 @@
       ]
     },
     {
-      "id": 20,
+      "id": 19,
       "type": "MiniMaxH3UpscaleReferencePromptOverride",
       "pos": [
         1500,
@@ -1048,7 +1003,7 @@
         372
       ],
       "flags": {},
-      "order": 19,
+      "order": 18,
       "mode": 0,
       "inputs": [
         {
@@ -1093,7 +1048,7 @@
       ]
     },
     {
-      "id": 21,
+      "id": 20,
       "type": "VAELoader",
       "pos": [
         1500,
@@ -1104,7 +1059,7 @@
         108
       ],
       "flags": {},
-      "order": 20,
+      "order": 19,
       "mode": 0,
       "inputs": [],
       "outputs": [
@@ -1113,10 +1068,10 @@
           "type": "VAE",
           "links": [
             11,
-            39,
-            53,
-            64,
-            73
+            38,
+            52,
+            63,
+            72
           ]
         }
       ],
@@ -1129,11 +1084,52 @@
       ]
     },
     {
-      "id": 22,
+      "id": 21,
       "type": "VAEDecode",
       "pos": [
         2130,
         644
+      ],
+      "size": [
+        360,
+        104
+      ],
+      "flags": {},
+      "order": 20,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "samples",
+          "type": "LATENT",
+          "link": 35
+        },
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": 36
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            43
+          ]
+        }
+      ],
+      "title": "VAEDecode",
+      "properties": {
+        "Node name for S&R": "VAEDecode"
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 22,
+      "type": "VAEDecodeAudio",
+      "pos": [
+        2130,
+        848
       ],
       "size": [
         360,
@@ -1146,53 +1142,12 @@
         {
           "name": "samples",
           "type": "LATENT",
-          "link": 36
-        },
-        {
-          "name": "vae",
-          "type": "VAE",
           "link": 37
-        }
-      ],
-      "outputs": [
-        {
-          "name": "IMAGE",
-          "type": "IMAGE",
-          "links": [
-            44
-          ]
-        }
-      ],
-      "title": "VAEDecode",
-      "properties": {
-        "Node name for S&R": "VAEDecode"
-      },
-      "widgets_values": []
-    },
-    {
-      "id": 23,
-      "type": "VAEDecodeAudio",
-      "pos": [
-        2130,
-        848
-      ],
-      "size": [
-        360,
-        104
-      ],
-      "flags": {},
-      "order": 22,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "samples",
-          "type": "LATENT",
-          "link": 38
         },
         {
           "name": "vae",
           "type": "VAE",
-          "link": 39
+          "link": 38
         }
       ],
       "outputs": [
@@ -1200,8 +1155,8 @@
           "name": "AUDIO",
           "type": "AUDIO",
           "links": [
-            50,
-            69
+            49,
+            68
           ]
         }
       ],
@@ -1212,7 +1167,7 @@
       "widgets_values": []
     },
     {
-      "id": 24,
+      "id": 23,
       "type": "H3JerkOracle",
       "pos": [
         2130,
@@ -1223,18 +1178,18 @@
         520
       ],
       "flags": {},
-      "order": 23,
+      "order": 22,
       "mode": 0,
       "inputs": [
         {
           "name": "samples",
           "type": "LATENT",
-          "link": 40
+          "link": 39
         },
         {
           "name": "length",
           "type": "INT",
-          "link": 41,
+          "link": 40,
           "widget": {
             "name": "length"
           }
@@ -1245,7 +1200,7 @@
           "name": "hold_map",
           "type": "STRING",
           "links": [
-            78
+            77
           ]
         },
         {
@@ -1280,10 +1235,10 @@
       },
       "widgets_values": [
         124,
-        0.75,
+        0.85,
         4,
         true,
-        "balanced (default)",
+        "custom",
         8,
         "value |d3| (default)",
         0,
@@ -1296,7 +1251,7 @@
       ]
     },
     {
-      "id": 25,
+      "id": 24,
       "type": "MiniMaxH3ChainDeropeGuard",
       "pos": [
         2640,
@@ -1307,18 +1262,18 @@
         164
       ],
       "flags": {},
-      "order": 24,
+      "order": 23,
       "mode": 0,
       "inputs": [
         {
           "name": "state",
           "type": "H3_CHAIN_UPSCALE_STATE,H3_CHAIN_STATE",
-          "link": 42
+          "link": 41
         },
         {
           "name": "hold_map",
           "type": "STRING",
-          "link": 43
+          "link": 42
         }
       ],
       "outputs": [
@@ -1326,14 +1281,14 @@
           "name": "hold_map",
           "type": "STRING",
           "links": [
-            80
+            79
           ]
         },
         {
           "name": "expand_to_end",
           "type": "BOOLEAN",
           "links": [
-            46
+            45
           ]
         },
         {
@@ -1359,7 +1314,7 @@
       "widgets_values": []
     },
     {
-      "id": 26,
+      "id": 25,
       "type": "H3TimeSmear",
       "pos": [
         3150,
@@ -1370,18 +1325,18 @@
         312
       ],
       "flags": {},
-      "order": 25,
+      "order": 24,
       "mode": 0,
       "inputs": [
         {
           "name": "images",
           "type": "IMAGE",
-          "link": 44
+          "link": 43
         },
         {
           "name": "hold_map",
           "type": "STRING",
-          "link": 45,
+          "link": 44,
           "widget": {
             "name": "hold_map"
           }
@@ -1389,7 +1344,7 @@
         {
           "name": "expand_to_end",
           "type": "BOOLEAN",
-          "link": 46,
+          "link": 45,
           "widget": {
             "name": "expand_to_end"
           }
@@ -1397,7 +1352,7 @@
         {
           "name": "est_steps",
           "type": "INT",
-          "link": 47,
+          "link": 46,
           "widget": {
             "name": "est_steps"
           }
@@ -1408,31 +1363,31 @@
           "name": "images",
           "type": "IMAGE",
           "links": [
-            48
+            47
           ]
         },
         {
           "name": "hold_map_used",
           "type": "STRING",
           "links": [
-            51,
-            57,
-            66,
-            68
+            50,
+            56,
+            65,
+            67
           ]
         },
         {
           "name": "length",
           "type": "INT",
           "links": [
-            59
+            58
           ]
         },
         {
           "name": "report",
           "type": "STRING",
           "links": [
-            84
+            83
           ]
         }
       ],
@@ -1451,7 +1406,7 @@
       ]
     },
     {
-      "id": 27,
+      "id": 26,
       "type": "VAEEncode",
       "pos": [
         3150,
@@ -1462,18 +1417,18 @@
         104
       ],
       "flags": {},
-      "order": 26,
+      "order": 25,
       "mode": 0,
       "inputs": [
         {
           "name": "pixels",
           "type": "IMAGE",
-          "link": 48
+          "link": 47
         },
         {
           "name": "vae",
           "type": "VAE",
-          "link": 49
+          "link": 48
         }
       ],
       "outputs": [
@@ -1481,7 +1436,7 @@
           "name": "LATENT",
           "type": "LATENT",
           "links": [
-            13
+            54
           ]
         }
       ],
@@ -1492,7 +1447,7 @@
       "widgets_values": []
     },
     {
-      "id": 28,
+      "id": 27,
       "type": "H3AudioSmear",
       "pos": [
         3150,
@@ -1503,18 +1458,18 @@
         152
       ],
       "flags": {},
-      "order": 27,
+      "order": 26,
       "mode": 0,
       "inputs": [
         {
           "name": "audio",
           "type": "AUDIO",
-          "link": 50
+          "link": 49
         },
         {
           "name": "hold_map",
           "type": "STRING",
-          "link": 51,
+          "link": 50,
           "widget": {
             "name": "hold_map"
           }
@@ -1525,7 +1480,7 @@
           "name": "AUDIO",
           "type": "AUDIO",
           "links": [
-            52
+            51
           ]
         }
       ],
@@ -1539,29 +1494,29 @@
       ]
     },
     {
-      "id": 29,
+      "id": 28,
       "type": "VAEEncodeAudio",
       "pos": [
         3720,
-        556
+        180
       ],
       "size": [
         360,
         104
       ],
       "flags": {},
-      "order": 28,
+      "order": 27,
       "mode": 0,
       "inputs": [
         {
           "name": "audio",
           "type": "AUDIO",
-          "link": 52
+          "link": 51
         },
         {
           "name": "vae",
           "type": "VAE",
-          "link": 53
+          "link": 52
         }
       ],
       "outputs": [
@@ -1569,7 +1524,7 @@
           "name": "LATENT",
           "type": "LATENT",
           "links": [
-            61
+            60
           ]
         }
       ],
@@ -1580,29 +1535,29 @@
       "widgets_values": []
     },
     {
-      "id": 30,
+      "id": 29,
       "type": "MiniMaxH3ChainDeropeContinuity",
       "pos": [
         3720,
-        760
+        384
       ],
       "size": [
         360,
         104
       ],
       "flags": {},
-      "order": 29,
+      "order": 28,
       "mode": 0,
       "inputs": [
         {
           "name": "state",
           "type": "H3_CHAIN_UPSCALE_STATE,H3_CHAIN_STATE",
-          "link": 54
+          "link": 53
         },
         {
           "name": "video_latent",
           "type": "LATENT",
-          "link": 55
+          "link": 54
         }
       ],
       "outputs": [
@@ -1611,8 +1566,8 @@
           "type": "LATENT",
           "links": [
             7,
-            34,
-            58
+            33,
+            57
           ]
         },
         {
@@ -1628,7 +1583,7 @@
       "widgets_values": []
     },
     {
-      "id": 31,
+      "id": 30,
       "type": "MiniMaxH3ChainDeropeFreezeMask",
       "pos": [
         3150,
@@ -1639,18 +1594,18 @@
         124
       ],
       "flags": {},
-      "order": 30,
+      "order": 29,
       "mode": 0,
       "inputs": [
         {
           "name": "state",
           "type": "H3_CHAIN_UPSCALE_STATE,H3_CHAIN_STATE",
-          "link": 56
+          "link": 55
         },
         {
           "name": "hold_map_used",
           "type": "STRING",
-          "link": 57
+          "link": 56
         }
       ],
       "outputs": [
@@ -1658,7 +1613,7 @@
           "name": "mask",
           "type": "MASK",
           "links": [
-            60
+            59
           ]
         },
         {
@@ -1679,29 +1634,29 @@
       "widgets_values": []
     },
     {
-      "id": 32,
+      "id": 31,
       "type": "H3V2VInit",
       "pos": [
-        4230,
-        784
+        3720,
+        1192
       ],
       "size": [
         360,
         404
       ],
       "flags": {},
-      "order": 31,
+      "order": 30,
       "mode": 0,
       "inputs": [
         {
           "name": "samples",
           "type": "LATENT",
-          "link": 58
+          "link": 57
         },
         {
           "name": "length",
           "type": "INT",
-          "link": 59,
+          "link": 58,
           "widget": {
             "name": "length"
           }
@@ -1714,12 +1669,12 @@
         {
           "name": "mask",
           "type": "MASK",
-          "link": 60
+          "link": 59
         },
         {
           "name": "audio_latent",
           "type": "LATENT",
-          "link": 61
+          "link": 60
         }
       ],
       "outputs": [
@@ -1727,7 +1682,7 @@
           "name": "LATENT",
           "type": "LATENT",
           "links": [
-            20
+            19
           ]
         }
       ],
@@ -1749,7 +1704,7 @@
       ]
     },
     {
-      "id": 33,
+      "id": 32,
       "type": "H3InjectSchedule",
       "pos": [
         2130,
@@ -1760,13 +1715,13 @@
         180
       ],
       "flags": {},
-      "order": 32,
+      "order": 31,
       "mode": 0,
       "inputs": [
         {
           "name": "model",
           "type": "MODEL",
-          "link": 62
+          "link": 61
         }
       ],
       "outputs": [
@@ -1774,8 +1729,8 @@
           "name": "SIGMAS",
           "type": "SIGMAS",
           "links": [
-            19,
-            82
+            18,
+            81
           ]
         }
       ],
@@ -1791,29 +1746,29 @@
       ]
     },
     {
-      "id": 34,
+      "id": 33,
       "type": "VAEDecodeAudio",
       "pos": [
-        5250,
-        384
+        4740,
+        648
       ],
       "size": [
         360,
         104
       ],
       "flags": {},
-      "order": 33,
+      "order": 32,
       "mode": 0,
       "inputs": [
         {
           "name": "samples",
           "type": "LATENT",
-          "link": 63
+          "link": 62
         },
         {
           "name": "vae",
           "type": "VAE",
-          "link": 64
+          "link": 63
         }
       ],
       "outputs": [
@@ -1821,7 +1776,7 @@
           "name": "AUDIO",
           "type": "AUDIO",
           "links": [
-            67
+            66
           ]
         }
       ],
@@ -1832,29 +1787,29 @@
       "widgets_values": []
     },
     {
-      "id": 35,
+      "id": 34,
       "type": "H3ExactRecover",
       "pos": [
         5250,
-        588
+        180
       ],
       "size": [
         360,
         128
       ],
       "flags": {},
-      "order": 34,
+      "order": 33,
       "mode": 0,
       "inputs": [
         {
           "name": "images",
           "type": "IMAGE",
-          "link": 65
+          "link": 64
         },
         {
           "name": "hold_map",
           "type": "STRING",
-          "link": 66,
+          "link": 65,
           "widget": {
             "name": "hold_map"
           }
@@ -1865,9 +1820,9 @@
           "name": "IMAGE",
           "type": "IMAGE",
           "links": [
-            24,
-            29,
-            70
+            23,
+            28,
+            69
           ]
         }
       ],
@@ -1880,29 +1835,29 @@
       ]
     },
     {
-      "id": 36,
+      "id": 35,
       "type": "H3AudioRecover",
       "pos": [
         5250,
-        816
+        408
       ],
       "size": [
         360,
         220
       ],
       "flags": {},
-      "order": 35,
+      "order": 34,
       "mode": 0,
       "inputs": [
         {
           "name": "audio",
           "type": "AUDIO",
-          "link": 67
+          "link": 66
         },
         {
           "name": "hold_map",
           "type": "STRING",
-          "link": 68,
+          "link": 67,
           "widget": {
             "name": "hold_map"
           }
@@ -1910,7 +1865,7 @@
         {
           "name": "reference",
           "type": "AUDIO",
-          "link": 69
+          "link": 68
         }
       ],
       "outputs": [
@@ -1918,8 +1873,8 @@
           "name": "AUDIO",
           "type": "AUDIO",
           "links": [
-            26,
-            72
+            25,
+            71
           ]
         }
       ],
@@ -1935,11 +1890,52 @@
       ]
     },
     {
-      "id": 37,
+      "id": 36,
       "type": "VAEEncode",
       "pos": [
-        5760,
-        180
+        5250,
+        728
+      ],
+      "size": [
+        360,
+        104
+      ],
+      "flags": {},
+      "order": 35,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "pixels",
+          "type": "IMAGE",
+          "link": 69
+        },
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": 70
+        }
+      ],
+      "outputs": [
+        {
+          "name": "LATENT",
+          "type": "LATENT",
+          "links": [
+            74
+          ]
+        }
+      ],
+      "title": "VAEEncode",
+      "properties": {
+        "Node name for S&R": "VAEEncode"
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 37,
+      "type": "VAEEncodeAudio",
+      "pos": [
+        5250,
+        932
       ],
       "size": [
         360,
@@ -1950,14 +1946,14 @@
       "mode": 0,
       "inputs": [
         {
-          "name": "pixels",
-          "type": "IMAGE",
-          "link": 70
+          "name": "audio",
+          "type": "AUDIO",
+          "link": 71
         },
         {
           "name": "vae",
           "type": "VAE",
-          "link": 71
+          "link": 72
         }
       ],
       "outputs": [
@@ -1969,47 +1965,6 @@
           ]
         }
       ],
-      "title": "VAEEncode",
-      "properties": {
-        "Node name for S&R": "VAEEncode"
-      },
-      "widgets_values": []
-    },
-    {
-      "id": 38,
-      "type": "VAEEncodeAudio",
-      "pos": [
-        5760,
-        384
-      ],
-      "size": [
-        360,
-        104
-      ],
-      "flags": {},
-      "order": 37,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "audio",
-          "type": "AUDIO",
-          "link": 72
-        },
-        {
-          "name": "vae",
-          "type": "VAE",
-          "link": 73
-        }
-      ],
-      "outputs": [
-        {
-          "name": "LATENT",
-          "type": "LATENT",
-          "links": [
-            76
-          ]
-        }
-      ],
       "title": "VAEEncode Audio",
       "properties": {
         "Node name for S&R": "VAEEncodeAudio"
@@ -2017,34 +1972,34 @@
       "widgets_values": []
     },
     {
-      "id": 39,
+      "id": 38,
       "type": "MiniMaxH3ChainRecoveredAV",
       "pos": [
         5760,
-        588
+        180
       ],
       "size": [
         360,
         124
       ],
       "flags": {},
-      "order": 38,
+      "order": 37,
       "mode": 0,
       "inputs": [
         {
           "name": "state",
           "type": "H3_CHAIN_UPSCALE_STATE,H3_CHAIN_STATE",
-          "link": 74
+          "link": 73
         },
         {
           "name": "video_latent",
           "type": "LATENT",
-          "link": 75
+          "link": 74
         },
         {
           "name": "audio_latent",
           "type": "LATENT",
-          "link": 76
+          "link": 75
         }
       ],
       "outputs": [
@@ -2052,8 +2007,8 @@
           "name": "latent",
           "type": "LATENT",
           "links": [
-            25,
-            31
+            24,
+            30
           ]
         },
         {
@@ -2069,7 +2024,7 @@
       "widgets_values": []
     },
     {
-      "id": 40,
+      "id": 39,
       "type": "H3ManualHoldMap",
       "pos": [
         2130,
@@ -2080,13 +2035,13 @@
         520
       ],
       "flags": {},
-      "order": 39,
+      "order": 38,
       "mode": 0,
       "inputs": [
         {
           "name": "length",
           "type": "INT",
-          "link": 77,
+          "link": 76,
           "widget": {
             "name": "length"
           }
@@ -2094,7 +2049,7 @@
         {
           "name": "oracle_hold_map",
           "type": "STRING",
-          "link": 78
+          "link": 77
         }
       ],
       "outputs": [
@@ -2102,7 +2057,7 @@
           "name": "hold_map",
           "type": "STRING",
           "links": [
-            43
+            42
           ]
         },
         {
@@ -2133,7 +2088,7 @@
       ]
     },
     {
-      "id": 41,
+      "id": 40,
       "type": "MiniMaxH3ChainDeropeBudget",
       "pos": [
         2640,
@@ -2144,28 +2099,28 @@
         144
       ],
       "flags": {},
-      "order": 40,
+      "order": 39,
       "mode": 0,
       "inputs": [
         {
           "name": "state",
           "type": "H3_CHAIN_UPSCALE_STATE,H3_CHAIN_STATE",
-          "link": 79
+          "link": 78
         },
         {
           "name": "hold_map",
           "type": "STRING",
-          "link": 80
+          "link": 79
         },
         {
           "name": "source_video_latent",
           "type": "LATENT",
-          "link": 81
+          "link": 80
         },
         {
           "name": "sigmas",
           "type": "SIGMAS",
-          "link": 82
+          "link": 81
         }
       ],
       "outputs": [
@@ -2173,21 +2128,21 @@
           "name": "hold_map",
           "type": "STRING",
           "links": [
-            45
+            44
           ]
         },
         {
           "name": "sampling_steps",
           "type": "INT",
           "links": [
-            47
+            46
           ]
         },
         {
           "name": "status",
           "type": "STRING",
           "links": [
-            83
+            82
           ]
         }
       ],
@@ -2198,11 +2153,45 @@
       "widgets_values": []
     },
     {
-      "id": 42,
+      "id": 41,
       "type": "PreviewAny",
       "pos": [
         3150,
         592
+      ],
+      "size": [
+        420,
+        180
+      ],
+      "flags": {},
+      "order": 40,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "source",
+          "type": "*",
+          "link": 82
+        }
+      ],
+      "outputs": [
+        {
+          "name": "STRING",
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "title": "Preview Any",
+      "properties": {
+        "Node name for S&R": "PreviewAny"
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 42,
+      "type": "PreviewAny",
+      "pos": [
+        3150,
+        1552
       ],
       "size": [
         420,
@@ -2233,40 +2222,6 @@
     },
     {
       "id": 43,
-      "type": "PreviewAny",
-      "pos": [
-        3150,
-        1552
-      ],
-      "size": [
-        420,
-        180
-      ],
-      "flags": {},
-      "order": 42,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "source",
-          "type": "*",
-          "link": 84
-        }
-      ],
-      "outputs": [
-        {
-          "name": "STRING",
-          "type": "STRING",
-          "links": null
-        }
-      ],
-      "title": "Preview Any",
-      "properties": {
-        "Node name for S&R": "PreviewAny"
-      },
-      "widgets_values": []
-    },
-    {
-      "id": 44,
       "type": "Note",
       "pos": [
         80,
@@ -2277,7 +2232,7 @@
         330
       ],
       "flags": {},
-      "order": 43,
+      "order": 42,
       "mode": 0,
       "inputs": [],
       "outputs": [],
@@ -2286,7 +2241,7 @@
         "Node name for S&R": "Note"
       },
       "widgets_values": [
-        "NIGHTLY • 0.6 BASELINE • Deferred Upscale + De-Rope - H3 LBH 3D\n\n1. Install models and extra packs listed in example_workflows/README.md.\n2. Copy the supplied assets to ComfyUI/input; select source media where requested.\n3. Select a saved run and lineage in Checkpoint Manager, then set the upscale profile / target size.\n4. Follow the numbered columns left → right and inspect the saved results.\n\nWorkflow-specific setup and detailed wiring notes:\nexample_workflows/guides/Deferred Upscale + De-Rope - H3 LBH 3D - MiniMax H3 0.6.md"
+        "NIGHTLY • 0.6 BASELINE • Deferred De-Rope Only\n\n1. Install ComfyUI-MAINodes v1.1.3 or newer and select your H3 model, text encoder and VAEs.\n2. In Checkpoint Manager choose the Original branch to repair. No Plan or source render is required.\n3. Set a NEW De-Rope profile and the Adapter scene range. Source resolution is preserved.\n4. Leave manual ranges blank for automatic repair; use a single scene for a targeted range.\n5. Review the budget and final-frame reports. Full recovered latents are saved for later upscaling.\n\nWorkflow-specific setup and detailed wiring notes:\nexample_workflows/guides/Deferred De-Rope Only - MiniMax H3 0.6.md"
       ]
     }
   ],
@@ -2341,7 +2296,7 @@
     ],
     [
       7,
-      30,
+      29,
       0,
       9,
       2,
@@ -2357,7 +2312,7 @@
     ],
     [
       9,
-      20,
+      19,
       1,
       9,
       4,
@@ -2365,7 +2320,7 @@
     ],
     [
       10,
-      20,
+      19,
       0,
       9,
       5,
@@ -2373,7 +2328,7 @@
     ],
     [
       11,
-      21,
+      20,
       0,
       9,
       6,
@@ -2389,246 +2344,254 @@
     ],
     [
       13,
-      27,
-      0,
-      11,
-      0,
-      "LATENT"
-    ],
-    [
-      14,
       6,
       0,
-      12,
+      11,
       0,
       "MODEL"
     ],
     [
-      15,
-      19,
+      14,
+      18,
       0,
-      12,
+      11,
       1,
       "CONDITIONING"
     ],
     [
-      16,
+      15,
       10,
       0,
-      14,
+      13,
       0,
       "NOISE"
     ],
     [
-      17,
-      12,
+      16,
+      11,
       0,
-      14,
+      13,
       1,
       "GUIDER"
     ],
     [
-      18,
-      13,
+      17,
+      12,
       0,
-      14,
+      13,
       2,
       "SAMPLER"
     ],
     [
-      19,
-      33,
+      18,
+      32,
       0,
-      14,
+      13,
       3,
       "SIGMAS"
     ],
     [
-      20,
-      32,
+      19,
+      31,
       0,
-      14,
+      13,
       4,
       "LATENT"
     ],
     [
-      21,
-      14,
+      20,
+      13,
       0,
-      15,
+      14,
       0,
       "LATENT"
     ],
     [
-      22,
+      21,
       8,
       0,
-      15,
+      14,
       1,
       "VAE"
     ],
     [
-      23,
+      22,
       3,
       0,
-      16,
+      15,
       0,
       "H3_CHAIN_UPSCALE_STATE"
     ],
     [
-      24,
-      35,
+      23,
+      34,
       0,
-      16,
+      15,
       1,
       "IMAGE"
     ],
     [
-      25,
-      39,
+      24,
+      38,
       0,
-      16,
+      15,
       2,
       "LATENT"
     ],
     [
-      26,
-      36,
+      25,
+      35,
       0,
-      16,
+      15,
       3,
       "AUDIO"
     ],
     [
-      27,
+      26,
       2,
       0,
-      17,
+      16,
       0,
       "H3_CHAIN_UPSCALE_FLOW"
     ],
     [
-      28,
+      27,
       3,
       0,
-      17,
+      16,
       1,
       "H3_CHAIN_UPSCALE_STATE"
     ],
     [
-      29,
-      35,
+      28,
+      34,
       0,
-      17,
+      16,
       2,
       "IMAGE"
     ],
     [
-      30,
-      16,
+      29,
+      15,
       0,
-      17,
+      16,
       3,
       "H3_CHAIN_UPSCALE_SEGMENT"
     ],
     [
-      31,
-      39,
+      30,
+      38,
       0,
-      17,
+      16,
       4,
       "LATENT"
     ],
     [
-      32,
-      17,
+      31,
+      16,
       0,
-      18,
+      17,
       0,
       "H3_CHAIN_MANIFEST"
     ],
     [
-      33,
+      32,
       3,
       2,
-      19,
+      18,
       0,
       "LATENT"
     ],
     [
-      34,
-      30,
+      33,
+      29,
       0,
-      19,
+      18,
       1,
       "LATENT"
     ],
     [
-      35,
+      34,
       9,
       0,
-      19,
+      18,
       2,
       "CONDITIONING"
     ],
     [
-      36,
+      35,
       3,
       2,
-      22,
+      21,
       0,
       "LATENT"
+    ],
+    [
+      36,
+      8,
+      0,
+      21,
+      1,
+      "VAE"
     ],
     [
       37,
-      8,
+      3,
+      3,
+      22,
+      0,
+      "LATENT"
+    ],
+    [
+      38,
+      20,
       0,
       22,
       1,
       "VAE"
     ],
     [
-      38,
+      39,
       3,
-      3,
+      2,
       23,
       0,
       "LATENT"
-    ],
-    [
-      39,
-      21,
-      0,
-      23,
-      1,
-      "VAE"
     ],
     [
       40,
       3,
-      2,
-      24,
-      0,
-      "LATENT"
-    ],
-    [
-      41,
-      3,
       11,
-      24,
+      23,
       1,
       "INT"
     ],
     [
-      42,
+      41,
       3,
       0,
-      25,
+      24,
       0,
       "H3_CHAIN_UPSCALE_STATE"
     ],
     [
+      42,
+      39,
+      0,
+      24,
+      1,
+      "STRING"
+    ],
+    [
       43,
+      21,
+      0,
+      25,
+      0,
+      "IMAGE"
+    ],
+    [
+      44,
       40,
       0,
       25,
@@ -2636,279 +2599,279 @@
       "STRING"
     ],
     [
-      44,
-      22,
-      0,
-      26,
-      0,
-      "IMAGE"
-    ],
-    [
       45,
-      41,
-      0,
-      26,
+      24,
       1,
-      "STRING"
-    ],
-    [
-      46,
       25,
-      1,
-      26,
       2,
       "BOOLEAN"
     ],
     [
-      47,
-      41,
+      46,
+      40,
       1,
-      26,
+      25,
       3,
       "INT"
     ],
     [
-      48,
-      26,
+      47,
+      25,
       0,
-      27,
+      26,
       0,
       "IMAGE"
     ],
     [
-      49,
+      48,
       8,
       0,
-      27,
+      26,
       1,
       "VAE"
+    ],
+    [
+      49,
+      22,
+      0,
+      27,
+      0,
+      "AUDIO"
     ],
     [
       50,
-      23,
-      0,
-      28,
-      0,
-      "AUDIO"
-    ],
-    [
-      51,
-      26,
+      25,
       1,
-      28,
+      27,
       1,
       "STRING"
     ],
     [
-      52,
-      28,
+      51,
+      27,
       0,
-      29,
+      28,
       0,
       "AUDIO"
     ],
     [
-      53,
-      21,
+      52,
+      20,
       0,
-      29,
+      28,
       1,
       "VAE"
     ],
     [
-      54,
+      53,
       3,
       0,
-      30,
+      29,
       0,
       "H3_CHAIN_UPSCALE_STATE"
+    ],
+    [
+      54,
+      26,
+      0,
+      29,
+      1,
+      "LATENT"
     ],
     [
       55,
-      11,
-      0,
-      30,
-      1,
-      "*"
-    ],
-    [
-      56,
       3,
       0,
-      31,
+      30,
       0,
       "H3_CHAIN_UPSCALE_STATE"
     ],
     [
-      57,
-      26,
+      56,
+      25,
       1,
-      31,
+      30,
       1,
       "STRING"
     ],
     [
-      58,
-      30,
+      57,
+      29,
       0,
-      32,
+      31,
       0,
       "LATENT"
     ],
     [
-      59,
-      26,
+      58,
+      25,
       2,
-      32,
+      31,
       1,
       "INT"
     ],
     [
-      60,
-      31,
+      59,
+      30,
       0,
-      32,
+      31,
       3,
       "MASK"
     ],
     [
-      61,
-      29,
+      60,
+      28,
       0,
-      32,
+      31,
       4,
       "LATENT"
     ],
     [
-      62,
+      61,
       6,
       0,
-      33,
+      32,
       0,
       "MODEL"
     ],
     [
-      63,
-      14,
+      62,
+      13,
       0,
-      34,
+      33,
       0,
       "LATENT"
     ],
     [
-      64,
-      21,
+      63,
+      20,
       0,
-      34,
+      33,
       1,
       "VAE"
     ],
     [
-      65,
-      15,
+      64,
+      14,
       0,
-      35,
+      34,
       0,
       "IMAGE"
     ],
     [
+      65,
+      25,
+      1,
+      34,
+      1,
+      "STRING"
+    ],
+    [
       66,
-      26,
+      33,
+      0,
+      35,
+      0,
+      "AUDIO"
+    ],
+    [
+      67,
+      25,
       1,
       35,
       1,
       "STRING"
     ],
     [
-      67,
-      34,
-      0,
-      36,
-      0,
-      "AUDIO"
-    ],
-    [
       68,
-      26,
-      1,
-      36,
-      1,
-      "STRING"
-    ],
-    [
-      69,
-      23,
+      22,
       0,
-      36,
+      35,
       2,
       "AUDIO"
     ],
     [
-      70,
-      35,
+      69,
+      34,
       0,
-      37,
+      36,
       0,
       "IMAGE"
     ],
     [
-      71,
+      70,
       8,
+      0,
+      36,
+      1,
+      "VAE"
+    ],
+    [
+      71,
+      35,
+      0,
+      37,
+      0,
+      "AUDIO"
+    ],
+    [
+      72,
+      20,
       0,
       37,
       1,
       "VAE"
     ],
     [
-      72,
-      36,
-      0,
-      38,
-      0,
-      "AUDIO"
-    ],
-    [
       73,
-      21,
+      3,
       0,
       38,
-      1,
-      "VAE"
+      0,
+      "H3_CHAIN_UPSCALE_STATE"
     ],
     [
       74,
-      3,
+      36,
       0,
-      39,
-      0,
-      "H3_CHAIN_UPSCALE_STATE"
+      38,
+      1,
+      "LATENT"
     ],
     [
       75,
       37,
       0,
-      39,
-      1,
-      "LATENT"
-    ],
-    [
-      76,
       38,
-      0,
-      39,
       2,
       "LATENT"
     ],
     [
-      77,
+      76,
       3,
       11,
-      40,
+      39,
       0,
       "INT"
     ],
     [
+      77,
+      23,
+      0,
+      39,
+      1,
+      "STRING"
+    ],
+    [
       78,
+      3,
+      0,
+      40,
+      0,
+      "H3_CHAIN_UPSCALE_STATE"
+    ],
+    [
+      79,
       24,
       0,
       40,
@@ -2916,50 +2879,34 @@
       "STRING"
     ],
     [
-      79,
-      3,
-      0,
-      41,
-      0,
-      "H3_CHAIN_UPSCALE_STATE"
-    ],
-    [
       80,
-      25,
-      0,
-      41,
-      1,
-      "STRING"
-    ],
-    [
-      81,
       3,
       2,
-      41,
+      40,
       2,
       "LATENT"
     ],
     [
-      82,
-      33,
+      81,
+      32,
       0,
-      41,
+      40,
       3,
       "SIGMAS"
     ],
     [
-      83,
-      41,
+      82,
+      40,
       2,
-      42,
+      41,
       0,
       "STRING"
     ],
     [
-      84,
-      26,
+      83,
+      25,
       3,
-      43,
+      42,
       0,
       "STRING"
     ]
@@ -3031,7 +2978,7 @@
         3680,
         90,
         440,
-        814
+        1546
       ],
       "color": "#393f58",
       "font_size": 24,
@@ -3043,7 +2990,7 @@
         4190,
         90,
         440,
-        1470
+        566
       ],
       "color": "#394c49",
       "font_size": 24,
@@ -3055,7 +3002,7 @@
         4700,
         90,
         440,
-        498
+        702
       ],
       "color": "#393f58",
       "font_size": 24,
@@ -3074,38 +3021,26 @@
       "flags": {}
     },
     {
-      "title": "10 • PREPARE SCENE",
+      "title": "10 • SAVE & REVIEW",
       "bounding": [
         5720,
         90,
         440,
-        662
+        498
       ],
       "color": "#393f58",
       "font_size": 24,
       "flags": {}
     },
     {
-      "title": "11 • SAVE & REVIEW",
+      "title": "11 • DELIVER",
       "bounding": [
         6230,
         90,
-        440,
-        538
+        520,
+        754
       ],
       "color": "#394c49",
-      "font_size": 24,
-      "flags": {}
-    },
-    {
-      "title": "12 • DELIVER",
-      "bounding": [
-        6740,
-        90,
-        520,
-        490
-      ],
-      "color": "#393f58",
       "font_size": 24,
       "flags": {}
     }
@@ -3120,7 +3055,7 @@
       ]
     },
     "comfyui_mcp": {
-      "workflow_uuid": "579a2af1-de41-5ea1-bee1-faef684ae42b"
+      "workflow_uuid": "5199cf77-62a9-51da-9c61-39b62a1e9536"
     }
   },
   "version": 0.4

@@ -12,6 +12,8 @@ ROOT = Path(__file__).resolve().parents[1]
 EXAMPLES = ROOT / "example_workflows"
 LEGACY_ARCHIVE = EXAMPLES / "Archive" / "pre-0.6-nightly"
 WORKFLOWS = {
+    "Deferred De-Rope Only - MiniMax H3 0.6.json",
+    "Deferred De-Rope Only - Fast Turbo - MiniMax H3 0.6.json",
     "Deferred Upscale + De-Rope - H3 LBH 3D - MiniMax H3 0.6.json",
     "Deferred Upscale - H3 LBH 3D - MiniMax H3 0.6.json",
     "Deferred Upscale - Pixel DLSS5 + USDU - EXPERIMENTAL - MiniMax H3 0.6.json",
@@ -364,17 +366,19 @@ def main() -> None:
         assert "nightly" in guide and "not nightly" not in guide
         uuids.add(workflow["id"])
         pixel = bool(nodes(workflow, "MiniMaxH3ChainUpscalePixelConditioning"))
+        derope_fast = path.name == "Deferred De-Rope Only - Fast Turbo - MiniMax H3 0.6.json"
         for node in workflow["nodes"]:
             if node["type"] in {"UNETLoader", "CLIPLoader", "VAELoader"}:
                 values = node.get("widgets_values") or []
                 if values and values[0] in CANONICAL_H3_MODELS:
                     assert "/" not in values[0] and "\\" not in values[0]
             if node["type"] == "KSamplerSelect":
-                assert node["widgets_values"] == (["er_sde"] if pixel else ["res_multistep"])
+                expected = "gradient_estimation" if derope_fast else "er_sde" if pixel else "res_multistep"
+                assert node["widgets_values"] == [expected]
             elif node["type"] == "BasicScheduler":
                 assert node["widgets_values"][:2] == (["beta", 3] if pixel else ["simple", 20])
             elif node["type"] == "H3InjectSchedule":
-                assert node["widgets_values"][:2] == ["simple", 20]
+                assert node["widgets_values"][:2] == (["beta", 6] if derope_fast else ["simple", 20])
     assert len(uuids) == len(paths)
 
     i2v = load(EXAMPLES / "I2V Normal - MiniMax H3 0.6.json")

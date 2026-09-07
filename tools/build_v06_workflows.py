@@ -51,6 +51,8 @@ LABELS = {
     'BasicScheduler':'Sampling Schedule', 'KSamplerSelect':'Sampler',
     'MinimaxH3LatentUpscaler3D':'LBH 3D Latent Upscaler', 'SeedVR2VideoPathUpscaler':'SeedVR2 Video Path Upscaler',
     'MiniMaxH3ChainUpscalePixelCurrent':'Pixel Current Scene • Experimental',
+    'MiniMaxH3ChainDeropeBudget':'De-Rope Budget',
+    'H3ManualHoldMap':'De-Rope Ranges • RAW Scene Clock',
     'MiniMaxH3ChainUpscalePixelConditioning':'Pixel Conditioning • Actual Image Size',
     'UltimateSDUpscaleNoUpscaleGuider':'USDU H3 • Refine Upscaled Images',
 }
@@ -231,8 +233,15 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--check',action='store_true')
     parser.add_argument('--output-dir',type=Path,default=EXAMPLES)
+    parser.add_argument('--workflow',action='append',default=[],
+                        help='Build/check only this recipe filename (repeatable).')
     args=parser.parse_args();schemas=load_schemas()
-    for path in sorted((DATA/'recipes').glob('*.json')):
+    paths=sorted((DATA/'recipes').glob('*.json'))
+    if args.workflow:
+        unknown=set(args.workflow)-{p.name for p in paths}
+        if unknown:parser.error('Unknown recipes: '+', '.join(sorted(unknown)))
+        paths=[p for p in paths if p.name in args.workflow]
+    for path in paths:
         workflow,guide=build(json.loads(path.read_text()),path.name,schemas)
         outputs={args.output_dir/path.name:json.dumps(workflow,ensure_ascii=False,indent=2)+'\n',
                  args.output_dir/'guides'/path.with_suffix('.md').name:guide}

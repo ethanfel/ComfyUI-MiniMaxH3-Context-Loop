@@ -24,12 +24,20 @@ python3 tools/build_v06_workflows.py
 python3 tools/build_v06_workflows.py --check
 python3 tests/_workflow_schema_unit_test.py
 python3 tests/_workflow_catalog_unit_test.py
+python3 tests/_derope_workflow_unit_test.py
 ```
 
 The builder imports this branch's H3 `INPUT_TYPES` / output definitions in an
 offline schema environment. Run it in its own Python process, not inside a
 running ComfyUI server. The normal package dependencies, including torch, must
 be available; no model weights or GPU inference are used.
+
+Use repeatable `--workflow '<exact recipe filename>.json'` to build or check
+only the recipes being edited. This avoids rewriting unrelated generated
+workflows. The De-Rope-only base/fast recipes and combined LBH recipe are checked
+for source-canvas preservation, range/guard order, actual sigma-step reporting,
+the complete turbo model path, and recovered AV checkpoint wiring. MAINodes'
+manual gate schema follows v1.1.3; blank ranges retain the connected oracle.
 
 `external_schemas.json` contains only dependency contracts, with provenance and
 installation-specific file inventories removed. It is not a snapshot of nightly

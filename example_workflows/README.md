@@ -115,13 +115,15 @@ extension and inpaint workflows use the checkpoint/review/resume loop. See
 [Masked editing](../docs/MASKED_EDITING.md) for H3 grid behavior and audio
 protection.
 
-## Deferred upscale
+## Deferred De-Rope and upscale
 
 Deferred workflows start from a lineage selected in Checkpoint Manager; they
 are not first-install tests.
 
 | Workflow | Extra requirement |
 |---|---|
+| [De-Rope Only — source resolution](<Deferred De-Rope Only - MiniMax H3 0.6.json>) | [ComfyUI-MAINodes](https://github.com/matlowai/ComfyUI-MAINodes) v1.1.3+; no spatial upscaler |
+| [De-Rope Only — Fast Turbo](<Deferred De-Rope Only - Fast Turbo - MiniMax H3 0.6.json>) | MAINodes v1.1.3+ and LightX2V 4-step v1.0 768p ComfyUI bf16 LoRA; [recipe and limits](<guides/Deferred De-Rope Only - Fast Turbo - MiniMax H3 0.6.md>) |
 | [SeedVR2 Full Chain](<Deferred Upscale - SeedVR2 Full Chain - MiniMax H3 0.6.json>) | [ethanfel SeedVR2 fork](https://github.com/ethanfel/ComfyUI-SeedVR2_VideoUpscaler) |
 | [H3 LBH 3D](<Deferred Upscale - H3 LBH 3D - MiniMax H3 0.6.json>) | [LBH H3 latent upscaler](https://github.com/LBH-123-AI/Comfyui_Minimax_h3_latent_Upscaler) |
 | [H3 LBH 3D + De-Rope](<Deferred Upscale + De-Rope - H3 LBH 3D - MiniMax H3 0.6.json>) | LBH pack plus [ComfyUI-MAINodes](https://github.com/matlowai/ComfyUI-MAINodes) |
@@ -137,6 +139,27 @@ Install the base SeedVR2 model-loader pack as well as the linked video-path
 extension. For LBH, the temporal-chunking and unload controls are explicitly
 saved; the De-Rope injection preset is **custom**, with 20 total steps and 0.5
 injection, so it does not silently override the visible schedule.
+
+**De-Rope Only** preserves each source scene's resolution and original audio
+performance. Select the Original branch, choose a new profile and scene range,
+and keep full-latent saving enabled. The resulting DeRoPE branch can be selected
+as the source of a later upscale in a different profile; missing processed
+scenes fall back to the original source. The combined LBH + De-Rope graph remains
+available when spatial enlargement and motion repair should share one pass.
+
+The base-only graph runs 10 actual steps (`simple`, 20 total, injection 0.5);
+the Fast Turbo graph runs 3 (`beta`, 6 total, injection 0.5) with
+`gradient_estimation` and the matching enabled LoRA. These are distinct recipes,
+not interchangeable sampler/LoRA toggles. Prefer a base-generated source for
+the turbo repair; repeated deep turbo passes can damage the image.
+
+All three De-Rope graphs expose a manual range gate before the chain boundary
+guard and budget/final-frame previews. Ranges use the zero-based RAW scene clock,
+including carried context; select one scene for a scene-specific edit. Budget
+derives actual steps from SIGMAS and feeds Time Smear's estimate automatically.
+Reports do not pause execution or promise an OOM-free render: expanded pixel
+batches still reside in RAM. No experimental DyRoPE, motion-adapter or streamed
+attention patch is enabled by these templates.
 
 ## Assets and provenance
 

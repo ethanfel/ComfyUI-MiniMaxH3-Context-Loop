@@ -576,13 +576,14 @@ connections. Both cache versions retain the encoded native reference blocks
 used by sync; cache v2 additionally keeps original picture masters for
 workflows that choose target-resolution VAE re-encoding instead.
 
-The bundled **Deferred Upscale + De-Rope - H3 LBH 3D** workflow wraps
+The bundled **Deferred De-Rope Only** and **Deferred Upscale + De-Rope - H3 LBH 3D** workflows wrap
 [ComfyUI-MAINodes](https://github.com/matlowai/ComfyUI-MAINodes)' stable
 decoded time-smear recipe in the child loop:
 
 ```text
-source x0 → H3 Jerk Oracle → Chain De-Rope Guard → H3 Time Smear
-          → H3 video VAE encode → LBH 3D → Chain De-Rope Continuity
+source x0 → H3 Jerk Oracle → Manual Hold Map → Chain De-Rope Guard
+          → De-Rope Budget → H3 Time Smear → H3 video VAE encode
+          → [LBH 3D only in the combined graph] → Chain De-Rope Continuity
           → H3 V2V Init + Inject Schedule → sampler
           → Exact/Audio Recover → re-encode → Chain Recovered AV
 ```
@@ -605,16 +606,40 @@ and audio for optional full-latent saving and compact Drift-Control resume.
 
 This is the stable pixel-smear route, not MAINodes' experimental temporal
 latent insertion. The expanded IMAGE batch stays on CPU, but high-motion
-scenes can still become two to three times longer internally. Narrow the
-adapter's scene range or reduce oracle aggressiveness when RAM or wall time is
-too high. Spatial upscale and de-rope remain in the same regeneration pass so
-a later independent upscale cannot undo the recovered motion timing.
+scenes can still become two to three times longer internally, or more with
+broader holds. Narrow the adapter's scene range, gate the oracle's temporal
+ranges, or reduce oracle aggressiveness when RAM or wall time is too high.
+The standalone graph preserves source resolution; the combined graph enlarges
+it during the same regeneration pass. A later gentle pixel refinement has
+encouraging community results, but stronger resampling can reintroduce motion
+artifacts. Compare playback before applying a two-stage recipe to a whole branch.
+
+Manual Hold Map uses zero-based RAW scene frames or 24 fps seconds, including
+the repeated prefix. Blank ranges retain the automatic oracle; non-empty ranges
+apply to every selected scene, so narrow start/end to one scene for a specific
+repair. Token snapping and ramp shoulders may widen a typed interval. This
+controls temporal expansion, not pixel-exact preservation outside a mask.
+
+De-Rope Budget passes the protected map unchanged and reports planned frames,
+source canvas, one float32 RGB buffer's size, and the actual sigma-interval
+count before Time Smear expands pixels. Time Smear's final report includes
+endpoint/grid padding and receives its step estimate from Budget. Both reports
+are visible through Preview Any; they do not pause execution or impose a memory
+limit. Neither scene looping nor the report makes the expanded batch file-backed.
+
+Standalone defaults use custom q=0.85 / d_max=4 / ramp on / bridge=8. The
+base-model graph uses res_multistep, simple, 20 total steps, custom injection 0.5
+(10 actual steps). The separate Fast Turbo graph uses the LightX2V 4-step v1.0
+768p ComfyUI bf16 LoRA at strength 1, gradient_estimation, beta, 6 total steps,
+custom injection 0.5 (3 actual steps). Do not add turbo to the base sampler
+recipe unchanged. The combined graph keeps balanced q=0.75 and the base recipe.
+No experimental clock patch, motion adapter or streamed-block override is enabled.
 
 #### Saving DeRoPE for a later deferred pass
 
-The current combined example already wires recovered frames through VAE Encode
+All three current examples wire recovered frames through VAE Encode
 and **Chain Recovered AV**, and sends that recovered latent to Upscale Segment
-Save and Loop End. The example now has **save_latent ON**, so new renders retain
+Save and Loop End. The examples have **save_latent ON**, so new renders retain
 the complete recovered latent for a later pass. Existing workflows keep their
 stored setting; preview-only results do not gain a latent by opening the tab.
 

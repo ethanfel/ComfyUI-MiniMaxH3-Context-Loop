@@ -80,6 +80,7 @@ def main():
         "MiniMaxH3ChainUpscaleAdapter",
         "MiniMaxH3ChainUpscaleCurrent",
         "MiniMaxH3ChainDeropeGuard",
+        "MiniMaxH3ChainDeropeBudget",
         "MiniMaxH3ChainDeropeFreezeMask",
         "MiniMaxH3ChainDeropeContinuity",
         "MiniMaxH3ChainRecoveredAV",
@@ -574,6 +575,20 @@ def main():
         assert guarded_map["holds"][:17] == [1] * 17
         assert guarded_map["holds"][-17:] == [1] * 17
         assert guarded_map["holds"][17:22] == [4] * 5
+        # Budget forwards the protected map byte-for-byte, does not allocate
+        # held images, and derives steps from actual sigmas (not recipe prose).
+        source_video = {"samples": torch.zeros((1, 24, 12, 2, 4))}
+        budget = upscale.MiniMaxH3ChainDeropeBudget().report(
+            derope_state, guarded[0], source_video, torch.linspace(1, 0, 11))
+        assert budget[:2] == (guarded[0], 10)
+        assert "64x32 source" in budget[2]
+        assert "39 RAW -> 54 planned frames" in budget[2]
+        assert "before Time Smear endpoint/grid padding" in budget[2]
+        assert "10 actual sampling steps" in budget[2]
+        assert upscale.MiniMaxH3ChainDeropeBudget().report(
+            derope_state, guarded[0], source_video, torch.linspace(1, 0, 4))[1] == 3
+        assert upscale.MiniMaxH3ChainDeropeBudget().report(
+            derope_state, guarded[0], source_video, torch.zeros(1))[1] == 0
         # Simulate H3 Time Smear's legal-grid tail pad. It lives on the final
         # hold and does not disturb the protected incoming prefix.
         used_map = dict(guarded_map)
@@ -939,6 +954,27 @@ def main():
                 assert message.lower() in str(exc).lower(), str(exc)
             else:
                 raise AssertionError("Expected rejection: " + message)
+
+        # Native-resolution De-Rope is a processing stage even when the canvas
+        # does not grow. It must appear in DeRoPE and feed later upscale nodes.
+        _, native_state, _, _ = adapter.adapt(
+            selected_manifest, "motion_native", "h3_latent",
+            '{"stage":"derope","resolution":"source","upscaler":"none"}',
+            1, 0, True, 18)
+        native_av = upscale.MiniMaxH3ChainRecoveredAV().pack(
+            native_state, {"samples": torch.full((1, 24, 2, 2, 2), 0.55)},
+            {"samples": torch.full((1, 32, 2, 9), 0.75)})[0]
+        native_take = saver.save(native_state, source_images, native_av)["result"][0]
+        native_manifest = sources.derope_source_manifest(
+            selected_manifest, processing_selection("motion_native"), chain, upscale)
+        assert native_manifest["segments"][0]["revision"] == native_take["revision"]
+        assert native_manifest["segments"][1] == selected_manifest["segments"][1]
+        _, native_next, _, _ = adapter.adapt(
+            native_manifest, "after_native", "h3_latent", "{}", 1, 0, True, 18)
+        native_loaded = upscale.MiniMaxH3ChainUpscaleCurrent().current(native_next)
+        assert native_loaded[7:9] == (32, 32)
+        assert torch.all(native_loaded[2]["samples"] == 0.55)
+        assert torch.all(native_loaded[3]["samples"] == 0.75)
 
         _flow, motion_state, _, _ = adapter.adapt(
             selected_manifest, "motion", "h3_latent", '{"derope":true}', 1, 0, True, 18)

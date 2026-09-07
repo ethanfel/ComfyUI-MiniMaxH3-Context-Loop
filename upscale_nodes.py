@@ -1448,6 +1448,57 @@ class MiniMaxH3ChainDeropeGuard:
                 prefix, suffix, status)
 
 
+class MiniMaxH3ChainDeropeBudget:
+    """Report the protected plan before Time Smear allocates held pixels."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "state": (DEROPE_STATE_TYPE, {
+                "tooltip": "Current scene state; uses its RAW clock, including the carried prefix."}),
+            "hold_map": ("STRING", {
+                "forceInput": True,
+                "tooltip": "Protected hold map from Chain De-Rope Guard. Passed through unchanged."}),
+            "source_video_latent": ("LATENT", {
+                "tooltip": "Clean source video latent, used only to report the source canvas."}),
+            "sigmas": ("SIGMAS", {
+                "tooltip": "Actual truncated sampling schedule. Its length determines the real step count."}),
+        }}
+
+    RETURN_TYPES = ("STRING", "INT", "STRING")
+    RETURN_NAMES = ("hold_map", "sampling_steps", "status")
+    OUTPUT_TOOLTIPS = (
+        "Unchanged protected map; connect to H3 Time Smear so this report runs before expansion.",
+        "Number of sigma intervals; connect to Time Smear est_steps to keep its estimate current.",
+        "Planned expansion, actual steps and source-resolution pixel-buffer estimate; connect to Preview Any.",
+    )
+    FUNCTION = "report"
+    CATEGORY = "conditioning/minimax/context_loop/upscale"
+    DESCRIPTION = (
+        "Report De-Rope cost before allocating the expanded IMAGE batch. "
+        "Does not cap frames, change the hold map, or reject an expensive plan. "
+        "The pixel-buffer estimate excludes endpoint/grid padding, copies, "
+        "later spatial upscaling, model weights and activations; it is not a VRAM forecast.")
+
+    def report(self, state, hold_map, source_video_latent, sigmas):
+        segment, scene, _count, _compat, _kind = _derope_state_view(state)
+        raw = int(segment.get("raw_frames", 0))
+        _parsed, holds = _derope_hold_map(hold_map, raw, "De-Rope budget hold map")
+        video, width, height = _target_video_geometry(source_video_latent)
+        steps = max(0, len(sigmas) - 1)
+        frames = sum(holds)
+        gib = int(video.shape[0]) * frames * width * height * 3 * 4 / (1024 ** 3)
+        status = (
+            "De-Rope scene %d: %dx%d source; %d RAW -> %d planned frames "
+            "(%.2fx, before Time Smear endpoint/grid padding); %d actual sampling steps. "
+            "Source-resolution float32 RGB batch alone: %.2f GiB, excluding copies, "
+            "spatial upscale, model weights and activations. See Time Smear report "
+            "for the final expanded length. This is information, not a memory limit." %
+            (scene, width, height, raw, frames, frames / max(1, raw), steps, gib))
+        chain.logging.info(status)
+        return hold_map, steps, status
+
+
 class MiniMaxH3ChainDeropeFreezeMask:
     """Freeze a protected chain prefix in MAINodes H3 V2V Init."""
 
@@ -3015,6 +3066,7 @@ UPSCALE_NODE_CLASS_MAPPINGS = {
     "MiniMaxH3ChainUpscaleAdapter": MiniMaxH3ChainUpscaleAdapter,
     "MiniMaxH3ChainUpscaleCurrent": MiniMaxH3ChainUpscaleCurrent,
     "MiniMaxH3ChainDeropeGuard": MiniMaxH3ChainDeropeGuard,
+    "MiniMaxH3ChainDeropeBudget": MiniMaxH3ChainDeropeBudget,
     "MiniMaxH3ChainDeropeFreezeMask": MiniMaxH3ChainDeropeFreezeMask,
     "MiniMaxH3ChainDeropeContinuity": MiniMaxH3ChainDeropeContinuity,
     "MiniMaxH3ChainRecoveredAV": MiniMaxH3ChainRecoveredAV,
@@ -3037,6 +3089,7 @@ UPSCALE_NODE_DISPLAY_NAME_MAPPINGS = {
     "MiniMaxH3ChainUpscaleAdapter": "MiniMax H3 Checkpoint Upscale Adapter",
     "MiniMaxH3ChainUpscaleCurrent": "MiniMax H3 Upscale Current Scene",
     "MiniMaxH3ChainDeropeGuard": "MiniMax H3 Chain De-Rope Guard",
+    "MiniMaxH3ChainDeropeBudget": "MiniMax H3 Chain De-Rope Budget",
     "MiniMaxH3ChainDeropeFreezeMask": (
         "MiniMax H3 Chain De-Rope Freeze Mask"),
     "MiniMaxH3ChainDeropeContinuity": (

@@ -13,7 +13,7 @@
     "LoraLoaderModelOnly": {
       "input": {"required": {
         "model": ["MODEL", {}],
-        "lora_name": [["minimax_h3_turbo_v4_step600_ema_pruned_comfyui.safetensors"], {}],
+        "lora_name": [["minimax_h3_turbo_v4_step600_ema_pruned_comfyui.safetensors", "minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors"], {}],
         "strength_model": ["FLOAT", {"default": 1.0, "min": -100.0, "max": 100.0, "step": 0.01}]
       }},
       "output": ["MODEL"], "output_name": ["MODEL"], "output_is_list": [false]
@@ -2465,6 +2465,107 @@
         "IMAGE"
       ],
       "output_is_list": [
+        false
+      ]
+    },
+    "H3ManualHoldMap": {
+      "input": {
+        "required": {
+          "length": [
+            "INT",
+            {
+              "default": 124,
+              "min": 5,
+              "max": 3600
+            }
+          ],
+          "fps": [
+            "INT",
+            {
+              "default": 24,
+              "min": 1,
+              "max": 120
+            }
+          ],
+          "ranges": [
+            "STRING",
+            {
+              "default": "",
+              "multiline": true
+            }
+          ],
+          "hold": [
+            "INT",
+            {
+              "default": 4,
+              "min": 2,
+              "max": 8
+            }
+          ],
+          "ramp": [
+            "BOOLEAN",
+            {
+              "default": true
+            }
+          ],
+          "bridge": [
+            "INT",
+            {
+              "default": 8,
+              "min": 0,
+              "max": 20
+            }
+          ]
+        },
+        "optional": {
+          "oracle_hold_map": [
+            "STRING",
+            {
+              "default": "",
+              "forceInput": true
+            }
+          ],
+          "s_per_step": [
+            "FLOAT",
+            {
+              "default": 0,
+              "min": 0,
+              "max": 120,
+              "step": 0.05
+            }
+          ],
+          "est_steps": [
+            "INT",
+            {
+              "default": 18,
+              "min": 1,
+              "max": 100
+            }
+          ],
+          "overhead_s": [
+            "FLOAT",
+            {
+              "default": 6.7,
+              "min": 0,
+              "max": 600,
+              "step": 0.1
+            }
+          ]
+        }
+      },
+      "output": [
+        "STRING",
+        "STRING",
+        "STRING"
+      ],
+      "output_name": [
+        "hold_map",
+        "segments",
+        "report"
+      ],
+      "output_is_list": [
+        false,
+        false,
         false
       ]
     },
