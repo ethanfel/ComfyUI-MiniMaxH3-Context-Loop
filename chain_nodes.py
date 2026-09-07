@@ -4936,14 +4936,16 @@ def _conditioning_from_reference_cache_target(
         clip: Any, vae: Any, metadata: dict[str, Any],
         target_width: int, target_height: int,
         prompt_override: str | None = None,
-        motion_ref_mode: str = "resize_video") -> tuple[Any, dict[str, Any]]:
+        motion_ref_mode: str = "resize_video",
+        ref_image_size: str = "inherit") -> tuple[Any, dict[str, Any]]:
     """Rebuild cached Ref2VA conditioning for an actual pass-2 canvas.
 
     Only native picture references using Core H3's ``match`` policy are tied
     to generation area.  ``max`` pictures, video-reference canvases, audio,
     and Qwen-only semantic anchors retain their original geometry.  V2 caches
     keep the original picture master; V1 caches safely fall back to their
-    pass-1 presentation frame.
+    pass-1 presentation frame for match sizing. An explicit policy change to
+    max requires original masters, not relabelled match-sized tensors.
     """
     target_width, target_height = int(target_width), int(target_height)
     if target_width < 32 or target_height < 32:
@@ -4956,11 +4958,14 @@ def _conditioning_from_reference_cache_target(
         metadata)
     presentation, blocks = _h3_motion_reference_policy(
         presentation, blocks, motion_ref_mode)
-    policy = str(metadata.get("ref_image_size") or "match")
+    cached_policy = str(metadata.get("ref_image_size") or "match")
+    if ref_image_size not in ("inherit", "match", "max"):
+        raise ValueError("Override ref_image_size must be inherit, match, or max.")
+    policy = cached_policy if ref_image_size == "inherit" else ref_image_size
     rebuilt = 0
     master_rebuilds = 0
     fallback_rebuilds = 0
-    if policy == "match":
+    if policy == "match" or (policy == "max" and cached_policy != "max"):
         image_blocks = [
             block for block in blocks if block.get("kind") == "image"]
         marked = [
@@ -4980,6 +4985,11 @@ def _conditioning_from_reference_cache_target(
         for index, block in enumerate(image_blocks):
             presentation_item = presentation[marked[index]]
             has_master = index < len(source_images)
+            if not has_master and policy == "max":
+                raise ValueError(
+                    "Changing cached match references to max requires original "
+                    "picture masters. Restore saved reference media or connect "
+                    "explicit Tagged references.")
             master = (source_images[index] if has_master
                       else presentation_item.get("data"))
             if master is None:
@@ -4987,6 +4997,11 @@ def _conditioning_from_reference_cache_target(
                     "H3 reference cache image %d has no reusable picture." %
                     (index + 1))
             if has_master:
+                resized = _h3_picture_presentation(
+                    master, target_width, target_height, policy)
+            elif cached_policy == "max":
+                # A V1 max presentation retains native geometry (up to H3's
+                # cap); apply the match area cap, not the pass-1 canvas ratio.
                 resized = _h3_picture_presentation(
                     master, target_width, target_height, "match")
             else:

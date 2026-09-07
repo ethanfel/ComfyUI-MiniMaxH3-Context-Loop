@@ -45,11 +45,11 @@ class RecoveryTests(unittest.TestCase):
             "compatibility": {"width": 32, "height": 32}, "segments": [self.source]}}
         self.set_lineage()
 
-    def image(self, tag, role, color):
+    def image(self, tag, role, color, size=(48, 64)):
         base = self.run / "project_assets/images"
         base.mkdir(parents=True, exist_ok=True)
         temporary = base / (tag + ".png")
-        Image.new("RGB", (48, 64), color).save(temporary)
+        Image.new("RGB", size, color).save(temporary)
         digest = chain._file_sha256(str(temporary))
         path = base / (digest[:16] + "_" + tag + ".png")
         temporary.rename(path)
@@ -69,6 +69,184 @@ class RecoveryTests(unittest.TestCase):
         return upscale.MiniMaxH3ChainUpscalePixelConditioning().condition(
             self.state, Clip(), torch.zeros(5, 64, 64, 3), VideoVAE(),
             missing_cache="error", **kwargs)
+
+    def recipe(self, prompt):
+        path = self.run / "recovery_archives" / self.source["revision"] / "api_prompt.json"
+        self.source["archives"] = {"api_prompt": str(path.relative_to(self.root))}
+        chain._atomic_json(str(path), prompt)
+
+    def large_picture(self):
+        self.picture = self.image("subject", "picture", (30, 60, 90), size=(192, 128))
+        self.entries[0]["content_hash"] = self.picture["sha256"]
+        self.set_lineage()
+
+    def pin_rebuilt_cache(self):
+        pointer = json.loads(next((self.run / "reference_cache").glob("rebuilt_*.json")).read_text())
+        self.source["reference_cache"] = pointer["reference_cache"]
+        return chain._load_reference_cache_descriptor(pointer["reference_cache"])
+
+    def test_linked_and_modern_saved_max_rebuilt_with_native_geometry(self):
+        self.large_picture()
+        for kind in ("MiniMaxH3TaggedReferenceToVideo", "MiniMaxH3ScheduledReferenceToVideo",
+                     "MiniMaxH3CurrentTaggedReferenceScene"):
+            with self.subTest(kind=kind):
+                self.recipe({
+                    "1": {"class_type": kind, "inputs": (
+                        {"options": ["options", 0]} if kind.endswith("ReferenceScene")
+                        else {"ref_image_size": ["sizing", 0]})},
+                    "options": {"class_type": "MiniMaxH3TaggedSceneOptions",
+                                "inputs": {"ref_image_size": ["sizing", 0]}},
+                    "sizing": {"class_type": "Reroute", "inputs": {"value": ["max", 0]}},
+                    "max": {"class_type": "PrimitiveString", "inputs": {"value": "max"}},
+                })
+                result = self.condition()
+                self.assertIn("policy=max", result[-1])
+                self.assertNotIn("ref_image_size=match", result[-1])
+                self.assertEqual(tuple(result[0][0][1]["minimax_refs"][0]["latent"].shape[-2:]), (8, 12))
+
+    def test_recipe_reader_does_not_guess_unknown_or_ambiguous_links(self):
+        defaults = {"ref_image_size": "match", "semantic_anchor_size": "512",
+                    "semantic_anchor_mode": "timestamped_video"}
+        for value, producer in (
+            (["2", 0], {"class_type": "ExecuteAnything", "inputs": {"value": "max"}}),
+            (["2", 1], {"class_type": "PrimitiveString", "inputs": {"value": "max"}}),
+            (["2", 0], {"class_type": "PrimitiveString", "inputs": {"value": ["2", 0]}}),
+            (["missing", 0], {}),
+        ):
+            with self.subTest(value=value, producer=producer):
+                prompt = {
+                    "1": {"class_type": "MiniMaxH3TaggedReferenceToVideo", "inputs": {"ref_image_size": value}},
+                    "2": producer,
+                    "3": {"class_type": "MiniMaxH3TaggedReferenceToVideo", "inputs": {"ref_image_size": "max"}},
+                }
+                self.assertNotIn("ref_image_size", recovery._recipe_settings(prompt, defaults))
+        self.assertEqual(recovery._recipe_settings({
+            "1": {"class_type": "MiniMaxH3CurrentTaggedReferenceScene", "inputs": {}},
+            "unused": {"class_type": "MiniMaxH3TaggedSceneOptions", "inputs": {"ref_image_size": "max"}},
+        }, defaults), defaults)
+
+    def test_linked_options_restore_anchor_settings_too(self):
+        self.entries[1].update(semantic_anchor_size="inherit", semantic_anchor_mode="inherit")
+        self.set_lineage()
+        self.recipe({
+            "1": {"class_type": "MiniMaxH3CurrentTaggedReferenceScene", "inputs": {"options": ["2", 0]}},
+            "2": {"class_type": "MiniMaxH3TaggedSceneOptions", "inputs": {
+                "ref_image_size": "max", "semantic_anchor_size": ["3", 0],
+                "semantic_anchor_mode": "picture_storyboard"}},
+            "3": {"class_type": "PrimitiveStringMultiline", "inputs": {"value": "1024"}},
+        })
+        settings, defaults = recovery.saved_reference_settings(chain, self.source, self.state["source_manifest"])
+        self.assertEqual(settings, {"ref_image_size": "max", "semantic_anchor_size": "1024",
+                                    "semantic_anchor_mode": "picture_storyboard"})
+        self.assertEqual(defaults, [])
+
+    def test_fixed_recipe_does_not_reuse_old_default_match_rebuild(self):
+        self.large_picture()
+        self.condition()
+        self.recipe({"1": {"class_type": "MiniMaxH3CurrentTaggedReferenceScene",
+                            "inputs": {"options": ["2", 0]}},
+                     "2": {"class_type": "MiniMaxH3TaggedSceneOptions", "inputs": {"ref_image_size": "max"}}})
+        result = self.condition()
+        self.assertIn("policy=max", result[-1])
+        self.assertIn("rebuilt references from verified saved media", result[-1])
+        self.assertEqual(len(list((self.run / "reference_cache").glob("rebuilt_*.json"))), 2)
+
+    def test_explicit_max_reencodes_existing_match_cache_without_mutating_it(self):
+        self.large_picture()
+        match = self.condition()
+        cached = self.pin_rebuilt_cache()
+        before = copy.deepcopy(self.source)
+        files = {str(path): chain._file_sha256(str(path)) for path in (self.run / "reference_cache").rglob("*") if path.is_file()}
+        with patch.object(chain, "_cache_reference_scene", side_effect=AssertionError("use cached masters")):
+            result = self.condition(override_ref_image_size="max")
+        refs = result[0][0][1]
+        self.assertEqual(tuple(refs["minimax_refs"][0]["latent"].shape[-2:]), (8, 12))
+        self.assertEqual(refs["_h3_upscale_ref_image_size"], "max")
+        self.assertFalse(refs["_h3_upscale_picture_refs_target_sized"])
+        self.assertIn("rebuilt 1 max pictures", result[-1])
+        self.assertNotIn("max pictures keep cached geometry", result[-1])
+        torch.testing.assert_close(refs["tokens"]["presentation"][1]["data"],
+                                   match[0][0][1]["tokens"]["presentation"][1]["data"])
+        self.assertEqual(self.source, before)
+        self.assertEqual(cached["ref_image_size"], "match")
+        self.assertEqual(files, {name: chain._file_sha256(name) for name in files})
+        self.assertIn("policy=match", self.condition()[-1])
+
+    def test_explicit_max_on_recovery_and_match_on_max_cache(self):
+        self.large_picture()
+        result = self.condition(override_ref_image_size="max")
+        self.assertIn("policy=max", result[-1])
+        self.assertNotIn("ref_image_size=match", result[-1])
+        cached = self.pin_rebuilt_cache()
+        self.assertEqual(cached["ref_image_size"], "max")
+        with patch.object(VideoVAE, "encode", side_effect=AssertionError("max retains native geometry")):
+            self.assertIn("policy=max", self.condition(override_ref_image_size="max")[-1])
+        result = self.condition(override_ref_image_size="match")
+        self.assertEqual(tuple(result[0][0][1]["minimax_refs"][0]["latent"].shape[-2:]), (4, 4))
+        self.assertTrue(result[0][0][1]["_h3_upscale_picture_refs_target_sized"])
+        self.assertEqual(cached["ref_image_size"], "max")
+
+    def test_max_override_without_target_canvas_and_missing_vae(self):
+        self.large_picture()
+        self.condition()
+        self.pin_rebuilt_cache()
+        conditioner = upscale.MiniMaxH3ChainUpscaleReferenceConditioning()
+        with self.assertRaisesRegex(ValueError, "video VAE"):
+            conditioner.condition(self.state, Clip(), "error", override_ref_image_size="max")
+        result = conditioner.condition(self.state, Clip(), "error", video_vae=VideoVAE(), override_ref_image_size="max")
+        self.assertEqual(tuple(result[0][0][1]["minimax_refs"][0]["latent"].shape[-2:]), (8, 12))
+        self.assertFalse(result[0][0][1]["_h3_upscale_picture_refs_target_sized"])
+
+    def test_live_override_inherit_uses_immutable_policy_if_cache_missing(self):
+        self.recipe({"1": {"class_type": "MiniMaxH3TaggedReferenceToVideo", "inputs": {"ref_image_size": "max"}}})
+        with patch.object(upscale, "_conditioning_from_tagged_upscale_override", return_value=([], "", "")) as build:
+            self.condition(tagged_references={})
+        self.assertEqual(build.call_args.args[6], "max")
+
+    def test_invalid_override_is_not_ignored_on_automatic_path(self):
+        with self.assertRaisesRegex(ValueError, "inherit, match, or max"):
+            self.condition(override_ref_image_size="invalid")
+
+    def test_legacy_match_cache_recovers_originals_before_max_override(self):
+        self.large_picture()
+        self.condition()
+        cached = self.pin_rebuilt_cache()
+        cached.pop("source_images")
+        with patch.object(chain, "_load_run_reference_cache_descriptor", return_value=cached):
+            result = self.condition(override_ref_image_size="max")
+        self.assertIn("rebuilt references from verified saved media", result[-1])
+        self.assertEqual(tuple(result[0][0][1]["minimax_refs"][0]["latent"].shape[-2:]), (8, 12))
+
+    def test_legacy_match_to_max_cannot_silently_relabel_small_tensors(self):
+        self.large_picture()
+        self.condition()
+        cached = self.pin_rebuilt_cache()
+        cached.pop("source_images")
+        (self.run / "project_assets" / self.picture["relative_path"]).unlink()
+        with patch.object(chain, "_load_run_reference_cache_descriptor", return_value=cached):
+            with self.assertRaisesRegex(ValueError, "Cannot change cached match references to max.*masters"):
+                self.condition(override_ref_image_size="max")
+        with self.assertRaisesRegex(ValueError, "requires original picture masters"):
+            chain._conditioning_from_reference_cache_target(Clip(), VideoVAE(), cached, 64, 64,
+                                                             ref_image_size="max")
+
+    def test_legacy_max_to_match_caps_native_picture_instead_of_enlarging_it(self):
+        self.large_picture()
+        self.condition(override_ref_image_size="max")
+        cached = self.pin_rebuilt_cache()
+        cached.pop("source_images")
+        with patch.object(chain, "_load_run_reference_cache_descriptor", return_value=cached):
+            result = self.condition(override_ref_image_size="match")
+        self.assertEqual(tuple(result[0][0][1]["minimax_refs"][0]["latent"].shape[-2:]), (4, 4))
+        self.assertIn("1 V1 fallbacks", result[-1])
+
+    def test_exact_cache_policy_wins_over_recipe_when_rebuilding_missing_tensors(self):
+        self.condition(override_ref_image_size="max")
+        cached = self.pin_rebuilt_cache()
+        self.recipe({"1": {"class_type": "MiniMaxH3TaggedReferenceToVideo", "inputs": {"ref_image_size": "match"}}})
+        (self.root / cached["tensor_objects"]["block_000_latent"]["tensors"]).unlink()
+        result = self.condition()
+        self.assertIn("policy=max", result[-1])
 
     def test_missing_cache_rebuilt_and_reused_without_regeneration(self):
         before = copy.deepcopy(self.state)

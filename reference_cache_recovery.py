@@ -45,6 +45,61 @@ def saved_reference_context(chain, source, manifest):
     return source, root, compatibility, lineage, metadata
 
 
+def _saved_setting(prompt, value, key=None, seen=frozenset()):
+    """Read only known static carriers, never execute an archived node.
+
+    API links are [node ID, output index]. Unknown/dynamic producers, cycles,
+    and unsupported output slots are deliberately unresolved.
+    """
+    if key is None and isinstance(value, str):
+        return value
+    if (not isinstance(value, list) or len(value) != 2 or value[1] != 0
+            or not isinstance(value[0], (str, int))):
+        return None
+    node_id = str(value[0])
+    if node_id in seen or len(seen) >= 64:
+        return None
+    node = prompt.get(node_id)
+    if not isinstance(node, dict) or not isinstance(node.get("inputs"), dict):
+        return None
+    inputs, kind = node["inputs"], node.get("class_type")
+    seen = seen | {node_id}
+    if kind == "Reroute":
+        return _saved_setting(prompt, inputs.get("value"), key, seen)
+    if key is None and kind in ("PrimitiveString", "PrimitiveStringMultiline"):
+        return _saved_setting(prompt, inputs.get("value"), seen=seen)
+    if key is not None and kind == "MiniMaxH3TaggedSceneOptions":
+        defaults = {"ref_image_size": "match", "semantic_anchor_size": "512",
+                    "semantic_anchor_mode": "timestamped_video"}
+        return _saved_setting(prompt, inputs.get(key, defaults[key]), seen=seen)
+    return None
+
+
+def _recipe_settings(prompt, defaults):
+    if not isinstance(prompt, dict):
+        return {}
+    candidates = []
+    for node in prompt.values():
+        if not isinstance(node, dict) or not isinstance(node.get("inputs"), dict):
+            continue
+        inputs, kind = node["inputs"], node.get("class_type")
+        if kind in ("MiniMaxH3TaggedReferenceToVideo", "MiniMaxH3ScheduledReferenceToVideo"):
+            candidates.append({key: _saved_setting(prompt, inputs.get(key)) for key in defaults})
+        elif kind == "MiniMaxH3CurrentTaggedReferenceScene":
+            candidates.append(dict(defaults) if "options" not in inputs else {
+                key: _saved_setting(prompt, inputs["options"], key) for key in defaults})
+    # Unconnected Options nodes are not evidence. Nor is a literal from one
+    # conditioner if another conditioner in the same snapshot is unresolved.
+    return {key: candidates[0][key] for key in defaults
+            if candidates and candidates[0][key] is not None
+            and all(item[key] == candidates[0][key] for item in candidates)}
+
+
+def saved_reference_settings(chain, source, manifest):
+    source, root, _compatibility, lineage, metadata = saved_reference_context(chain, source, manifest)
+    return _settings(chain, root, source, lineage, metadata)
+
+
 def _settings(chain, root, source, lineage, metadata):
     settings = {"ref_image_size": "match", "semantic_anchor_size": "512",
                 "semantic_anchor_mode": "timestamped_video"}
@@ -57,14 +112,9 @@ def _settings(chain, root, source, lineage, metadata):
         path = _inside(root, Path(chain._absolute_output_path(address)))
         if path.is_relative_to(root.resolve() / "recovery_archives") and path.is_file():
             prompt = chain._read_json(str(path))
-            candidates = [node.get("inputs", {}) for node in prompt.values()
-                          if isinstance(node, dict) and node.get("class_type") in (
-                              "MiniMaxH3TaggedReferenceToVideo", "MiniMaxH3ScheduledReferenceToVideo")]
-            for key in settings:
-                values = {item[key] for item in candidates if isinstance(item.get(key), str)}
-                if len(values) == 1:
-                    settings[key] = values.pop()
-                    recovered.add(key)
+            recipe = _recipe_settings(prompt, settings)
+            settings.update(recipe)
+            recovered.update(recipe)
     wrapper = (lineage.get("wrapper") or {}).get("contract") or {}
     if wrapper.get("conditioning_backend", "native_ref2va") != "native_ref2va":
         raise ReferenceRecoveryUnavailable("This take used external RefMod, not native Ref2VA; connect explicit upscale references.")
@@ -183,7 +233,8 @@ def _timing_state(chain, root, source, metadata, scene, length):
     return {"plan": plan, "index": scene, "source_timeline": metadata.get("source_timeline")}
 
 
-def recover_reference_cache(chain, source, manifest, scene_count, video_vae, audio_vae):
+def recover_reference_cache(chain, source, manifest, scene_count, video_vae, audio_vae,
+                            ref_image_size="inherit"):
     source, root, compatibility, lineage, metadata = saved_reference_context(chain, source, manifest)
     run = chain._strict_run_name(manifest["run_name"])
     scene, length = int(source["index"]), int(source["raw_frames"])
@@ -191,6 +242,11 @@ def recover_reference_cache(chain, source, manifest, scene_count, video_vae, aud
     geometry = chain.saved_resolution(source) or compatibility
     width, height = int(geometry["width"]), int(geometry["height"])
     settings, defaults = _settings(chain, root, source, lineage, metadata)
+    if ref_image_size not in ("inherit", "match", "max"):
+        raise ValueError("Override ref_image_size must be inherit, match, or max.")
+    if ref_image_size != "inherit":
+        settings["ref_image_size"] = ref_image_size
+        defaults = [key for key in defaults if key != "ref_image_size"]
     identity = {"version": 1, "run": run, "source_revision": source.get("revision"),
                 "source_checkpoint_sha256": source.get("checkpoint_sha256"), "lineage": lineage,
                 "scene": scene, "scene_count": scene_count, "prompt": prompt,

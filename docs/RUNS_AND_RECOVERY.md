@@ -712,6 +712,17 @@ use `match`, semantic size `512`, and `timestamped_video`; the status explicitly
 lists these defaults. Sequential/source-timeline references additionally need
 their immutable saved Plan timing. Recovery never executes archived workflows.
 
+Saved sizing is also recovered through static string input links and the modern
+Current Tagged Ref2VA Scene's connected Tagged Scene Options. Unconnected
+Options nodes or ambiguous/dynamic links are not treated as historical evidence.
+The upscale `override_ref_image_size` applies to automatic caches and rebuilt
+references as well as connected Tagged overrides. `inherit` keeps the saved
+policy; explicit `match`/`max` rebuilds native picture conditioning as needed
+without changing the source cache. Changing an old Match cache to Max uses its
+picture masters, or reconstructs them from verified archived media when absent;
+it never just relabels the smaller Match tensors. Existing Max caches keep their
+native geometry. Semantic anchors and motion/audio policy remain separate.
+
 Connect `video_vae` for native visual reference rebuilds and `audio_vae` for
 native audio. If an original file, saved reference identity, or required VAE is
 unavailable, `error` names the recovery requirement; `text_only` explicitly

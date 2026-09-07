@@ -4,6 +4,11 @@ Newest first. This file keeps release history out of the onboarding README.
 
 ## Unreleased — Deferred checkpoint upscaling
 
+- Recover saved Match/Max sizing through static input links and modern Tagged
+  Scene Options. Upscale sizing overrides now apply to cached and reconstructed
+  references too. Match-to-Max re-encodes original picture masters (recovering
+  them from saved media for legacy caches); source caches and unrelated reference
+  roles stay unchanged. Added CPU policy/geometry regressions and accurate logs.
 - DeRoPE/upscale saves retain media after uncertain checkpoint publication;
   failed manifest refreshes no longer delete saved scenes. VIDEO PNG exports
   recover journaled frame/index publication after cancellation or process exit,

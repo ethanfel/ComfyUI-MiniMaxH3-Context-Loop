@@ -2,6 +2,7 @@
 """Lossless conversion, immutable addresses, and render-success-only retirement."""
 
 import copy
+import importlib
 import json
 import logging
 import os
@@ -243,8 +244,9 @@ class MigrationTests(unittest.TestCase):
                 state, Clip(), pixels, fixtures.VideoVAE(), missing_cache="error")
         self.assertTrue(result[5])
         saver = upscale.MiniMaxH3ChainUpscaleSegmentSave()
+        persistence = importlib.import_module(chain.__package__ + ".processing_persistence")
         with CurrentNodeContext("actual-render", "save", 0):
-            with patch.object(chain, "_atomic_json", side_effect=OSError("save failed")):
+            with patch.object(persistence, "atomic_json", side_effect=OSError("save failed")):
                 with self.assertRaisesRegex(OSError, "save failed"):
                     saver.save(state, pixels, dynprompt=self.graph(), unique_id="save")
         self.assertTrue(target.exists())

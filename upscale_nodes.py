@@ -1822,9 +1822,10 @@ class MiniMaxH3ChainUpscaleReferenceConditioning:
                                "standalone or paired reference audio."}),
                 "override_ref_image_size": (("inherit", "match", "max"), {
                     "default": "inherit",
-                    "tooltip": "Picture sizing for connected override refs. "
-                               "inherit uses the source cache's match/max "
-                               "policy when available, otherwise match."}),
+                    "tooltip": "Picture sizing for cached, rebuilt, or connected "
+                               "refs. inherit preserves the saved match/max "
+                               "policy; match/max explicitly overrides it. "
+                               "Changing cached sizing requires video_vae."}),
                 "override_reference_policy": (
                     list(chain.REFERENCE_COMPLIANCE_MODES), {
                         "default": "strict",
@@ -1863,6 +1864,13 @@ class MiniMaxH3ChainUpscaleReferenceConditioning:
                   tagged_references=None, audio_vae=None,
                   override_ref_image_size="inherit",
                   override_reference_policy="strict", _target_size=None):
+        if override_ref_image_size not in ("inherit", "match", "max"):
+            raise ValueError(
+                "Override ref_image_size must be inherit, match, or max.")
+        from .reference_cache_recovery import (
+            ReferenceRecoveryUnavailable, cache_payload_missing,
+            recover_reference_cache, saved_reference_settings,
+        )
         if target_video_latent is not None and video_vae is None:
             raise ValueError(
                 "Target-resolution H3 conditioning needs both "
@@ -1898,9 +1906,6 @@ class MiniMaxH3ChainUpscaleReferenceConditioning:
             original_geometry = chain.saved_resolution(original) or compatibility
             width, height = int(original_geometry["width"]), int(original_geometry["height"])
         if tagged_references is not None:
-            if override_ref_image_size not in ("inherit", "match", "max"):
-                raise ValueError(
-                    "Override ref_image_size must be inherit, match, or max.")
             ref_image_size = str(override_ref_image_size)
             if ref_image_size == "inherit":
                 inherited_cache = None
@@ -1915,8 +1920,14 @@ class MiniMaxH3ChainUpscaleReferenceConditioning:
                 except (OSError, TypeError, ValueError, json.JSONDecodeError):
                     # The explicit live registry is self-contained. A stale
                     # source cache must not block it merely because inherit
-                    # was selected; match is the documented fallback.
+                    # was selected. Try the immutable recipe before defaults.
                     inherited_cache = None
+                if inherited_cache is None:
+                    try:
+                        inherited_cache, _defaults = saved_reference_settings(
+                            chain, source, manifest)
+                    except (OSError, TypeError, ValueError, KeyError):
+                        inherited_cache = None
                 ref_image_size = str(
                     (inherited_cache or {}).get("ref_image_size") or "match")
             conditioning, compiled, status = (
@@ -1928,10 +1939,6 @@ class MiniMaxH3ChainUpscaleReferenceConditioning:
             if custom_prompt:
                 status += "; custom pass-2 prompt override"
             return conditioning, compiled, False, status
-        from .reference_cache_recovery import (
-            ReferenceRecoveryUnavailable, cache_payload_missing,
-            recover_reference_cache,
-        )
         recovery_status = ""
         recovery_error = ""
         try:
@@ -1958,25 +1965,45 @@ class MiniMaxH3ChainUpscaleReferenceConditioning:
         if cached is None:
             try:
                 cached, recovery_status = recover_reference_cache(
-                    chain, source, manifest, scene_count, video_vae, audio_vae)
+                    chain, source, manifest, scene_count, video_vae, audio_vae,
+                    ref_image_size=override_ref_image_size)
             except ReferenceRecoveryUnavailable as exc:
                 recovery_error = str(exc)
         if cached is not None:
+            # V1 match caches may have lost their full-size masters. Recover
+            # those from verified archived media before changing to max;
+            # relabelling their already downsized tensors would ignore Max.
+            if (override_ref_image_size == "max"
+                    and cached.get("ref_image_size", "match") != "max"
+                    and len(cached.get("source_images") or []) < sum(
+                        block.get("kind") == "image"
+                        for block in cached.get("reference_blocks") or [])):
+                try:
+                    cached, recovery_status = recover_reference_cache(
+                        chain, source, manifest, scene_count, video_vae, audio_vae,
+                        ref_image_size="max")
+                except ReferenceRecoveryUnavailable as exc:
+                    raise ValueError(
+                        "Cannot change cached match references to max without "
+                        "original picture masters: %s" % exc) from exc
+            cached_policy = str(cached.get("ref_image_size") or "match")
+            ref_image_size = (cached_policy if override_ref_image_size == "inherit"
+                              else override_ref_image_size)
             target_detail = None
-            if target_size is not None:
-                target_width, target_height = target_size
+            if target_size is not None or ref_image_size != cached_policy:
+                target_width, target_height = target_size or (width, height)
                 conditioning, target_detail = (
                     chain._conditioning_from_reference_cache_target(
                         clip, video_vae, cached, target_width, target_height,
-                        custom_prompt or None, motion_ref_mode))
+                        custom_prompt or None, motion_ref_mode,
+                        ref_image_size=ref_image_size))
             else:
                 conditioning = chain._conditioning_from_reference_cache(
                     clip, cached, custom_prompt or None, motion_ref_mode)
-            ref_image_size = str(cached.get("ref_image_size") or "match")
             conditioning = _mark_h3_upscale_motion_policy(
                 conditioning, motion_ref_mode, ref_image_size,
                 picture_refs_target_sized=bool(
-                    target_detail is not None and
+                    target_size is not None and target_detail is not None and
                     target_detail.get("policy") == "match"))
             compiled = (custom_prompt or
                         str(cached.get("compiled_prompt") or prompt))
@@ -1988,17 +2015,20 @@ class MiniMaxH3ChainUpscaleReferenceConditioning:
                     len(cached.get("presentation") or ())))
             if target_detail is not None:
                 status += (
-                    "; pass-2 %dx%d policy=%s: rebuilt %d match pictures "
+                    "; pass-2 %dx%d policy=%s: rebuilt %d %s pictures "
                     "(%d source masters, %d V1 fallbacks), preserved %d "
                     "native blocks" % (
                         target_detail["target_width"],
                         target_detail["target_height"],
                         target_detail["policy"],
                         target_detail["rebuilt_images"],
+                        target_detail["policy"],
                         target_detail["master_rebuilds"],
                         target_detail["fallback_rebuilds"],
                         target_detail["preserved_blocks"]))
-            if ref_image_size == "max":
+            if override_ref_image_size != "inherit":
+                status += "; explicit picture sizing override=%s" % ref_image_size
+            if ref_image_size == "max" and not (target_detail or {}).get("rebuilt_images"):
                 status += "; max pictures keep cached geometry"
             if custom_prompt:
                 status += "; custom pass-2 prompt override"
