@@ -4,6 +4,16 @@ Newest first. This file keeps release history out of the onboarding README.
 
 ## Unreleased — Deferred checkpoint upscaling
 
+- Added semantic-anchor size and presentation-mode overrides to latent, pixel,
+  and inherited VIDEO upscale conditioning, matching Tagged Scene Options plus
+  `inherit`. Cached, rebuilt, and connected references honor the settings;
+  changed anchors rebuild presentation and prompt labels into a separate cache
+  without changing source checkpoints. Existing widget positions are preserved.
+- Checkpoint Manager's output summary now names the saved branch, available
+  scenes, Original/DeRoPE source and exact Original fallback scenes, plus whether
+  the source is pinned to this workflow. Preview browsing does not change output;
+  the downstream range still determines what gets processed. Added regression
+  tests for both the anchor overrides and source-summary behavior.
 - Recover saved Match/Max sizing through static input links and modern Tagged
   Scene Options. Upscale sizing overrides now apply to cached and reconstructed
   references too. Match-to-Max re-encodes original picture masters (recovering

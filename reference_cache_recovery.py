@@ -100,7 +100,8 @@ def saved_reference_settings(chain, source, manifest):
     return _settings(chain, root, source, lineage, metadata)
 
 
-def _settings(chain, root, source, lineage, metadata):
+def _settings(chain, root, source, lineage, metadata, overrides=None):
+    overrides = overrides or {}
     settings = {"ref_image_size": "match", "semantic_anchor_size": "512",
                 "semantic_anchor_mode": "timestamped_video"}
     recovered = set()
@@ -119,6 +120,8 @@ def _settings(chain, root, source, lineage, metadata):
     if wrapper.get("conditioning_backend", "native_ref2va") != "native_ref2va":
         raise ReferenceRecoveryUnavailable("This take used external RefMod, not native Ref2VA; connect explicit upscale references.")
     for key in settings:
+        if key in overrides:
+            continue
         values = {item[key] for item in lineage["entries"]
                   if item.get(key) not in (None, "inherit")}
         if key in wrapper:
@@ -143,6 +146,8 @@ def _settings(chain, root, source, lineage, metadata):
                     if value is not None:
                         settings[key] = value
                         recovered.add(key)
+    settings.update(overrides)
+    recovered.update(overrides)
     if settings["ref_image_size"] not in ("match", "max"):
         raise ReferenceRecoveryUnavailable("Saved ref_image_size is unsupported.")
     chain._semantic_anchor_mode(settings["semantic_anchor_mode"])
@@ -234,19 +239,24 @@ def _timing_state(chain, root, source, metadata, scene, length):
 
 
 def recover_reference_cache(chain, source, manifest, scene_count, video_vae, audio_vae,
-                            ref_image_size="inherit"):
+                            ref_image_size="inherit", semantic_anchor_size="inherit",
+                            semantic_anchor_mode="inherit"):
     source, root, compatibility, lineage, metadata = saved_reference_context(chain, source, manifest)
     run = chain._strict_run_name(manifest["run_name"])
     scene, length = int(source["index"]), int(source["raw_frames"])
     prompt = str(source.get("prompt") or "")
     geometry = chain.saved_resolution(source) or compatibility
     width, height = int(geometry["width"]), int(geometry["height"])
-    settings, defaults = _settings(chain, root, source, lineage, metadata)
-    if ref_image_size not in ("inherit", "match", "max"):
-        raise ValueError("Override ref_image_size must be inherit, match, or max.")
-    if ref_image_size != "inherit":
-        settings["ref_image_size"] = ref_image_size
-        defaults = [key for key in defaults if key != "ref_image_size"]
+    overrides = {}
+    for key, value, choices in (
+            ("ref_image_size", ref_image_size, ("match", "max")),
+            ("semantic_anchor_size", semantic_anchor_size, chain.SEMANTIC_ANCHOR_SIZES),
+            ("semantic_anchor_mode", semantic_anchor_mode, chain.SEMANTIC_ANCHOR_MODES)):
+        if value not in ("inherit", *choices):
+            raise ValueError("Override %s must be one of %s." % (key, ("inherit", *choices)))
+        if value != "inherit":
+            overrides[key] = value
+    settings, defaults = _settings(chain, root, source, lineage, metadata, overrides)
     identity = {"version": 1, "run": run, "source_revision": source.get("revision"),
                 "source_checkpoint_sha256": source.get("checkpoint_sha256"), "lineage": lineage,
                 "scene": scene, "scene_count": scene_count, "prompt": prompt,

@@ -432,10 +432,11 @@ def main():
         reader = upscale.MiniMaxH3ChainUpscalePixelCurrent()
         conditioner = upscale.MiniMaxH3ChainUpscalePixelConditioning()
         schema = conditioner.INPUT_TYPES()
-        assert list(schema["optional"])[-2:] == ["conditioning_width", "conditioning_height"]
-        assert list(schema["optional"])[:-2] == [
+        anchors = ("override_semantic_anchor_size", "override_semantic_anchor_mode")
+        assert list(schema["optional"])[-4:] == ["conditioning_width", "conditioning_height", *anchors]
+        assert list(schema["optional"])[:-4] == [
             name for name in upscale.MiniMaxH3ChainUpscaleReferenceConditioning.INPUT_TYPES()["optional"]
-            if name not in ("video_vae", "target_video_latent")]
+            if name not in ("video_vae", "target_video_latent", *anchors)]
         for axis in ("width", "height"):
             assert schema["optional"][f"conditioning_{axis}"][1]["default"] == 0
         current = reader.current(state, VideoVAE())

@@ -756,7 +756,9 @@ def _conditioning_from_tagged_upscale_override(
         references: Any, prompt: str, ref_image_size: str,
         motion_ref_mode: str, reference_policy: str,
         target_video_latent: Any = None,
-        target_size: tuple[int, int] | None = None) -> tuple[Any, str, str]:
+        target_size: tuple[int, int] | None = None,
+        semantic_anchor_size: str = "512",
+        semantic_anchor_mode: str = "timestamped_video") -> tuple[Any, str, str]:
     """Build one coherent live Ref2VA payload for a deferred upscale scene."""
     source = _source_segment(state)
     manifest = state["source_manifest"]
@@ -772,8 +774,13 @@ def _conditioning_from_tagged_upscale_override(
     elif target_size is not None:
         width, height = target_size
 
+    anchor_bundle = chain._reference_semantic_anchor_bundle(references)
+    if anchor_bundle is not None:
+        anchor_bundle = chain._make_semantic_anchor_bundle(
+            anchor_bundle["entries"], semantic_anchor_size, semantic_anchor_mode)
     compiled, summary, bindings = chain._compile_tagged_reference_prompt(
-        references, scene, scene_count, prompt, reference_policy)
+        references, scene, scene_count, prompt, reference_policy,
+        semantic_anchor_mode, anchor_bundle)
     resolved_videos = []
     slice_details = []
     for entry in bindings["videos"]:
@@ -813,8 +820,8 @@ def _conditioning_from_tagged_upscale_override(
             "height": height,
             "length": length,
             "ref_image_size": ref_image_size,
-            "semantic_anchor_size": "512",
-            "semantic_anchor_mode": "timestamped_video",
+            "semantic_anchor_size": semantic_anchor_size,
+            "semantic_anchor_mode": semantic_anchor_mode,
             "pictures": pictures,
             "videos": [{
                 "video": item["video"],
@@ -825,6 +832,7 @@ def _conditioning_from_tagged_upscale_override(
                 "tag": anchor["tag"],
                 "image": anchor["entry"]["value"],
                 "timestamps": tuple(anchor["timestamps"]),
+                "untimed": bool(anchor.get("untimed")),
             } for anchor in semantic_anchors],
         }
 
@@ -865,6 +873,9 @@ def _conditioning_from_tagged_upscale_override(
         "%s; connected Tagged refs replace cached refs; canvas=%dx%d; "
         "picture policy=%s; motion refs=%s" % (
             summary, width, height, ref_image_size, motion_ref_mode))
+    if semantic_anchors:
+        status += "; semantic_anchor_size=%s; semantic_anchor_mode=%s" % (
+            semantic_anchor_size, semantic_anchor_mode)
     return conditioning, compiled, status
 
 
@@ -1831,6 +1842,24 @@ class MiniMaxH3ChainUpscaleReferenceConditioning:
                         "default": "strict",
                         "tooltip": "Prompt/tag validation for connected "
                                    "pass-2 Tagged refs."}),
+                "override_semantic_anchor_size": (
+                    ["inherit", *chain.SEMANTIC_ANCHOR_SIZES], {
+                        "default": "inherit",
+                        "tooltip": "Qwen semantic-anchor size, separate from "
+                                   "native picture sizing. inherit keeps saved "
+                                   "settings (or a connected anchor bundle). An "
+                                   "explicit size rebuilds cached anchors from "
+                                   "verified source media; source keeps their "
+                                   "original size. Use a new upscale profile "
+                                   "when changing this setting."}),
+                "override_semantic_anchor_mode": (
+                    ["inherit", *chain.SEMANTIC_ANCHOR_MODES], {
+                        "default": "inherit",
+                        "tooltip": "Semantic-anchor presentation: timestamped "
+                                   "video or picture storyboard, as in Tagged "
+                                   "Scene Options. Explicit changes rebuild "
+                                   "both presentation and prompt labels. Use a "
+                                   "new upscale profile when changing this setting."}),
             },
         }
 
@@ -1863,10 +1892,23 @@ class MiniMaxH3ChainUpscaleReferenceConditioning:
                   motion_ref_mode="exclude_video_keep_audio",
                   tagged_references=None, audio_vae=None,
                   override_ref_image_size="inherit",
-                  override_reference_policy="strict", _target_size=None):
+                  override_reference_policy="strict", _target_size=None,
+                  override_semantic_anchor_size="inherit",
+                  override_semantic_anchor_mode="inherit"):
         if override_ref_image_size not in ("inherit", "match", "max"):
             raise ValueError(
                 "Override ref_image_size must be inherit, match, or max.")
+        anchor_overrides = {
+            "semantic_anchor_size": override_semantic_anchor_size,
+            "semantic_anchor_mode": override_semantic_anchor_mode,
+        }
+        for key, choices in (("semantic_anchor_size", chain.SEMANTIC_ANCHOR_SIZES),
+                             ("semantic_anchor_mode", chain.SEMANTIC_ANCHOR_MODES)):
+            if anchor_overrides[key] not in ("inherit", *choices):
+                raise ValueError("Override %s must be one of %s." % (key, ("inherit", *choices)))
+        explicit_anchors = {key: value for key, value in anchor_overrides.items() if value != "inherit"}
+        anchor_status = ("; explicit anchor overrides: " + ", ".join(
+            "%s=%s" % item for item in explicit_anchors.items())) if explicit_anchors else ""
         from .reference_cache_recovery import (
             ReferenceRecoveryUnavailable, cache_payload_missing,
             recover_reference_cache, saved_reference_settings,
@@ -1907,7 +1949,8 @@ class MiniMaxH3ChainUpscaleReferenceConditioning:
             width, height = int(original_geometry["width"]), int(original_geometry["height"])
         if tagged_references is not None:
             ref_image_size = str(override_ref_image_size)
-            if ref_image_size == "inherit":
+            inherited_settings = {}
+            if ref_image_size == "inherit" or any(value == "inherit" for value in anchor_overrides.values()):
                 inherited_cache = None
                 try:
                     inherited_cache = (
@@ -1928,14 +1971,25 @@ class MiniMaxH3ChainUpscaleReferenceConditioning:
                             chain, source, manifest)
                     except (OSError, TypeError, ValueError, KeyError):
                         inherited_cache = None
-                ref_image_size = str(
-                    (inherited_cache or {}).get("ref_image_size") or "match")
+                inherited_settings = {**(inherited_cache or {}),
+                                      **((inherited_cache or {}).get("presentation_contract") or {})}
+            if ref_image_size == "inherit":
+                ref_image_size = str(inherited_settings.get("ref_image_size") or "match")
+            bundle = chain._reference_semantic_anchor_bundle(tagged_references) or {}
+            anchor_settings = {}
+            for key, default in (("semantic_anchor_size", "512"),
+                                 ("semantic_anchor_mode", "timestamped_video")):
+                inherited = bundle.get(key)
+                if inherited in (None, "inherit"):
+                    inherited = inherited_settings.get(key) or default
+                anchor_settings[key] = explicit_anchors.get(key, inherited)
             conditioning, compiled, status = (
                 _conditioning_from_tagged_upscale_override(
                     state, clip, video_vae, audio_vae, tagged_references,
                     custom_prompt or prompt, ref_image_size,
                     motion_ref_mode, override_reference_policy,
-                    target_video_latent, target_size))
+                    target_video_latent, target_size, **anchor_settings))
+            status += anchor_status
             if custom_prompt:
                 status += "; custom pass-2 prompt override"
             return conditioning, compiled, False, status
@@ -1966,23 +2020,38 @@ class MiniMaxH3ChainUpscaleReferenceConditioning:
             try:
                 cached, recovery_status = recover_reference_cache(
                     chain, source, manifest, scene_count, video_vae, audio_vae,
-                    ref_image_size=override_ref_image_size)
+                    ref_image_size=override_ref_image_size, **anchor_overrides)
             except ReferenceRecoveryUnavailable as exc:
                 recovery_error = str(exc)
         if cached is not None:
             # V1 match caches may have lost their full-size masters. Recover
             # those from verified archived media before changing to max;
             # relabelling their already downsized tensors would ignore Max.
-            if (override_ref_image_size == "max"
+            contract = cached.get("presentation_contract") or {}
+            change_anchors = bool(contract or chain._SEMANTIC_ANCHOR_RE.search(prompt)) and any(
+                contract.get(key) != value for key, value in explicit_anchors.items())
+            recover_max_masters = (override_ref_image_size == "max"
                     and cached.get("ref_image_size", "match") != "max"
                     and len(cached.get("source_images") or []) < sum(
                         block.get("kind") == "image"
-                        for block in cached.get("reference_blocks") or [])):
+                        for block in cached.get("reference_blocks") or []))
+            if change_anchors or recover_max_masters:
+                # Preserve every unspecified cache setting, not legacy defaults.
+                # Changed settings participate in the derived cache identity;
+                # the immutable source descriptor is never replaced.
+                settings = {key: explicit_anchors.get(key, contract.get(key) or "inherit")
+                            for key in anchor_overrides}
                 try:
                     cached, recovery_status = recover_reference_cache(
                         chain, source, manifest, scene_count, video_vae, audio_vae,
-                        ref_image_size="max")
+                        ref_image_size=(cached.get("ref_image_size") or "match")
+                        if override_ref_image_size == "inherit" else override_ref_image_size,
+                        **settings)
                 except ReferenceRecoveryUnavailable as exc:
+                    if change_anchors:
+                        raise ValueError(
+                            "Cannot apply semantic-anchor overrides from saved media: %s "
+                            "Connect explicit Tagged references with the original anchors." % exc) from exc
                     raise ValueError(
                         "Cannot change cached match references to max without "
                         "original picture masters: %s" % exc) from exc
@@ -2035,6 +2104,7 @@ class MiniMaxH3ChainUpscaleReferenceConditioning:
             status += "; motion refs=%s" % motion_ref_mode
             if recovery_status:
                 status += "; " + recovery_status
+            status += anchor_status
             return conditioning, compiled, True, status
         if str(missing_cache) == "error":
             raise FileNotFoundError(
@@ -2070,6 +2140,10 @@ class MiniMaxH3ChainUpscalePixelConditioning:
     def INPUT_TYPES(cls):
         schema = MiniMaxH3ChainUpscaleReferenceConditioning.INPUT_TYPES()
         schema["optional"].pop("target_video_latent")
+        # Append new widgets after the existing pixel canvas controls so old
+        # positional widgets_values keep their conditioning width and height.
+        anchors = {key: schema["optional"].pop(key) for key in (
+            "override_semantic_anchor_size", "override_semantic_anchor_mode")}
         schema["required"]["video_vae"] = schema["optional"].pop("video_vae")
         schema["required"]["images"] = ("IMAGE", {
             "tooltip": "Actual upscaled RAW images BEFORE USDU/refinement. "
@@ -2090,6 +2164,7 @@ class MiniMaxH3ChainUpscalePixelConditioning:
                            "match picture refs, not output images or keyframes. "
                            "Max picture policy remains unchanged. Use a new "
                            "upscale profile when changing this setting."})
+        schema["optional"].update(anchors)
         return schema
 
     RETURN_TYPES = ("CONDITIONING", "IMAGE", "INT", "INT", "STRING", "BOOLEAN", "STRING")
@@ -2118,7 +2193,9 @@ class MiniMaxH3ChainUpscalePixelConditioning:
                   missing_cache="text_only", motion_ref_mode="exclude_video_keep_audio",
                   prompt_override="", tagged_references=None, audio_vae=None,
                   override_ref_image_size="inherit", override_reference_policy="strict",
-                  conditioning_width=0, conditioning_height=0):
+                  conditioning_width=0, conditioning_height=0,
+                  override_semantic_anchor_size="inherit",
+                  override_semantic_anchor_mode="inherit"):
         if method not in CONDITIONING_SYNC_METHODS:
             raise ValueError("Unknown H3 conditioning sync method %r." % method)
         source = _source_segment(state)
@@ -2154,6 +2231,8 @@ class MiniMaxH3ChainUpscalePixelConditioning:
                 tagged_references=tagged_references, audio_vae=audio_vae,
                 override_ref_image_size=override_ref_image_size,
                 override_reference_policy=override_reference_policy,
+                override_semantic_anchor_size=override_semantic_anchor_size,
+                override_semantic_anchor_mode=override_semantic_anchor_mode,
                 _target_size=tuple(reference_size)))
         # Reference pictures have already been rebuilt for the chosen canvas
         # and are marked to avoid double scaling. Keyframes and eligible

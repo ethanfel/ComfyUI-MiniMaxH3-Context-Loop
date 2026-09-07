@@ -17,9 +17,10 @@ import {
     checkpointLocalSelectionJson,
     checkpointDeropeSelectionJson,
     checkpointOutputSelectionJson,
+    checkpointOutputSummary,
     formatCheckpointBytes,
     selectedCheckpointRevision,
-} from "./h3_checkpoint_manager_core.mjs?v=0.7.12";
+} from "./h3_checkpoint_manager_core.mjs?v=0.7.13";
 import {
     parsePlanJson,
     planToJson,
@@ -604,10 +605,9 @@ function mount(node) {
             : "Choose a branch heading first. A shared clip alone does not identify which branch to use.";
         followSelection.disabled = state.busy || !local || state.stage !== "original" || !state.previewTip;
         outputSummary.className = "h3cm-output-summary";
+        const outputValue = outputSelectionForScope(selectionWidget?.value || "null");
+        outputSummary.textContent = checkpointOutputSummary(outputValue);
         if (local) {
-            const tip = local.lineage?.at(-1);
-            outputSummary.textContent = `Local output · ${local.run_name} · through scene ${tip?.scene ?? "?"} / ${String(tip?.revision ?? "").slice(0, 8)} · saved with this workflow`;
-            if (local.output_scope === "chapter") outputSummary.textContent += ` · chapter only, scenes ${local.scope_start_scene}–${tip?.scene ?? "?"}`;
             if (state.payload && local.run_name === state.runName) {
                 const available = new Set((state.payload.revisions ?? []).filter((item) => item.ready)
                     .map((item) => checkpointRevisionKey(item.scene, item.revision)));
@@ -618,13 +618,9 @@ function mount(node) {
                     outputSummary.textContent += " · pinned checkpoint unavailable; reselect explicitly (no fallback)";
                 }
             }
-        } else {
-            outputSummary.textContent = state.outputTip
-                ? `Output branch · scenes ${outputScope.value === "chapter" ? chapterRangeFor(state.outputTip).start : 1}–${state.outputTip.scene} · clip clicks preview only; set the processing range downstream`
-                : "Choose a branch heading for output · clip clicks preview only";
         }
-        let saved = local;
-        try { saved ??= JSON.parse(selectionWidget?.value || "null"); } catch { /* invalid selections fail at execution */ }
+        let saved = null;
+        try { saved = JSON.parse(outputValue); } catch { /* invalid selections fail at execution */ }
         if (saved && state.payload && saved.run_name === state.runName) {
             const tip = saved.lineage?.at(-1);
             const range = {start:saved.scope_start_scene, end:saved.scope_end_scene};
@@ -634,8 +630,6 @@ function mount(node) {
                     + (local ? ", then Use branch locally" : "") + " to include its later clips";
             }
         }
-        if (saved?.processing_source?.stage === "derope") outputSummary.textContent += ` · DeRoPE source: ${saved.processing_source.profile_path} · original fallback for unsaved scenes`;
-        if (state.stage !== "original") outputSummary.textContent += " · tab browsing does not change output";
     }
 
     function setBusy(value, message = "") {

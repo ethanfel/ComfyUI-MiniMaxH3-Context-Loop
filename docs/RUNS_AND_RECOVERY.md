@@ -723,6 +723,22 @@ picture masters, or reconstructs them from verified archived media when absent;
 it never just relabels the smaller Match tensors. Existing Max caches keep their
 native geometry. Semantic anchors and motion/audio policy remain separate.
 
+`override_semantic_anchor_size` and `override_semantic_anchor_mode` expose the
+same anchor choices as Tagged Scene Options, plus `inherit`. They apply to
+cached references, missing-cache recovery, and connected Tagged references in
+the latent, pixel, and inherited VIDEO conditioning nodes. For example, choose
+`1280` and `timestamped_video` to explicitly restore those legacy settings.
+Anchor size is independent of `override_ref_image_size=match/max` and the output
+canvas. Connected anchor bundles supply their settings when inheriting.
+Changing cached anchor settings rebuilds the presentation **and prompt labels**
+from verified saved media into a separate reusable cache; the source checkpoint
+and original cache remain unchanged. If the required media cannot be recovered,
+connect explicit Tagged references rather than silently keeping the wrong
+cached anchor settings. Status reports the explicit choices. Use a new upscale
+profile for changed conditioning settings to avoid mixing previous processed
+clips with the new pass. The new pixel/VIDEO widgets are appended after the
+existing canvas controls to preserve saved workflows' positional widget values.
+
 Connect `video_vae` for native visual reference rebuilds and `audio_vae` for
 native audio. If an original file, saved reference identity, or required VAE is
 unavailable, `error` names the recovery requirement; `text_only` explicitly
