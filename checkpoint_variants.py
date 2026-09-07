@@ -217,6 +217,18 @@ def saved_checkpoint_variants(output_root, run_name, originals):
         alias = str(original.get("adopted_from_revision") or "")
         if alias and key[2]:
             sources.setdefault((key[0], alias, key[2]), []).append(original)
+    # ALT is not a generation branch, but its processed pictures still belong
+    # beside the immutable base scene. Match the ALT's own checkpoint hash;
+    # never attach an arbitrary same-scene processed take to the active base.
+    bases = {(int(item["scene"]), str(item["revision"])): item
+             for item in originals if item.get("take_kind") != "editorial_alternate"}
+    for alternate in originals:
+        if alternate.get("take_kind") != "editorial_alternate":
+            continue
+        base = bases.get((int(alternate["scene"]), str(alternate.get("alternate_of_revision") or "")))
+        digest = str(alternate.get("checkpoint_sha256") or "")
+        if base is not None and digest:
+            sources.setdefault((int(alternate["scene"]), str(alternate["revision"]), digest), []).append(base)
     derived = {}
     for record in records:
         key = (record["scene"], record["revision"], record["checkpoint_sha256"])

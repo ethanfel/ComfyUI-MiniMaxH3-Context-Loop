@@ -125,6 +125,8 @@ def _verified_source_manifest(value: dict[str, Any]) -> dict[str, Any]:
         raise ValueError(
             "Checkpoint Upscale Adapter requires a selected lineage manifest "
             "from Checkpoint Manager.")
+    from .deferred_checkpoint_source import editorial_source_manifest
+    manifest = editorial_source_manifest(manifest, chain)
     segments = chain._validate_manifest(manifest)
     if not manifest.get("processing_source"):
         chain.common_saved_resolution(segments, "Deferred upscale source")
@@ -515,6 +517,28 @@ def _validate_processed_latent_header(source):
 
 def _load_source_tensors(source: dict[str, Any],
                          keys: tuple[str, ...] | None = None) -> dict[str, Any]:
+    presentation = source.get("presentation_source")
+    if presentation and not source.get("processing_source"):
+        # Only the ALT's visual stream is used. Read base audio selectively so
+        # a second complete AV checkpoint never coexists just to preserve sound.
+        visual_keys = ("video", "denoised_video")
+        audio_keys = ("audio", "denoised_audio", "delivered_audio")
+        wanted = keys if keys is not None else visual_keys + audio_keys
+        picture = {key: value for key, value in source.items() if key != "presentation_source"}
+        result = _load_source_tensors(picture, tuple(key for key in wanted if key in visual_keys)) \
+            if any(key in visual_keys for key in wanted) else {}
+        if any(key in audio_keys for key in wanted):
+            requested_audio = [key for key in audio_keys if key in wanted]
+            if "audio" in wanted or "denoised_audio" in wanted:
+                requested_audio = list(dict.fromkeys([*requested_audio, "audio", "denoised_audio"]))
+            base = _load_source_tensors(presentation["original"], tuple(requested_audio))
+            clean_audio = base.get("denoised_audio", base.get("audio"))
+            for key in wanted:
+                if key in ("audio", "denoised_audio") and clean_audio is not None:
+                    result[key] = clean_audio
+                elif key == "delivered_audio" and key in base:
+                    result[key] = base[key]
+        return result
     if chain._st_load is None:
         raise RuntimeError("safetensors is required for deferred H3 upscaling.")
     checkpoint = chain._absolute_output_path(source["checkpoint"])
@@ -956,6 +980,7 @@ def _upscale_source_contract(source: dict[str, Any]) -> str:
         "continuation_mode", "context_length", "audio_context_length",
         "visual_context_blocks", "source_audio", "source_audio_timing",
         "reference_cache", "generation_fingerprint",
+        *(["presentation_source"] if source.get("presentation_source") else []),
         *(["processing_source"] if source.get("processing_source") else []),
     )})
 
@@ -968,7 +993,8 @@ def _verify_upscale_source(metadata: dict[str, Any], source: dict[str, Any],
             ("source_checkpoint_sha256", "checkpoint_sha256"),
             ("source_segment_sha256", "segment_sha256")):
         if not source.get(source_key) or segment.get(saved_key) != source[source_key]:
-            raise ValueError("Upscale scene %d points to a different source revision or media." % index)
+            raise ValueError("Upscale scene %d points to a different source revision or media "
+                             "(including the selected ALT). Restart at that scene or use a new profile." % index)
     # These fields were persisted before per-scene contracts existed, so old
     # HQ saves can resume an extended branch without rewriting their metadata.
     for key in ("raw_frames", "delivered_frames", "prompt", "prompt_hash", "seed", "steps"):
@@ -1075,8 +1101,9 @@ class MiniMaxH3ChainUpscaleAdapter:
         return {
             "required": {
                 "source_manifest": (chain.MANIFEST_TYPE, {
-                    "tooltip": "Verified generated lineage emitted directly "
-                               "by Checkpoint Manager. It may stop before "
+                    "tooltip": "Verified lineage emitted by Checkpoint Manager. "
+                               "Selected final-cut ALTs supply picture and conditioning; "
+                               "original audio and generation ancestry are preserved. It may stop before "
                                "later ungenerated Plan scenes; no source Plan "
                                "is needed."}),
                 "profile": ("STRING", {
@@ -1191,6 +1218,10 @@ class MiniMaxH3ChainUpscaleAdapter:
         context_status = str(state.get("previous_context_status") or "")
         if context_status:
             status += "; %s" % context_status
+        alternates = (manifest.get("presentation_source") or {}).get("scenes") or []
+        if alternates:
+            status += "; final-cut ALT pictures: " + ", ".join(
+                "%s/%s" % (item["scene"], item["alternate_revision"][:8]) for item in alternates)
         return ("h3_upscale", state, manifest, status)
 
 
@@ -1242,6 +1273,9 @@ class MiniMaxH3ChainUpscaleCurrent:
         if source.get("processing_source"):
             route = "saved recovered DeRoPE %s; %s audio latent" % (
                 source["revision"][:8], "recovered" if source["latent_layout"] == "joint_av" else "original")
+        elif source.get("presentation_source"):
+            route += "; ALT %s picture; original %s audio" % (
+                source["revision"][:8], source["presentation_source"]["original"]["revision"][:8])
         video_stream, audio_stream = chain._streams_from_latent(latent)
         video_latent = {"samples": video_stream}
         audio_latent = {"samples": audio_stream}
@@ -2888,6 +2922,10 @@ def _assembly_manifest(manifest: dict[str, Any],
                 assembly[key] = (chain._json_document(source[key])
                                  if isinstance(source[key], dict) else source[key])
         assembly["chapter"]["resolution"] = resolution
+    if source.get("presentation_source"):
+        # ALT pictures have already been baked into HQ. Keep the frozen cut's
+        # timing but never substitute low-resolution alternates during assembly.
+        assembly["editorial"] = {**chain._json_document(source["editorial"]), "replacements": []}
     return assembly
 
 

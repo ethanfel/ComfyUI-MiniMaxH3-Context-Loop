@@ -96,6 +96,20 @@ class VariantTests(unittest.TestCase):
         originals = self.scan()["variants"][0]["originals"]
         self.assertEqual([v["revision"] for v in originals], ["a" * 32, "d" * 32])
 
+    def test_alt_processing_is_linked_to_exact_base_including_derope_children(self):
+        self.originals.append({"scene": 8, "revision": "d" * 32, "checkpoint_sha256": "e" * 64,
+                               "take_kind": "editorial_alternate", "alternate_of_revision": "a" * 32})
+        self.save(profile="motion", source_revision="d" * 32, source_hash="e" * 64)
+        self.save(profile="hq", revision="f" * 32, source_revision="c" * 32, source_hash="c" * 64)
+        self.save(profile="wrong", source_revision="d" * 32, source_hash="b" * 64)
+        records = {v["profile"]: v for v in self.scan()["variants"]}
+        expected = [{"scene": 8, "revision": "a" * 32}]
+        self.assertEqual(records["motion"]["originals"], expected)
+        self.assertEqual(records["hq"]["originals"], expected)
+        self.assertEqual(records["wrong"]["originals"], [])
+        self.originals = self.originals[1:]  # No guessing a base if its record is gone.
+        self.assertTrue(all(not v["originals"] for v in self.scan()["variants"]))
+
     def test_absent_full_latent_broken_files_and_malformed_metadata(self):
         path, value = self.save()
         value["segment"].update(latent_saved=False, latent_layout="omitted", context_steps=12)

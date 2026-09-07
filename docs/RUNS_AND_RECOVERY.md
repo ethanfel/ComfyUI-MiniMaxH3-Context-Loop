@@ -367,9 +367,26 @@ but later scenes already depend on its original checkpoint.
 4. Approve the alternate in Review Gate.
 
 Acceptance selects the alternate picture for preview, assembly, PNG export,
-and whole-chain latent finishing. It does not replace the active generation
+whole-chain latent finishing, and deferred latent/pixel/CAT upscale loops.
+It does not replace the active generation
 checkpoint: later scenes keep their original visual/audio ancestry, and final
 audio for the corrected scene remains the original audio.
+
+Deferred upscale resolves the selected ALT before reading source tensors or
+reference conditioning, for both full-branch and chapter output. It uses the
+ALT's video latent, prompt, seed and reference identity, but reads the original
+audio separately without loading another full video tensor. Adapter/current
+status names the selected ALT, and saved processing takes remain linked to the
+base scene in Checkpoint Manager. A sealed chapter uses its frozen final-cut
+selection; an unsealed full-branch input uses the current selection when the
+loop starts.
+
+Resume checks the actual picture source: an upscale previously made from the
+original cannot be reused for a newly selected ALT (or vice versa). Restart at
+the affected scene, or use a new profile. Saved DeRoPE must likewise belong to
+the selected picture; scenes absent from a partial DeRoPE branch use their
+selected ALT/original. Changing an ALT never overwrites generation checkpoints
+or silently swaps an already selected DeRoPE latent for unprocessed media.
 
 Plan Studio marks the selection `ALT`. Checkpoint Manager nests the immutable
 alternate under its base take rather than drawing a new continuation branch.

@@ -6,7 +6,49 @@ import re
 from .checkpoint_variants import processing_lineage, processing_stage, validate_processing_lineage
 
 
+def editorial_source_manifest(manifest, chain):
+    """Freeze the selected final-cut pictures without promoting generation takes."""
+    if manifest.get("presentation_source") or manifest.get("processing_source"):
+        return manifest  # Already resolved, including a DeRoPE-derived source.
+    editorial = chain._manifest_editorial(manifest)
+    bases = manifest.get("segments") or []
+    pictures = chain._editorial_presentation_segments(
+        manifest["run_name"], bases, editorial)
+    output = None
+    selected = []
+    for position, (base, picture) in enumerate(zip(bases, pictures)):
+        if picture.get("presentation_media_mode") != "picture_only":
+            continue
+        scene = int(base["index"])
+        metadata, _path = chain._load_checkpoint_revision(
+            manifest["run_name"], scene, picture["revision"], verify_artifacts=False)
+        resolved = dict(picture)
+        compatibility = metadata.get("compatibility") or {}
+        geometry = chain.saved_resolution(picture) or compatibility
+        if geometry.get("width") and geometry.get("height"):
+            resolved["resolution"] = {key: int(geometry[key]) for key in ("width", "height")}
+        # A different prompt/reference registry belongs to this ALT, not the
+        # first base scene's manifest-level conditioning fingerprint.
+        resolved["generation_fingerprint"] = str(compatibility.get("generation_fingerprint") or "")
+        if isinstance(metadata.get("scene_dependency"), dict):
+            resolved["scene_dependency"] = chain._json_document(metadata["scene_dependency"])
+        resolved["sample_rate"] = base.get("sample_rate", 0)
+        resolved["presentation_source"] = {
+            "mode": "picture_only", "original": chain._json_document(base)}
+        if output is None:
+            output = chain._json_document(manifest)
+        output["segments"][position] = resolved
+        selected.append({"scene": scene, "base_revision": base["revision"],
+                         "alternate_revision": picture["revision"]})
+    if not selected:
+        return manifest  # Keep existing no-ALT source/resume hashes unchanged.
+    output["editorial"] = chain._json_document(editorial)
+    output["presentation_source"] = {"format": "h3_deferred_editorial_v1", "scenes": selected}
+    return output
+
+
 def derope_source_manifest(manifest, selection, chain, upscale):
+    manifest = editorial_source_manifest(manifest, chain)
     if not isinstance(selection, dict) or selection.get("stage") != "derope":
         raise ValueError("Unknown Checkpoint Manager processing source.")
     root = Path(chain._output_root()).resolve()
@@ -72,7 +114,8 @@ def derope_source_manifest(manifest, selection, chain, upscale):
         source_revisions = {original.get("revision"), original.get("adopted_from_revision")}
         if (not child.get("source_revision") or child.get("source_revision") not in source_revisions or
                 child.get("source_checkpoint_sha256") != original.get("checkpoint_sha256")):
-            raise ValueError("DeRoPE scene %d belongs to a different original take." % index)
+            raise ValueError("DeRoPE scene %d belongs to a different original take or final-cut ALT. "
+                             "Select a DeRoPE branch made from the selected picture, or use Original." % index)
         for key in ("raw_frames", "delivered_frames", "prompt", "prompt_hash", "seed", "steps"):
             if child.get(key) != original.get(key):
                 raise ValueError("DeRoPE scene %d has different source timing/settings (%s)." % (index, key))
@@ -96,6 +139,7 @@ def derope_source_manifest(manifest, selection, chain, upscale):
             "stage": "derope", "profile_path": str(profile.relative_to(root)),
             "original": chain._json_document(original),
         }
+        resolved.pop("presentation_source", None)  # Original owns the ALT/base audio split.
         upscale._validate_processed_latent_header(resolved)
         output["segments"][position] = resolved
         used.append(index)
