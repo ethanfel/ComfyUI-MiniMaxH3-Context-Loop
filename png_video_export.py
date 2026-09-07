@@ -8,13 +8,16 @@ import concurrent.futures
 from contextlib import contextmanager
 from fractions import Fraction
 import errno
+import hashlib
 import json
 import os
 from pathlib import Path
 import shutil
 import struct
-import tempfile
 import zlib
+
+from . import png_export_transaction as transaction
+from . import processing_persistence as persistence
 
 
 FORMAT = "h3_video_png_sequence_v1"
@@ -135,17 +138,77 @@ def _publish_frame(source, target):
             with source.open("rb") as incoming:
                 shutil.copyfileobj(incoming, handle, length=1024 * 1024)
             handle.flush()
+            os.fsync(handle.fileno())
         except BaseException:
             handle.close()
             target.unlink()
             raise
 
 
+def _scene_pixels(chain, path, raw, delivered, bits):
+    """Stream and validate one RAW video, yielding only delivered RGB frames."""
+    import av
+    import numpy as np
+
+    count, origin, size = 0, None, None
+    with av.open(str(path)) as container:
+        if not container.streams.video:
+            raise ValueError("VIDEO has no picture stream.")
+        stream = container.streams.video[0]
+        if (stream.average_rate or stream.guessed_rate) != chain.FPS:
+            raise ValueError("PNG VIDEO frame rate must match the H3 scene clock (%d fps)." % chain.FPS)
+        for frame in container.decode(stream):
+            chain._png_export_check_interrupted()
+            if count >= raw or frame.pts is None or frame.rotation:
+                raise ValueError("VIDEO must contain the exact RAW scene frames, timestamps and unrotated pixels.")
+            timestamp = frame.pts * frame.time_base
+            if origin is None:
+                origin, size = timestamp, (frame.width, frame.height)
+            if ((frame.width, frame.height) != size
+                    or abs(timestamp - origin - Fraction(count, chain.FPS)) > Fraction(1, 1000)):
+                raise ValueError("VIDEO dimensions/timestamps do not match a constant-rate H3 scene.")
+            if count >= raw - delivered:
+                pixels = frame.to_ndarray(format="rgb48le")
+                if bits == 8:
+                    pixels = ((pixels.astype(np.uint32) + 128) // 257).astype(np.uint8)
+                yield pixels
+                del pixels
+            count += 1
+    if count != raw:
+        raise ValueError("VIDEO frame count does not match the RAW scene; scene was not committed.")
+
+
+def _pixel_hasher(bits):
+    return hashlib.sha256(("h3-png-rgb%d-v1" % bits).encode("ascii"))
+
+
+def _hash_pixels(hasher, pixels):
+    hasher.update(struct.pack(">II", pixels.shape[1], pixels.shape[0]))
+    hasher.update(pixels.tobytes())
+
+
+def _matching_pixels(chain, path, raw, delivered, bits, existing, directory):
+    hasher = _pixel_hasher(bits)
+    for pixels in _scene_pixels(chain, path, raw, delivered, bits):
+        _hash_pixels(hasher, pixels)
+    expected = existing.get("pixel_sha256")
+    if not expected:
+        # Compatibility with pre-journal exports: verify decoded PNG content,
+        # not PNG compression/metadata or the video container's random IDs.
+        import av
+        saved = _pixel_hasher(bits)
+        for item in existing["files"]:
+            chain._png_export_check_interrupted()
+            with av.open(str(directory / item["file"])) as container:
+                pixels = next(container.decode(video=0)).to_ndarray(format="rgb48le" if bits == 16 else "rgb24")
+                _hash_pixels(saved, pixels)
+        expected = saved.hexdigest()
+    return hasher.hexdigest() == expected
+
+
 def export_video(chain, video, state, export_name, output_folder, first_frame_number,
                  png_compression, png_bit_depth, embed_workflow, save_workers,
                  checkpoint_verification, reuse_existing):
-    import av
-    import numpy as np
     from . import upscale_nodes as upscale
 
     if not isinstance(state, dict) or state.get("profile_config", {}).get("backend") != "pixel":
@@ -201,12 +264,15 @@ def export_video(chain, video, state, export_name, output_folder, first_frame_nu
                                          (clip["index"], directory / item["file"]))
                 expected_scene += 1
                 expected_frame += clip["delivered_frames"]
+        previous = transaction.recover(chain, root, directory, previous, config, contracts, _safe_path, _publish_frame)
+        clips = previous["clips"] if previous is not None else []
         tracked = {item["file"] for clip in clips for item in clip["files"]}
         if any(p.name not in tracked for p in directory.glob("frame_*.png")):
             raise ValueError("PNG folder contains untracked frames; choose a new folder. No files were overwritten.")
         existing = next((clip for clip in clips if clip["index"] == index), None)
         if existing:
-            if not reuse_existing or existing["video_sha256"] != video_hash:
+            if not reuse_existing or (existing["video_sha256"] != video_hash
+                    and not _matching_pixels(chain, path, raw, delivered, bits, existing, directory)):
                 raise ValueError("This scene already has different PNGs, or reuse is disabled. Choose a new output_folder/export_name; earlier exports are kept.")
             if _file_identity(path) != source_identity:
                 raise ValueError("VIDEO source file changed during verification; retry with the completed scene.")
@@ -222,13 +288,12 @@ def export_video(chain, video, state, export_name, output_folder, first_frame_nu
             metadata["h3_source_manifest"] = json.dumps(state["source_manifest"], ensure_ascii=False)
             metadata["h3_upscale_profile"] = json.dumps(state["profile_config"], ensure_ascii=False)
         progress = chain._png_export_progress(delivered)
-        published = []
         # Staging is private. A failed decode/write never commits a half-scene
         # or touches any earlier scene. Only PNG paths created below are undone.
-        with tempfile.TemporaryDirectory(prefix=".png_scene_%04d_" % index, dir=directory) as temporary:
-            stage = Path(temporary)
+        with transaction.staging(chain, directory, index) as stage:
             files, pending = [], set()
-            count, width, height, origin = 0, None, None, None
+            count, width, height = 0, None, None
+            pixels_hash = _pixel_hasher(bits)
 
             def completed(futures):
                 for future in futures:
@@ -238,46 +303,28 @@ def export_video(chain, video, state, export_name, output_folder, first_frame_nu
             def write_frame(pixels, number, info):
                 target = stage / ("frame_%08d.png" % number)
                 chain._write_png(str(target), pixels, config["png_compression"], info)
+                persistence.sync_file(target)
                 return chain._png_export_file_record(str(target))
 
             with concurrent.futures.ThreadPoolExecutor(max_workers=workers, thread_name_prefix="h3-video-png") as executor:
-                with av.open(str(path)) as container:
-                    if not container.streams.video:
-                        raise ValueError("VIDEO has no picture stream.")
-                    stream = container.streams.video[0]
-                    if (stream.average_rate or stream.guessed_rate) != chain.FPS:
-                        raise ValueError("PNG VIDEO frame rate must match the H3 scene clock (%d fps)." % chain.FPS)
-                    for frame in container.decode(stream):
-                        chain._png_export_check_interrupted()
-                        if count >= raw or frame.pts is None or frame.rotation:
-                            raise ValueError("VIDEO must contain the exact RAW scene frames, timestamps and unrotated pixels.")
-                        timestamp = frame.pts * frame.time_base
-                        if origin is None:
-                            origin, width, height = timestamp, frame.width, frame.height
-                        if ((frame.width, frame.height) != (width, height)
-                                or abs(timestamp - origin - Fraction(count, chain.FPS)) > Fraction(1, 1000)):
-                            raise ValueError("VIDEO dimensions/timestamps do not match a constant-rate H3 scene.")
-                        if count >= raw - delivered:
-                            if len(pending) >= workers:
-                                done, pending = concurrent.futures.wait(pending, return_when=concurrent.futures.FIRST_COMPLETED)
-                                completed(done)
-                            # Preserve the native RGB16 intermediate, or quantize
-                            # explicitly to the chosen 8-bit depth. One frame only.
-                            pixels = frame.to_ndarray(format="rgb48le")
-                            if bits == 8:
-                                pixels = ((pixels.astype(np.uint32) + 128) // 257).astype(np.uint8)
-                            number = first + count - (raw - delivered)
-                            info = metadata if number == first else {}
-                            pending.add(executor.submit(write_frame, pixels, number, info))
-                            del pixels
-                        count += 1
-                    completed(pending)
-            if count != raw or len(files) != delivered or _file_identity(path) != source_identity:
+                for pixels in _scene_pixels(chain, path, raw, delivered, bits):
+                    if len(pending) >= workers:
+                        done, pending = concurrent.futures.wait(pending, return_when=concurrent.futures.FIRST_COMPLETED)
+                        completed(done)
+                    height, width = pixels.shape[:2]
+                    _hash_pixels(pixels_hash, pixels)
+                    number = first + count
+                    pending.add(executor.submit(write_frame, pixels, number, metadata if count == 0 else {}))
+                    del pixels
+                    count += 1
+                completed(pending)
+            if len(files) != delivered or _file_identity(path) != source_identity:
                 raise ValueError("VIDEO frame count or source file changed during PNG export; scene was not committed.")
             chain._png_export_check_interrupted()
             files.sort(key=lambda item: item["file"])
             clip = {"index": index, "id": source.get("id"), "source_contract": contracts[index],
                     "source_revision": source.get("revision"), "video_sha256": video_hash,
+                    "pixel_sha256": pixels_hash.hexdigest(),
                     "raw_frames": raw, "delivered_frames": delivered, "trim_frames": raw - delivered,
                     "width": width, "height": height, "first_frame_number": first,
                     "last_frame_number": first + delivered - 1, "files": files}
@@ -285,19 +332,7 @@ def export_video(chain, video, state, export_name, output_folder, first_frame_nu
                       "frame_count": first + delivered - config["first_frame_number"],
                       "complete": index == int(state["end_clip"]), "last_scene": index,
                       "source_manifest": state["source_manifest"], "audio": "preserved by the upscale segment saver"}
-            try:
-                for item in files:
-                    chain._png_export_check_interrupted()
-                    target = _safe_path(root, directory / item["file"])
-                    # Exclusive publication: never replace an existing PNG.
-                    _publish_frame(stage / item["file"], target)
-                    published.append(target)
-                    item["mtime_ns"] = target.stat().st_mtime_ns
-                chain._atomic_json(str(record_path), record)
-            except BaseException:
-                for target in reversed(published):
-                    target.unlink()
-                raise
+            transaction.publish(chain, root, directory, stage, previous, record, _safe_path, _publish_frame)
         status = "saved PNG scene %d: %d frames, RGB%d; %d sequence frames; VIDEO passed through unchanged -> %s" % (
             index, delivered, bits, record["frame_count"], directory)
         chain._LOG.info("H3 %s", status)

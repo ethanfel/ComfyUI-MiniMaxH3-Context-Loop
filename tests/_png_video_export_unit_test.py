@@ -8,6 +8,8 @@ import importlib
 import json
 import os
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 import threading
 import unittest
@@ -147,11 +149,170 @@ class PNGVideoTests(unittest.TestCase):
                         self.export(2)
                 self.assertEqual(before, {p: p.read_bytes() for p in directory.iterdir() if p.is_file()})
                 self.assertFalse(list(directory.glob(".png_scene_*")))
-        with patch.object(chain, "_atomic_json", side_effect=OSError("publish failed")):
+        original_atomic = streaming.persistence.atomic_json
+
+        def fail_index(path, value):
+            if Path(path).name == "export.json":
+                raise OSError("publish failed")
+            return original_atomic(path, value)
+
+        with patch.object(streaming.persistence, "atomic_json", side_effect=fail_index):
             with self.assertRaisesRegex(OSError, "publish failed"):
                 self.export(2)
         self.assertEqual(before, {p: p.read_bytes() for p in directory.iterdir() if p.is_file()})
         self.assertEqual(self.export(2)["result"][1], 6)
+
+    def test_recreated_container_reuses_identical_pixels_in_new_and_legacy_exports(self):
+        for bits in ("8", "16"):
+            for legacy in (False, True):
+                with self.subTest(bits=bits, legacy=legacy):
+                    folder = "retry_%s_%s" % (bits, legacy)
+                    result = self.export(output_folder=folder, png_bit_depth=bits)
+                    directory = Path(result["result"][0])
+                    if legacy:
+                        record_path = directory / "export.json"
+                        record = json.loads(record_path.read_text())
+                        record["clips"][0].pop("pixel_sha256")
+                        chain._atomic_json(str(record_path), record)
+                    before = {p: p.read_bytes() for p in directory.glob("frame_*.png")}
+                    recreated, pixels = make_video(self.root / "recreated.mkv")
+                    np.testing.assert_array_equal(pixels, self.pixels)
+                    self.assertNotEqual(chain._file_sha256(str(self.root / "source.mkv")),
+                                        chain._file_sha256(str(self.root / "recreated.mkv")))
+                    with patch.object(chain, "_write_png", side_effect=AssertionError("rewrote saved PNG")):
+                        reused = self.export(video=recreated, output_folder=folder, png_bit_depth=bits)
+                    self.assertIs(reused["result"][4], recreated)
+                    self.assertIn("reused", reused["result"][2])
+                    self.assertEqual(before, {p: p.read_bytes() for p in before})
+
+    def test_normal_cancel_during_publication_keeps_finished_scenes(self):
+        from comfy.model_management import InterruptProcessingException
+        self.export(1)
+        directory = Path(self.export(2)["result"][0])
+        before = {p: p.read_bytes() for p in directory.iterdir() if p.is_file()}
+        original = streaming._publish_frame
+        calls = []
+
+        def cancel(source, target):
+            calls.append(target)
+            if len(calls) == 2:
+                raise InterruptProcessingException()
+            return original(source, target)
+
+        with patch.object(streaming, "_publish_frame", side_effect=cancel):
+            with self.assertRaises(InterruptProcessingException):
+                self.export(3)
+        self.assertEqual(before, {p: p.read_bytes() for p in directory.iterdir() if p.is_file()})
+        self.assertFalse(list(directory.glob(".png_scene_*")))
+        self.assertEqual(self.export(3)["result"][1], 9)
+
+    def crash_export(self, scene, folder, boundary):
+        # os._exit deliberately bypasses every Python finally/context manager.
+        # Only disposable CPU fixture media is visible to this child process.
+        script = r'''
+import sys
+root, folder, boundary, state_json, tests = sys.argv[1:]
+sys.path.insert(0, tests)
+import _png_video_export_unit_test as test
+test.folder_paths.output_directory = root
+state = test.json.loads(state_json)
+original_publish = test.streaming._publish_frame
+def publish(source, target):
+    if boundary == "copy":
+        with target.open("xb") as handle:
+            handle.write(source.read_bytes()[:16])
+            handle.flush()
+            test.os.fsync(handle.fileno())
+        test.os._exit(73)
+    original_publish(source, target)
+    test.os._exit(73)
+original_json = test.streaming.persistence.atomic_json
+def atomic_json(path, value):
+    original_json(path, value)
+    if test.Path(path).name == "export.json":
+        test.os._exit(73)
+if boundary == "index":
+    test.streaming.persistence.atomic_json = atomic_json
+else:
+    test.streaming._publish_frame = publish
+test.chain.MiniMaxH3ChainExportPNG().export(
+    video=test.InputImpl.VideoFromFile(str(test.Path(root) / "source.mkv")),
+    state=state, output_folder=folder)
+'''
+        result = subprocess.run([sys.executable, "-c", script, str(self.root), folder, boundary,
+                                 json.dumps(dict(self.state, index=scene)), str(Path(__file__).parent)],
+                                capture_output=True, text=True, timeout=45)
+        self.assertEqual(result.returncode, 73, result.stdout + result.stderr)
+
+    def test_process_exit_recovers_partial_copy_publication_and_committed_index(self):
+        for boundary in ("publish", "copy", "index"):
+            with self.subTest(boundary=boundary):
+                folder = "crash_" + boundary
+                self.export(1, output_folder=folder)
+                directory = Path(self.export(2, output_folder=folder)["result"][0])
+                before = {p: p.read_bytes() for p in directory.glob("frame_*.png")}
+                self.crash_export(3, folder, boundary)
+                self.assertTrue((directory / streaming.transaction.PENDING).exists())
+                with patch.object(chain, "_write_png", side_effect=AssertionError("recovery decoded again")):
+                    recovered = self.export(3, output_folder=folder)
+                self.assertEqual(recovered["result"][1], 9)
+                self.assertEqual(before, {p: p.read_bytes() for p in before})
+                self.assertFalse((directory / streaming.transaction.PENDING).exists())
+                self.assertEqual(len(list(directory.glob("frame_*.png"))), 9)
+                if boundary == "copy":
+                    preserved = list(directory.glob(".png_scene_*/conflict_*"))
+                    self.assertEqual(len(preserved), 1)
+                    self.assertEqual(preserved[0].stat().st_size, 16)
+                else:
+                    self.assertFalse(list(directory.glob(".png_scene_*")))
+                self.assertEqual(self.export(4, output_folder=folder)["result"][1], 12)
+
+    def test_uncertain_index_acknowledgement_never_rolls_back_committed_frames(self):
+        directory = Path(self.export(1)["result"][0])
+        original = streaming.persistence.atomic_json
+
+        def lost_ack(path, value):
+            original(path, value)
+            if Path(path).name == "export.json":
+                raise OSError("share acknowledgement lost")
+
+        with patch.object(streaming.persistence, "atomic_json", side_effect=lost_ack):
+            with self.assertRaisesRegex(OSError, "acknowledgement lost"):
+                self.export(2)
+        self.assertEqual(len(list(directory.glob("frame_*.png"))), 6)
+        self.assertEqual(self.export(2, checkpoint_verification="strict")["result"][1], 6)
+        self.assertFalse((directory / streaming.transaction.PENDING).exists())
+
+    def test_pending_recovery_rejects_changed_branch_settings_and_unsafe_addresses(self):
+        folder = "guarded_recovery"
+        self.export(1, output_folder=folder)
+        directory = Path(self.export(2, output_folder=folder)["result"][0])
+        self.crash_export(3, folder, "publish")
+        before = {p: p.read_bytes() for p in directory.rglob("*") if p.is_file()}
+        changed = copy.deepcopy(self.state)
+        changed["index"] = 3
+        changed["source_manifest"]["segments"][2]["revision"] = "f" * 32
+        with self.assertRaisesRegex(ValueError, "branch/order"):
+            self.export(3, output_folder=folder, state=changed)
+        with self.assertRaisesRegex(ValueError, "settings"):
+            self.export(3, output_folder=folder, png_bit_depth="16")
+        self.assertEqual(before, {p: p.read_bytes() for p in before})
+        pending = directory / streaming.transaction.PENDING
+        saved = json.loads(pending.read_text())
+        for change in ("escape", "earlier_frame", "symlink"):
+            bad = copy.deepcopy(saved)
+            if change == "escape":
+                bad["stage"] = "../../elsewhere"
+            elif change == "earlier_frame":
+                bad["record"]["clips"][-1]["files"][0]["file"] = "frame_00000001.png"
+            else:
+                stage = directory / bad["stage"]
+                (stage / "frame_00000008.png").unlink()
+                (stage / "frame_00000008.png").symlink_to(directory / "frame_00000001.png")
+            chain._atomic_json(str(pending), bad)
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                self.export(3, output_folder=folder)
+        self.assertEqual(before[directory / "frame_00000001.png"], (directory / "frame_00000001.png").read_bytes())
 
     def test_no_overwrite_or_symlink_escape(self):
         result = self.export(output_folder="chosen")

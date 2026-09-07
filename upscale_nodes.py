@@ -2520,6 +2520,8 @@ class MiniMaxH3ChainUpscaleSegmentSave:
                       if "delivered_audio" in tensors else None)
         checkpoint_tmp = "%s.%s.tmp" % (checkpoint_path, uuid.uuid4().hex)
         committed = False
+        publication_started = False
+        save_warning = ""
         try:
             chain._write_segment_video(
                 delivered_images, segment_path, chain.FPS,
@@ -2620,18 +2622,39 @@ class MiniMaxH3ChainUpscaleSegmentSave:
             complete = (index == _source_bounds(state["source_manifest"])[1])
             partial = _upscale_manifest(state, prefix, complete=complete)
             from .processing_checkpoint_delete import require_saved_processing_segments
+            from . import processing_persistence as persistence
+            # Media must reach storage before any durable document references it.
+            artifacts = [segment_path, checkpoint_path, prompt_path]
+            if audio_path:
+                artifacts.append(audio_path)
+            for artifact in artifacts:
+                persistence.sync_file(artifact)
+            for directory in {os.path.dirname(p) for p in artifacts}:
+                persistence.sync_directory(directory)
             with chain.checkpoint_run_lock(chain._output_root(), state["run_name"]):
                 require_saved_processing_segments(chain._output_root(),
                     list(state.get("segments", [])) + [item for item in
                         state["source_manifest"]["segments"] if item.get("processing_source")])
-                chain._atomic_json(metadata_path, metadata)
-                chain._atomic_json(paths["metadata"], metadata)
-                chain._atomic_json(
-                    paths["manifest"] if complete else paths["partial"], partial)
-            committed = True
+                # Once publication starts, a network error can mean "committed
+                # but acknowledgement lost". Never remove media that an immutable
+                # revision or current pointer may already reference.
+                publication_started = True
+                persistence.atomic_json(metadata_path, metadata)
+                persistence.atomic_json(paths["metadata"], metadata)
+                committed = True
+                try:
+                    persistence.atomic_json(
+                        paths["manifest"] if complete else paths["partial"], partial)
+                except OSError as exc:
+                    save_warning = "; scene saved; manifest refresh failed (resume from scene checkpoints)"
+                    chain._LOG.warning("H3 upscale scene %d is saved, but its manifest refresh failed: %s", index, exc)
         finally:
             chain._safe_unlink(checkpoint_tmp)
-            if not committed:
+            if publication_started and not committed:
+                chain._LOG.warning(
+                    "H3 upscale scene %d publication was interrupted or uncertain; "
+                    "new media was retained at %s. The previous take was not deleted.", index, segment_path)
+            if not committed and not publication_started:
                 for value in (segment_path, checkpoint_path, metadata_path,
                               prompt_path, audio_path):
                     if value:
@@ -2642,6 +2665,7 @@ class MiniMaxH3ChainUpscaleSegmentSave:
         status = ("saved HQ scene %d/%d at %dx%d; latent %s -> %s" %
                   (index, _source_bounds(state["source_manifest"])[1], width,
                    height, "saved" if save_latent else "omitted", segment_path))
+        status += save_warning
         if audio_route != "none":
             status += "; %s" % audio_route
         if context_steps:
@@ -2826,11 +2850,12 @@ class MiniMaxH3ChainUpscaleLoopEnd:
         manifest = _upscale_manifest(state, next_state["segments"], complete)
         paths = _state_profile_paths(state, index)
         from .processing_checkpoint_delete import require_saved_processing_segments
+        from .processing_persistence import atomic_json
         with chain.checkpoint_run_lock(chain._output_root(), state["run_name"]):
             require_saved_processing_segments(chain._output_root(),
                 next_state["segments"] + [item for item in
                     state["source_manifest"]["segments"] if item.get("processing_source")])
-            chain._atomic_json(paths["manifest"] if complete else paths["partial"], manifest)
+            atomic_json(paths["manifest"] if complete else paths["partial"], manifest)
         manifest_json = json.dumps(manifest, ensure_ascii=False, indent=2,
                                    sort_keys=True)
         return (manifest, manifest_json, next_state["previous_frames"],

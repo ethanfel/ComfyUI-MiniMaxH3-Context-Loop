@@ -4,6 +4,12 @@ Newest first. This file keeps release history out of the onboarding README.
 
 ## Unreleased — Deferred checkpoint upscaling
 
+- DeRoPE/upscale saves retain media after uncertain checkpoint publication;
+  failed manifest refreshes no longer delete saved scenes. VIDEO PNG exports
+  recover journaled frame/index publication after cancellation or process exit,
+  and accept recreated containers only when delivered pixels match. Earlier
+  scenes and conflicting interrupted bytes are preserved. Added CPU failure
+  and process-exit tests; see [cancellation and resume](docs/processing-resume.md).
 - Added grouped full-mix/vocal/instrumental sources in the Carousel and a
   reusable Audio Tracks node. Vocals drive source-locked generation; delivery
   keeps the full mix, or auto-mixes stems if none is supplied. Audio archives

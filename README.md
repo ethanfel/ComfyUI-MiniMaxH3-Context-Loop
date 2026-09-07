@@ -24,6 +24,8 @@ scene can be reviewed, retried, checkpointed, resumed, and assembled later.
 - Carries visual motion, generated sound, or protected source audio between
   scenes according to a simple Generation Profile.
 - Saves each accepted take to disk, so a stopped or failed run can resume.
+  See [cancellation and scene-level resume](docs/processing-resume.md) for
+  DeRoPE/upscale checkpoints and recoverable VIDEO PNG publication.
 - Provides scene review, alternate takes, branch management, final assembly,
   masked editing, and deferred upscaling.
 - Captures a frame from a saved Review Gate preview into the Project Asset
