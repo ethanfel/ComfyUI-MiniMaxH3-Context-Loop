@@ -128,6 +128,43 @@ def _unique_tag(catalog: dict[str, Any], value: Any, fallback: str,
     return tag
 
 
+_TRAILING_DIGITS_RE = re.compile(r"^(.*?)(\d+)$")
+
+
+def _capture_family_tag(catalog: dict[str, Any], value: Any, fallback: str) -> str:
+    """Uniquify a captured-frame tag as an updated take of its family.
+
+    Unlike _unique_tag (which appends "_2", "_3", ... on any collision),
+    a tag reused for a video-frame capture is meant to read as an updated
+    take of the same subject: @char-sammy -> @char-sammy1, then
+    @char-sammy2, and so on, with no underscore before the number.
+    """
+    tag = _safe_tag(value, fallback)
+    used = {
+        str(item.get("tag") or "") for item in catalog.get("assets", [])
+        if bool(item.get("enabled", True))
+    }
+    if tag not in used:
+        return tag
+    match = _TRAILING_DIGITS_RE.match(tag)
+    stem = match.group(1) if match else tag
+    highest = 0
+    for other in used:
+        if other == stem or not other.startswith(stem):
+            continue
+        suffix = other[len(stem):]
+        if suffix.isdigit():
+            highest = max(highest, int(suffix))
+    ordinal = highest + 1
+    suffix = str(ordinal)
+    candidate = stem[:64 - len(suffix)] + suffix
+    while candidate in used:
+        ordinal += 1
+        suffix = str(ordinal)
+        candidate = stem[:64 - len(suffix)] + suffix
+    return candidate
+
+
 def _image_resampling(value: Any):
     if Image is None:
         raise RuntimeError("Pillow is required for project image variants.")
@@ -710,6 +747,11 @@ class ProjectAssetStore:
         result["catalog"] = self._save_catalog(bound_catalog)
         result["bound_slot_id"] = wanted
         return result
+
+    def resolve_capture_tag(self, project: Any, tag: Any, fallback: str) -> str:
+        """Uniquify a tag for a captured video frame (see _capture_family_tag)."""
+        catalog = self.load(project, create=True)
+        return _capture_family_tag(catalog, tag, fallback)
 
     def import_file(self, project: Any, source_path: Any, *, role: Any = "",
                     tag: Any = "", original_name: Any = "",

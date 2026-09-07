@@ -435,6 +435,10 @@ function mount(node) {
         previewMode: previewSelect.value === "full" ? "full" : "light",
     };
     const project = () => String(runNameInput.value || "").trim();
+    // Public accessor so other H3 node widgets (Review Gate's frame
+    // capture) can target the Carousel's actual current project, which can
+    // be renamed independently of any upstream Plan's run_name.
+    node._h3ProjectAssetCurrentProject = project;
     // Tokens distinguish A -> B -> A from an uninterrupted operation on A.
     let projectEpoch = 0;
     let projectDisposed = false;

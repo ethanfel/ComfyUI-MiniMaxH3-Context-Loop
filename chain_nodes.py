@@ -29203,6 +29203,87 @@ async def _project_asset_delete(request):
         return web.json_response({"error": str(exc)}, status=400)
 
 
+def _capture_frame_video_path(filename: Any, subfolder: Any, kind: Any) -> str:
+    """Resolve a ComfyUI /view (filename, subfolder, type) triple to a file."""
+    directories = {
+        "input": folder_paths.get_input_directory(),
+        "output": folder_paths.get_output_directory(),
+        "temp": folder_paths.get_temp_directory(),
+    }
+    root = directories.get(str(kind or "output").strip().lower())
+    if root is None:
+        raise ValueError("Video source type must be input, output, or temp.")
+    name = str(filename or "").strip()
+    if not name:
+        raise ValueError("Video filename cannot be blank.")
+    sub = str(subfolder or "").strip()
+    candidate = os.path.join(root, sub, name) if sub else os.path.join(root, name)
+    return _confined_media_path(candidate, "Video source")
+
+
+def _capture_video_frame(video_path: str, time_seconds: float, output_path: str) -> None:
+    ffmpeg = _usable_ffmpeg()
+    if ffmpeg is None:
+        raise RuntimeError("Capturing a video frame requires a working ffmpeg.")
+    offset = max(0.0, float(time_seconds))
+    temporary = "%s.%s.tmp.png" % (output_path, uuid.uuid4().hex)
+    command = [
+        ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
+        "-ss", "%.6f" % offset, "-i", video_path,
+        "-frames:v", "1", "-an", temporary,
+    ]
+    try:
+        _run_ffmpeg(command, timeout_seconds=60.0)
+        if not os.path.isfile(temporary) or os.path.getsize(temporary) < 1:
+            raise RuntimeError("ffmpeg produced an empty captured frame.")
+        os.replace(temporary, output_path)
+    finally:
+        _safe_unlink(temporary)
+
+
+def _project_asset_capture_frame_sync(
+        project: Any, video_path: Any, subfolder: Any, source_type: Any,
+        time_seconds: Any, tag: Any, role: Any,
+        folder_id: Any) -> dict[str, Any]:
+    source = _capture_frame_video_path(video_path, subfolder, source_type)
+    store = _project_asset_store()
+    temporary = store.upload_path(project, "frame_capture.png")
+    try:
+        _capture_video_frame(source, float(time_seconds or 0.0), temporary)
+        resolved_tag = store.resolve_capture_tag(project, tag, "frame_capture")
+        result = store.import_file(
+            project, temporary, role=role or "", tag=resolved_tag,
+            original_name="frame_capture.png", source_kind="frame_capture")
+        if folder_id not in (None, ""):
+            asset_id = result["asset"]["id"]
+            catalog = store.update(project, asset_id, {"folder_id": folder_id})
+            asset = next(
+                item for item in catalog["assets"]
+                if str(item.get("id") or "") == asset_id)
+            result = {"catalog": catalog, "asset": asset}
+        return result
+    finally:
+        _safe_unlink(temporary)
+
+
+async def _project_asset_capture_frame(request):
+    try:
+        body = await request.json()
+        if not isinstance(body, dict):
+            raise ValueError("Frame capture request must be a JSON object.")
+        result = await asyncio.to_thread(
+            _project_asset_capture_frame_sync,
+            body.get("project", ""), body.get("filename", ""),
+            body.get("subfolder", ""), body.get("type", "output"),
+            body.get("time_seconds", 0.0), body.get("tag", ""),
+            body.get("role", ""),
+            body.get("folder_id") if "folder_id" in body else None)
+        return web.json_response(result)
+    except (OSError, RuntimeError, TypeError, ValueError,
+            json.JSONDecodeError) as exc:
+        return web.json_response({"error": str(exc)}, status=400)
+
+
 async def _project_asset_media(request):
     try:
         project = request.query.get("project", "")
@@ -29320,6 +29401,9 @@ if (PromptServer is not None and web is not None and
     PromptServer.instance.routes.post(
         "/minimax_h3_context_loop/project-assets/import")(
             _project_asset_import)
+    PromptServer.instance.routes.post(
+        "/minimax_h3_context_loop/project-assets/capture-frame")(
+            _project_asset_capture_frame)
     PromptServer.instance.routes.post(
         "/minimax_h3_context_loop/project-assets/update")(
             _project_asset_update)
