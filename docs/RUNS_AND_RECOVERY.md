@@ -340,6 +340,22 @@ save status, profile and metadata location. A continuation tail is explicitly
 not a full latent. Listing checks file availability without loading tensors or
 hashing every large checkpoint; availability is not execution validation.
 
+To remove a saved processing take, select it in its processing tab and click
+**Delete processed version**. The file/size preview and confirmation cover only
+that take's video, checkpoint, audio and prompt sidecars, its revision metadata,
+its current processed pointer (if still selected), and affected full/partial
+branch manifests. Removing a pointer does not promote another take. Older takes,
+original generation checkpoints, shared references/caches and assembled videos
+are kept. This also works for processing takes whose original is unavailable.
+
+Deletion is blocked while another saved take depends on that processing source
+or continues its saved branch; the inspector lists clickable dependents to
+delete first. Ownership is checked again on confirmation, and changed files or
+dependencies require a fresh preview. An in-flight save cannot republish a
+deleted processing dependency. A workflow-local pin is never silently redirected:
+if it referenced the deleted take, explicitly select another source before running.
+Deletion is permanent; the preview does not load or hash large tensor files.
+
 ### Alternate final-cut takes
 
 Use an alternate when one accepted scene needs a prompt-level visual correction
@@ -600,8 +616,32 @@ action from identity, framing, or continuity clauses. The bundled LBH workflow
 therefore leaves the override blank and uses the original compiled prompt by
 default. Its How To Run note retains a neutral preservation/detail replacement
 prompt for an explicit copy/paste A/B test.
-Revisions without a cache can use `text_only`; select `error` when the second
-pass must not proceed without Ref2VA conditioning.
+Missing reference caches are rebuilt automatically before applying
+`missing_cache`, including in Pixel Conditioning and the CAT video wrapper.
+Recovery uses the selected generation take's saved reference lineage (also
+through DeRoPE), not the current Plan or current tag assignments. It verifies
+archived/input project media against saved content hashes, decodes only active
+references, and re-encodes them with the connected H3 VAEs. Native pictures,
+video/audio references, and Qwen-only semantic anchors retain their separate
+roles. No diffusion sampling or source-scene regeneration is needed.
+
+Recovered caches use the existing deduplicated V3 tensor store and a run-local
+`reference_cache/rebuilt_<identity>.json` index. Subsequent upscales reuse them;
+original checkpoint metadata, source media and legacy bundles are not rewritten
+or deleted. An absent cache bundle/object is recoverable; an existing corrupt
+payload still fails integrity validation.
+
+Recovery keeps presentation settings from an exact surviving cache manifest or
+immutable saved recipe/reference lineage. Older takes without those settings
+use `match`, semantic size `512`, and `timestamped_video`; the status explicitly
+lists these defaults. Sequential/source-timeline references additionally need
+their immutable saved Plan timing. Recovery never executes archived workflows.
+
+Connect `video_vae` for native visual reference rebuilds and `audio_vae` for
+native audio. If an original file, saved reference identity, or required VAE is
+unavailable, `error` names the recovery requirement; `text_only` explicitly
+falls back without reference conditioning. Connected Tagged references remain
+an intentional override and bypass automatic recovery.
 
 Segment Save adopts each verified cache object into
 `output/h3_chains/<run_name>/reference_cache/` and records only that run-local

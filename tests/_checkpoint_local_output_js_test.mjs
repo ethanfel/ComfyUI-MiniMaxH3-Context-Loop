@@ -70,6 +70,7 @@ const source = fs.readFileSync(new URL("../web/h3_chain_checkpoint_manager.js", 
 let currentGraph = structuredClone(payload), runs = ["demo", "other"], failRequests = false;
 let confirms = true, mutations = 0, dirty = 0;
 let attachResponse = null;
+let processingDeletion = false, deleteConflict = false, delayedProcessingPreview = null;
 let extension;
 const requests = [];
 const context = vm.createContext({
@@ -82,6 +83,24 @@ const context = vm.createContext({
         let data;
         if (path.endsWith("/runs")) data = {runs:runs.map(run_name => ({run_name, checkpoint_count:3}))};
         else if (path.includes("/checkpoints?")) data = structuredClone(currentGraph);
+        else if (path.endsWith("/processing-checkpoints/delete-preview") && processingDeletion) {
+            const body = JSON.parse(options.body);
+            data = {allowed:true, metadata_path:body.metadata_path, snapshot:"preview-token",
+                owned_file_count:6, reclaimed_bytes:1024, files:[], not_deleted:["Originals and references"]};
+            if (delayedProcessingPreview) {
+                const wait = delayedProcessingPreview; delayedProcessingPreview = null;
+                await wait;
+            }
+        }
+        else if (path.endsWith("/processing-checkpoints/delete") && processingDeletion) {
+            mutations++;
+            const body = JSON.parse(options.body);
+            assert.equal(body.snapshot, "preview-token");
+            assert.ok(currentGraph.processing_variants.some(item => item.key === body.metadata_path));
+            if (deleteConflict) return {ok:false, status:409, json:async () => ({error:"Preview changed; refresh", preview:{allowed:false}})};
+            currentGraph.processing_variants = currentGraph.processing_variants.filter(item => item.key !== body.metadata_path);
+            data = {message:"Deleted processed version; originals unchanged.", reclaimed_bytes:1024};
+        }
         else if (path.endsWith("/delete-preview")) data = {allowed:false, blockers:["test"]};
         else if (path.endsWith("/attribute") && attachResponse) {
             mutations++;
@@ -100,7 +119,7 @@ const context = vm.createContext({
     }},
     window:{setTimeout:callback => callback(), confirm:() => confirms},
     projectMutationOptions:(_node, _run, options) => {
-        if (attachResponse) return options;
+        if (attachResponse || processingDeletion) return options;
         mutations++; throw new Error("Local output attempted project mutation");
     },
     promptCompanionSync:{},
@@ -344,7 +363,7 @@ byText(variants, "Use DeRoPE branch locally").click();
 assert.equal(value(variants), originalOutput, "an unusable processing branch never changes output");
 assert.match(byClass(variants, "h3cm-status").textContent, /unambiguous saved branch/);
 assert.ok(byText(variants, "Make branch active (project)").disabled);
-assert.ok(byText(variants, "Delete selected revision").disabled);
+assert.ok(byText(variants, "Delete processed version").disabled);
 select(variants, 2, "2".repeat(32));
 assert.equal(value(variants), originalOutput);
 assert.equal(byClass(variants, "h3cm-audio").hidden, true, "no stale sidecar from another take");
@@ -395,6 +414,49 @@ assert.equal(byClass(reopenedVariant, "h3cm-preview").src, undefined,
 assert.match(byClass(reopenedVariant, "h3cm-prompt").textContent, /previously browsed processing take is unavailable/);
 assert.equal(value(reopenedVariant), originalOutput);
 console.log("Checkpoint processing tabs: retained takes, previews, missing versions, saved view, and output isolation pass");
+
+// Processing deletion uses its own endpoint, confirmation and immutable path.
+processingDeletion = true;
+const deleting = makeNode(); await settle();
+select(deleting, 2, b); await settle();
+byText(deleting, "Latent Upscale · 1").click(); await settle();
+select(deleting, 2, "3".repeat(32)); await settle();
+const outputBeforeDelete = value(deleting), originalsBeforeDelete = JSON.stringify(currentGraph.revisions);
+assert.equal(byText(deleting, "Delete processed version").disabled, false);
+const beforeCancel = mutations;
+confirms = false;
+byText(deleting, "Delete processed version").click(); await settle();
+assert.equal(mutations, beforeCancel, "cancel does not send a deletion request");
+confirms = true; deleteConflict = true;
+byText(deleting, "Delete processed version").click(); await settle();
+assert.match(byClass(deleting, "h3cm-status").textContent, /Preview changed/);
+assert.equal(byText(deleting, "Delete processed version").disabled, true);
+assert.ok(currentGraph.processing_variants.some(v => v.key === "demo/hq/one"));
+deleteConflict = false;
+select(deleting, 2, "3".repeat(32)); await settle();
+byText(deleting, "Delete processed version").click(); await settle();
+assert.ok(!currentGraph.processing_variants.some(v => v.key === "demo/hq/one"));
+assert.equal(JSON.stringify(currentGraph.revisions), originalsBeforeDelete);
+assert.equal(value(deleting), outputBeforeDelete);
+assert.equal(byClass(deleting, "h3cm-preview").src, undefined);
+assert.equal(byText(deleting, "Delete processed version").disabled, true);
+assert.match(byClass(deleting, "h3cm-status").textContent, /Reclaimed/);
+// Orphaned versions must also be deletable (no original selection exists).
+byText(deleting, "Pixel Upscale · 1").click(); await settle();
+select(deleting, 2, "4".repeat(32)); await settle();
+assert.equal(byText(deleting, "Delete processed version").disabled, false);
+byText(deleting, "Delete processed version").click(); await settle();
+assert.ok(!currentGraph.processing_variants.some(v => v.key === "demo/pixel/orphan"));
+// A slow processing preview arriving after switching tabs cannot enable original deletion.
+let releasePreview;
+delayedProcessingPreview = new Promise(resolve => { releasePreview = resolve; });
+byText(deleting, "DeRoPE · 1").click(); await settle();
+byText(deleting, "Original · 4").click(); await settle();
+releasePreview(); await settle();
+assert.ok(byText(deleting, "Delete selected revision").disabled);
+assert.equal(value(deleting), outputBeforeDelete);
+processingDeletion = false;
+console.log("Processing deletion UI: preview, cancel, conflict, success, orphan cleanup, stale response and original/output isolation pass");
 
 // Reproduce the reported Chapter 2 pin at scene 8, shared with another branch.
 currentGraph = structuredClone(payload);

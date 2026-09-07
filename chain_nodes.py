@@ -29113,6 +29113,44 @@ async def _attribute_checkpoint_revision(request):
     return web.json_response(payload)
 
 
+async def _processing_checkpoint_deletion(request):
+    from .processing_checkpoint_delete import ProcessingCheckpointManager
+
+    try:
+        body = await request.json()
+        if not isinstance(body, dict):
+            raise ValueError("Processing deletion requires a JSON object.")
+        run_name = _strict_run_name(body.get("run_name", ""))
+        manager = ProcessingCheckpointManager(_output_root())
+        if request.path.endswith("/delete-preview"):
+            payload = await asyncio.to_thread(
+                manager.deletion_preview, run_name, body.get("metadata_path"))
+        else:
+            ownership_proof = _request_project_ownership(request)
+            rejection = _project_write_rejection(
+                request, run_name, "delete a processed checkpoint")
+            if rejection is not None:
+                return rejection
+
+            def delete_owned():
+                with checkpoint_run_lock(_output_root(), run_name), project_write_guard(
+                        _output_root(), run_name, ownership_proof,
+                        "delete a processed checkpoint"):
+                    return manager.delete(run_name, body.get("metadata_path"), body.get("snapshot"))
+
+            payload = await asyncio.to_thread(delete_owned)
+    except ProjectOwnershipError as exc:
+        return web.json_response({"error": str(exc), "code": "h3_project_read_only",
+                                  "run_name": locals().get("run_name", "")}, status=423)
+    except CheckpointDeleteBlocked as exc:
+        return web.json_response({"error": str(exc), "preview": exc.preview}, status=409)
+    except FileNotFoundError as exc:
+        return web.json_response({"error": str(exc)}, status=404)
+    except (OSError, TypeError, ValueError, KeyError) as exc:
+        return web.json_response({"error": str(exc)}, status=400)
+    return web.json_response(payload)
+
+
 async def _delete_checkpoint_revision(request):
     try:
         body = await request.json()
@@ -31009,6 +31047,12 @@ if (PromptServer is not None and web is not None and
     PromptServer.instance.routes.post(
         "/minimax_h3_context_loop/checkpoint-revisions/delete")(
             _delete_checkpoint_revision)
+    PromptServer.instance.routes.post(
+        "/minimax_h3_context_loop/processing-checkpoints/delete-preview")(
+            _processing_checkpoint_deletion)
+    PromptServer.instance.routes.post(
+        "/minimax_h3_context_loop/processing-checkpoints/delete")(
+            _processing_checkpoint_deletion)
     PromptServer.instance.routes.post(
         "/minimax_h3_context_loop/open-run-folder")(_open_run_folder)
     PromptServer.instance.routes.post(

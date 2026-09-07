@@ -1030,6 +1030,28 @@ def main():
         changed = json.loads(json.dumps(choice))
         changed["branch"]["lineage"][0]["revision"] = "e" * 32
         rejected(lambda: sources.derope_source_manifest(selected_manifest, changed, chain, upscale), "branch changed")
+        # Delete a real saved chapter take during a downstream encode. The
+        # saver must not publish a new branch against its now-deleted source.
+        deletion = import_module(package.__name__ + ".processing_checkpoint_delete")
+        processing_manager = deletion.ProcessingCheckpointManager(temporary)
+        delete_preview = processing_manager.deletion_preview(
+            "upscale_test", chapter_child["revision_metadata"])
+        assert delete_preview["allowed"]
+        write_video = chain._write_segment_video
+
+        def delete_source_during_encode(*args, **kwargs):
+            result = write_video(*args, **kwargs)
+            processing_manager.delete("upscale_test", chapter_child["revision_metadata"],
+                                      delete_preview["snapshot"])
+            return result
+
+        with patch.object(chain, "_write_segment_video", side_effect=delete_source_during_encode):
+            rejected(lambda: saver.save(chapter_next, hq_images_2, chapter_video), "deleted")
+        failed_profile = pathlib.Path(upscale._state_profile_paths(chapter_next, 2)["metadata"]).parent.parent
+        assert not any(path.is_file() for path in failed_profile.rglob("*"))
+        assert pathlib.Path(chain._absolute_output_path(source_2["checkpoint"])).is_file()
+        assert not any(item["revision"] == chapter_child["revision"] for item in
+                       catalogue.saved_checkpoint_variants(temporary, "upscale_test", originals)["variants"])
         # Existing saves can use the exact full/partial profile manifest.
         motion_metadata = chain._read_json(chain._absolute_output_path(motion["revision_metadata"]))
         motion_metadata.pop("processing_lineage")

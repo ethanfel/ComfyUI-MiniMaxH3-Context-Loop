@@ -645,7 +645,7 @@ function mount(node) {
         deleteRun.disabled = state.busy || !state.runName;
         load.disabled = state.busy || Boolean(state.attribution) || !canLoadSelected();
         activate.disabled = state.busy || Boolean(state.attribution) || !canActivateSelected();
-        remove.disabled = state.busy || state.stage !== "original" || Boolean(state.attribution) || !state.deletion?.allowed;
+        remove.disabled = state.busy || Boolean(state.attribution) || !state.deletion?.allowed;
         if (state.attributionButton) {
             state.attributionButton.disabled = state.busy || !state.attribution?.candidate;
         }
@@ -689,9 +689,10 @@ function mount(node) {
                 state.payload, record, chapterRangeFor(record), state.previewTip ?? state.outputTip);
         }
         state.deletion = null;
+        state.requestToken += 1;
         persistSelection();
         render();
-        if (record && requestDeletion && state.stage === "original") void refreshDeletionPreview();
+        if (requestDeletion) void refreshDeletionPreview();
     }
 
     function selectOutputBranch(tip) {
@@ -718,7 +719,7 @@ function mount(node) {
         original ??= (state.payload?.revisions ?? []).find(item => (record.originals ?? []).some(
             source => checkpointRevisionKey(item.scene, item.revision) === checkpointRevisionKey(source.scene, source.revision)));
         state.previewTip = branchTip ?? checkpointOutputBranchTip(state.payload, original, chapterRangeFor(original), state.previewTip);
-        selectRevision(original, false, record.key);
+        selectRevision(original, true, record.key);
     }
 
     function selectStage(stage) {
@@ -733,7 +734,7 @@ function mount(node) {
         node.graph?.setDirtyCanvas?.(true, true);
         // A view switch never writes selection_json or promotes a branch.
         render();
-        if (stage === "original" && state.selected) void refreshDeletionPreview();
+        void refreshDeletionPreview();
     }
 
     function renderStageTabs() {
@@ -1260,24 +1261,29 @@ function mount(node) {
 
     function renderDeletion() {
         deletionBody.replaceChildren();
-        if (state.stage !== "original") {
-            deletion.classList.toggle("h3cm-delete-blocked", false);
-            deletionTitle.textContent = "Processing version preview — original branch activation and deletion are unavailable in this tab.";
-            activate.textContent = "Make branch active (project)";
-            load.disabled = activate.disabled = remove.disabled = true;
-            return;
-        }
+        const processing = state.stage !== "original";
         const activationMode = selectedActivationMode();
-        const rollsBack = activationMode === "rollback";
-        activate.textContent = rollsBack
-            ? "Roll active branch back (project)" : "Make branch active (project)";
-        activate.title = rollsBack
-            ? "Project-wide: retire later active scene pointers in this chapter without deleting saved revisions"
-            : "Project-wide: promote this chapter for all workflows using this Run";
+        const rollsBack = !processing && activationMode === "rollback";
+        remove.textContent = processing ? "Delete processed version" : "Delete selected revision";
+        remove.title = processing ? "Preview and permanently delete only this processed take's owned files" : "Delete an inactive leaf or roll back the active branch tip after confirmation";
         deletion.classList.toggle("h3cm-delete-blocked", Boolean(state.deletion && !state.deletion.allowed));
-        deletionTitle.textContent = checkpointDeletionTitle(state.deletion);
-        load.disabled = state.busy || !canLoadSelected();
-        activate.disabled = state.busy || !canActivateSelected();
+        if (processing) {
+            deletionTitle.textContent = !state.deletion ? "Select a processed version to inspect deletion safety."
+                : state.deletion.allowed
+                    ? `Delete processed version · ${state.deletion.owned_file_count} files · ${formatCheckpointBytes(state.deletion.reclaimed_bytes)} · originals kept`
+                    : state.deletion.blockers?.join(" ") || "Deletion is blocked.";
+            activate.textContent = "Make branch active (project)";
+            load.disabled = activate.disabled = true;
+        } else {
+            activate.textContent = rollsBack
+                ? "Roll active branch back (project)" : "Make branch active (project)";
+            activate.title = rollsBack
+                ? "Project-wide: retire later active scene pointers in this chapter without deleting saved revisions"
+                : "Project-wide: promote this chapter for all workflows using this Run";
+            deletionTitle.textContent = checkpointDeletionTitle(state.deletion);
+            load.disabled = state.busy || !canLoadSelected();
+            activate.disabled = state.busy || !canActivateSelected();
+        }
         remove.disabled = state.busy || !state.deletion?.allowed;
         if (state.attribution) {
             load.disabled = true;
@@ -1308,6 +1314,16 @@ function mount(node) {
             }
             const list = element("ul", "h3cm-dependents");
             for (const dependent of state.deletion.dependents) {
+                if (processing) {
+                    const item = element("li", "h3cm-dependent",
+                        `Scene ${dependent.scene ?? "?"} · ${String(dependent.revision ?? "").slice(0, 8)} · ${dependent.reason} · ${dependent.metadata_path}`);
+                    item.addEventListener("click", () => {
+                        const variant = (state.payload?.processing_variants ?? []).find(v => v.key === dependent.metadata_path);
+                        if (variant) { selectStage(variant.stage); selectVariant(variant); }
+                    });
+                    list.append(item);
+                    continue;
+                }
                 const action = dependent.leaf
                     ? (dependent.active
                         ? " · active leaf: select to delete it"
@@ -1357,16 +1373,19 @@ function mount(node) {
     }
 
     async function refreshDeletionPreview() {
-        const record = state.selected;
+        const processing = state.stage !== "original";
+        const record = processing ? currentVariant() : state.selected;
         const token = ++state.requestToken;
-        if (state.stage !== "original" || !record || !state.runName) return;
+        if (!record || !state.runName || state.attribution) return;
         deletionTitle.textContent = "Inspecting owned files and dependencies…";
         remove.disabled = true;
         try {
             const payload = await jsonRequest(
-                "/minimax_h3_context_loop/checkpoint-revisions/delete-preview", {
+                processing ? "/minimax_h3_context_loop/processing-checkpoints/delete-preview"
+                    : "/minimax_h3_context_loop/checkpoint-revisions/delete-preview", {
                     method:"POST", headers:{"Content-Type":"application/json"},
-                    body:JSON.stringify({run_name:state.runName, scene:record.scene, revision:record.revision}),
+                    body:JSON.stringify({run_name:state.runName, scene:record.scene, revision:record.revision,
+                        ...(processing ? {metadata_path:record.key} : {})}),
                 });
             if (token !== state.requestToken) return;
             state.deletion = payload;
@@ -1423,7 +1442,7 @@ function mount(node) {
                 ? `${state.payload.summary.broken_count} broken revision${state.payload.summary.broken_count === 1 ? "" : "s"} found`
                 : "Checkpoint graph is current";
             selectRevision(selected, false, state.variantKey);
-            if (selected) void refreshDeletionPreview();
+            void refreshDeletionPreview();
         } catch (error) {
             state.payload = null;
             state.selected = null;
@@ -1820,6 +1839,7 @@ function mount(node) {
     }
 
     async function deleteSelected() {
+        if (state.stage !== "original") return deleteProcessedVersion();
         const record = state.selected;
         const plan = state.deletion;
         if (!record || !plan?.allowed || state.busy) return;
@@ -1847,6 +1867,41 @@ function mount(node) {
             status.textContent = `${payload.message} Reclaimed ${formatCheckpointBytes(payload.reclaimed_bytes)}.`;
         } catch (error) {
             state.deletion = error.payload?.preview ?? state.deletion;
+            status.className = "h3cm-status h3cm-error";
+            status.textContent = error.message;
+            renderDeletion();
+        } finally {
+            setBusy(false);
+        }
+    }
+
+    async function deleteProcessedVersion() {
+        const record = currentVariant(), plan = state.deletion, runName = state.runName;
+        if (state.busy || !record || !plan?.allowed || plan.metadata_path !== record.key) return;
+        const confirmed = window.confirm(
+            `Permanently delete ${stageLabel()} scene ${record.scene} take ${record.revision.slice(0, 8)} (${record.profile})?\n\n` +
+            `${plan.owned_file_count} files · ${formatCheckpointBytes(plan.reclaimed_bytes)}\n` +
+            "Its current processed pointer and affected branch manifests will be cleared. Original clips, shared references, other takes and assembled videos are kept. This cannot be undone.");
+        if (!confirmed) return;
+        setBusy(true, "Deleting processed version…");
+        try {
+            const payload = await mutationRequest(node, runName,
+                "/minimax_h3_context_loop/processing-checkpoints/delete", {
+                    method:"POST", headers:{"Content-Type":"application/json"},
+                    body:JSON.stringify({run_name:runName, metadata_path:record.key, snapshot:plan.snapshot}),
+                });
+            // Keep the vanished browse key and output pin: never substitute a different take.
+            await refreshCheckpoints();
+            status.className = "h3cm-status";
+            status.textContent = `${payload.message} Reclaimed ${formatCheckpointBytes(payload.reclaimed_bytes)}.`;
+            let selection;
+            try { selection = JSON.parse(selectionWidget?.value || "null"); } catch { /* unchanged invalid selection */ }
+            if (selection?.processing_source?.branch?.lineage?.some(item => item.metadata_path === record.key)) {
+                status.textContent += " This workflow's output pin referenced the deleted take; explicitly select another source branch before running.";
+            }
+            if (payload.cleanup_pending?.length) status.textContent += ` Cleanup pending: ${payload.cleanup_pending.join(", ")}`;
+        } catch (error) {
+            state.deletion = error.payload?.preview ?? null;
             status.className = "h3cm-status h3cm-error";
             status.textContent = error.message;
             renderDeletion();

@@ -1699,9 +1699,11 @@ class MiniMaxH3ChainUpscaleReferenceConditioning:
                                "cached Ref2VA presentation at pass 2."}),
                 "missing_cache": (("text_only", "error"), {
                     "default": "text_only",
-                    "tooltip": "text_only keeps non-reference and older runs "
-                               "usable when no matching cache exists. error "
-                               "requires the exact automatic Ref2VA cache."}),
+                    "tooltip": "Missing caches are first rebuilt from saved "
+                               "reference identities and archived media, using "
+                               "the connected VAEs. If recovery is unavailable, "
+                               "text_only falls back to text; error reports the "
+                               "missing source or VAE without dropping refs."}),
                 "motion_ref_mode": (MOTION_REFERENCE_MODES, {
                     "default": "exclude_video_keep_audio",
                     "tooltip": "Pass-2 motion-reference policy. The default "
@@ -1841,12 +1843,39 @@ class MiniMaxH3ChainUpscaleReferenceConditioning:
             if custom_prompt:
                 status += "; custom pass-2 prompt override"
             return conditioning, compiled, False, status
-        cached = (chain._load_run_reference_cache_descriptor(
-                      manifest.get("run_name"), scene, descriptor)
-                  if isinstance(descriptor, dict) else
-                  chain._find_reference_cache(
-                      fingerprint, scene, scene_count, prompt, width, height,
-                      length))
+        from .reference_cache_recovery import (
+            ReferenceRecoveryUnavailable, cache_payload_missing,
+            recover_reference_cache,
+        )
+        recovery_status = ""
+        recovery_error = ""
+        try:
+            cached = (chain._load_run_reference_cache_descriptor(
+                          manifest.get("run_name"), scene, descriptor)
+                      if isinstance(descriptor, dict) else
+                      chain._find_reference_cache(
+                          fingerprint, scene, scene_count, prompt, width, height,
+                          length))
+        except FileNotFoundError:
+            cached = None
+        except ValueError:
+            # The legacy loader reports a missing tensor as an integrity
+            # error. Recover only if the pinned descriptor still matches its
+            # metadata and a payload file is actually absent, not corrupted.
+            pinned = (chain._read_json(chain._absolute_output_path(descriptor["metadata"]))
+                      if isinstance(descriptor, dict) else None)
+            if (pinned is None or chain._reference_cache_descriptor(pinned) != descriptor
+                    or not cache_payload_missing(chain, pinned)):
+                raise
+            cached = None
+        if cached is not None and cache_payload_missing(chain, cached):
+            cached = None
+        if cached is None:
+            try:
+                cached, recovery_status = recover_reference_cache(
+                    chain, source, manifest, scene_count, video_vae, audio_vae)
+            except ReferenceRecoveryUnavailable as exc:
+                recovery_error = str(exc)
         if cached is not None:
             target_detail = None
             if target_size is not None:
@@ -1889,13 +1918,15 @@ class MiniMaxH3ChainUpscaleReferenceConditioning:
             if custom_prompt:
                 status += "; custom pass-2 prompt override"
             status += "; motion refs=%s" % motion_ref_mode
+            if recovery_status:
+                status += "; " + recovery_status
             return conditioning, compiled, True, status
         if str(missing_cache) == "error":
             raise FileNotFoundError(
                 "No automatic H3 reference cache matches source scene %d. "
-                "This branch may predate reference caching; render that source "
-                "scene once with Tagged/Scheduled Ref2VA cache_for_upscale "
-                "enabled, or choose text_only." % scene)
+                "Saved-reference recovery could not complete: %s "
+                "Restore the named source media/connect Tagged references, "
+                "or explicitly choose text_only." % (scene, recovery_error))
         compiled = custom_prompt or prompt
         tokens = clip.tokenize(compiled)
         conditioning = clip.encode_from_tokens_scheduled(tokens)
@@ -1910,6 +1941,8 @@ class MiniMaxH3ChainUpscaleReferenceConditioning:
         if custom_prompt:
             status += "; custom pass-2 prompt override"
         status += "; motion refs=%s" % motion_ref_mode
+        if recovery_error:
+            status += "; saved-reference recovery unavailable: " + recovery_error
         return conditioning, compiled, False, status
 
 
@@ -2498,14 +2531,18 @@ class MiniMaxH3ChainUpscaleSegmentSave:
             from .checkpoint_variants import processing_lineage
             metadata["processing_lineage"] = processing_lineage(
                 list(state.get("segments", [])) + [segment])
-            with chain.checkpoint_run_lock(chain._output_root(), state["run_name"]):
-                chain._atomic_json(metadata_path, metadata)
-                chain._atomic_json(paths["metadata"], metadata)
             prefix = list(state.get("segments", [])) + [segment]
             complete = (index == _source_bounds(state["source_manifest"])[1])
             partial = _upscale_manifest(state, prefix, complete=complete)
-            chain._atomic_json(
-                paths["manifest"] if complete else paths["partial"], partial)
+            from .processing_checkpoint_delete import require_saved_processing_segments
+            with chain.checkpoint_run_lock(chain._output_root(), state["run_name"]):
+                require_saved_processing_segments(chain._output_root(),
+                    list(state.get("segments", [])) + [item for item in
+                        state["source_manifest"]["segments"] if item.get("processing_source")])
+                chain._atomic_json(metadata_path, metadata)
+                chain._atomic_json(paths["metadata"], metadata)
+                chain._atomic_json(
+                    paths["manifest"] if complete else paths["partial"], partial)
             committed = True
         finally:
             chain._safe_unlink(checkpoint_tmp)
@@ -2703,8 +2740,12 @@ class MiniMaxH3ChainUpscaleLoopEnd:
         complete = index == _source_bounds(state["source_manifest"])[1]
         manifest = _upscale_manifest(state, next_state["segments"], complete)
         paths = _state_profile_paths(state, index)
-        chain._atomic_json(paths["manifest"] if complete else paths["partial"],
-                           manifest)
+        from .processing_checkpoint_delete import require_saved_processing_segments
+        with chain.checkpoint_run_lock(chain._output_root(), state["run_name"]):
+            require_saved_processing_segments(chain._output_root(),
+                next_state["segments"] + [item for item in
+                    state["source_manifest"]["segments"] if item.get("processing_source")])
+            chain._atomic_json(paths["manifest"] if complete else paths["partial"], manifest)
         manifest_json = json.dumps(manifest, ensure_ascii=False, indent=2,
                                    sort_keys=True)
         return (manifest, manifest_json, next_state["previous_frames"],
