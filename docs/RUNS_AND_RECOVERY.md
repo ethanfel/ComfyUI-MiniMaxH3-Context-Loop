@@ -368,8 +368,22 @@ original generation checkpoints, shared references/caches and assembled videos
 are kept. This also works for processing takes whose original is unavailable.
 
 Deletion is blocked while another saved take depends on that processing source
-or continues its saved branch; the inspector lists clickable dependents to
-delete first. Ownership is checked again on confirmation, and changed files or
+or requires its saved branch; the inspector lists clickable dependents to
+delete first. Independent **pixel** takes are the exception to sequence ordering:
+the saved pixel backend with zero HQ context proves that a later clip does not
+consume its predecessor's processed output. Such later clips are kept when an
+earlier take is deleted. This applies to legacy full/partial manifests and new
+immutable lineage snapshots, not just newly rendered clips. Actual source or
+context references still block deletion, and unproven/other backends retain
+their conservative branch protection.
+
+Affected sequence manifests are invalidated, not shortened or spliced across
+the missing scene. Surviving clip files, pointers and immutable metadata stay
+unchanged and visible in their processing tab. An old lineage with a missing
+take is no longer offered as a complete source branch. Rebuild the missing
+scenes before resuming a full sequence; no other take is silently substituted.
+
+Ownership is checked again on confirmation, and changed files or
 dependencies require a fresh preview. An in-flight save cannot republish a
 deleted processing dependency. A workflow-local pin is never silently redirected:
 if it referenced the deleted take, explicitly select another source before running.

@@ -71,6 +71,7 @@ let currentGraph = structuredClone(payload), runs = ["demo", "other"], failReque
 let confirms = true, mutations = 0, dirty = 0;
 let attachResponse = null;
 let processingDeletion = false, deleteConflict = false, delayedProcessingPreview = null;
+let retainedPixelTakes = [];
 let snapshotRetirement = false, snapshotRetired = false, retirementError = 0, delayedRetirementPreview = null;
 const snapshotAddress = `h3_chains/demo/chapters/01_one/manifests/${a}.json`;
 const confirmations = [];
@@ -89,7 +90,8 @@ const context = vm.createContext({
         else if (path.endsWith("/processing-checkpoints/delete-preview") && processingDeletion) {
             const body = JSON.parse(options.body);
             data = {allowed:true, metadata_path:body.metadata_path, snapshot:"preview-token",
-                owned_file_count:6, reclaimed_bytes:1024, files:[], not_deleted:["Originals and references"]};
+                owned_file_count:6, reclaimed_bytes:1024, files:[], not_deleted:["Originals and references"],
+                retained_independent_takes:structuredClone(retainedPixelTakes)};
             if (delayedProcessingPreview) {
                 const wait = delayedProcessingPreview; delayedProcessingPreview = null;
                 await wait;
@@ -474,6 +476,24 @@ select(deleting, 2, "4".repeat(32)); await settle();
 assert.equal(byText(deleting, "Delete processed version").disabled, false);
 byText(deleting, "Delete processed version").click(); await settle();
 assert.ok(!currentGraph.processing_variants.some(v => v.key === "demo/pixel/orphan"));
+// Sequence-order history must not force the user to delete independent later clips.
+const independentPixel = (scene, digit) => ({key:`demo/pixel/${scene}`, scene,
+    revision:digit.repeat(32), stage:"pixel_upscale", profile:"pixel",
+    profile_path:"demo/upscaled/pixel", originals:[{scene, revision:scene === 2 ? b : c}],
+    ready:true, latent_saved:false, context_steps:0, video:{filename:`pixel-${scene}.mp4`}});
+currentGraph.processing_variants.push(independentPixel(2, "5"), independentPixel(3, "6"));
+const laterPixelBeforeDelete = JSON.stringify(currentGraph.processing_variants.at(-1));
+retainedPixelTakes = [{scene:3, revision:"6".repeat(32), metadata_path:"demo/pixel/3"}];
+deleting._h3CheckpointManagerRefresh(); await settle();
+select(deleting, 2, "5".repeat(32)); await settle();
+assert.ok(elements(deleting).some(item => /Independent pixel takes kept: Scene 3 · 66666666/.test(item.textContent)));
+byText(deleting, "Delete processed version").click(); await settle();
+assert.match(confirmations.at(-1), /Later independent pixel clips are kept/);
+assert.ok(!currentGraph.processing_variants.some(v => v.key === "demo/pixel/2"));
+assert.equal(JSON.stringify(currentGraph.processing_variants.find(v => v.key === "demo/pixel/3")), laterPixelBeforeDelete);
+assert.equal(JSON.stringify(currentGraph.revisions), originalsBeforeDelete);
+assert.equal(value(deleting), outputBeforeDelete);
+retainedPixelTakes = [];
 // A slow processing preview arriving after switching tabs cannot enable original deletion.
 let releasePreview;
 delayedProcessingPreview = new Promise(resolve => { releasePreview = resolve; });
@@ -483,7 +503,7 @@ releasePreview(); await settle();
 assert.ok(byText(deleting, "Delete selected revision").disabled);
 assert.equal(value(deleting), outputBeforeDelete);
 processingDeletion = false;
-console.log("Processing deletion UI: preview, cancel, conflict, success, orphan cleanup, stale response and original/output isolation pass");
+console.log("Processing deletion UI: preview, cancel, conflict, success, orphan/independent pixel cleanup, stale response and original/output isolation pass");
 
 // Retirement is separate from media deletion and preserves the output selection.
 currentGraph = structuredClone(payload);

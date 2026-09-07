@@ -77,6 +77,145 @@ class DeleteTests(unittest.TestCase):
     def exists(self, segment):
         return (self.root / segment["revision_metadata"]).exists()
 
+    def pixel_save(self, legacy=False, **kwargs):
+        segment = self.save(stage="pixel_upscale", **kwargs)
+        path = self.root / segment["revision_metadata"]
+        value = json.loads(path.read_text())
+        value["profile_config"] = {"backend": "pixel", "recipe": {"refiner": "USDU H3"}}
+        segment["context_steps"] = value["segment"]["context_steps"] = 0
+        if legacy:
+            value.pop("processing_lineage")
+        self.write(path, value)
+        self.write(path.parent / ("clip_%04d.json" % segment["index"]), value)
+        return segment
+
+    def test_independent_pixel_middle_deletion_keeps_later_clips_and_invalidates_manifests(self):
+        for legacy in (True, False):
+            for chapter in (None, "02_chapter_02"):
+                with self.subTest(legacy=legacy, chapter=chapter):
+                    kwargs = {"profile": "pixel_%s" % legacy, "chapter": chapter, "legacy": legacy}
+                    first = self.pixel_save(scene=8, **kwargs)
+                    middle = self.pixel_save(revision="b" * 32, scene=9, prefix=[first], **kwargs)
+                    last = self.pixel_save(revision="c" * 32, scene=10, prefix=[first, middle], **kwargs)
+                    preserved = self.manifest([first], "partial/through_clip_0008.manifest.json")
+                    invalidated = [self.manifest([first, middle, last]),
+                                   self.manifest([first, middle], "partial/through_clip_0009.manifest.json"),
+                                   self.manifest([first, middle, last], "partial/through_clip_0010.manifest.json")]
+                    profile = (self.root / last["revision_metadata"]).parent.parent
+                    export = profile / "final/export.mp4"
+                    export.parent.mkdir()
+                    export.write_bytes(b"keep assembled video")
+                    preview = self.preview(middle)
+                    self.assertTrue(preview["allowed"], preview["dependents"])
+                    self.assertEqual(preview["retained_independent_takes"], [{
+                        "scene": 10, "revision": last["revision"], "metadata_path": last["revision_metadata"]}])
+                    removed = {self.root / f["path"] for f in preview["files"]}
+                    kept = {p: p.read_bytes() for p in self.root.rglob("*") if p.is_file() and p not in removed}
+                    self.delete(middle)
+                    self.assertFalse(self.exists(middle))
+                    self.assertTrue(preserved.exists())
+                    self.assertTrue(all(not p.exists() for p in invalidated))
+                    self.assertTrue(self.exists(last))
+                    self.assertEqual(kept, {p: p.read_bytes() for p in kept})
+                    variants = catalogue.saved_checkpoint_variants(self.root, "demo", [])["variants"]
+                    record = next(v for v in variants if v["key"] == last["revision_metadata"])
+                    self.assertTrue(record["ready"])
+                    self.assertIsNone(record["processing_branch"], "missing scene must not be advertised as a full branch")
+                    # The remaining independent take is still deletable, even
+                    # when its historical lineage mentions the removed middle.
+                    self.assertTrue(self.preview(last)["allowed"])
+
+    def test_pixel_compact_lineage_only_is_history_not_a_render_dependency(self):
+        first = self.pixel_save()
+        last = self.pixel_save(revision="b" * 32, scene=2, prefix=[first])
+        # No full/partial manifest is necessary for modern metadata.
+        self.assertTrue(self.preview(first)["allowed"])
+        self.delete(first)
+        self.assertTrue(self.exists(last))
+
+    def test_pixel_independence_requires_saved_backend_and_explicit_zero_context(self):
+        first = self.pixel_save()
+        last = self.pixel_save(revision="b" * 32, scene=2, prefix=[first])
+        self.manifest([first, last])
+        for take in (first, last):
+            path = self.root / take["revision_metadata"]
+            original = json.loads(path.read_text())
+            for change in ({"profile_config": {}}, {"profile_config": {"backend": "h3_latent"}},
+                           {"profile_config": "pixel"}, {"context_steps": None},
+                           {"context_steps": 1}, {"context_steps": False}):
+                with self.subTest(scene=take["index"], change=change):
+                    modified = json.loads(json.dumps(original))
+                    if "context_steps" in change:
+                        modified["segment"].update(change)
+                    else:
+                        modified.update(change)
+                    self.write(path, modified)
+                    self.assertFalse(self.preview(first)["allowed"])
+            self.write(path, original)
+        self.assertTrue(self.preview(first)["allowed"])
+
+    def test_pixel_source_and_context_dependencies_still_block(self):
+        first = self.pixel_save()
+        for chapter in (None, "02_chapter_02"):
+            with self.subTest(chapter=chapter):
+                derived = self.pixel_save(revision="b" * 32, profile="derived", chapter=chapter, source=first)
+                self.assertFalse(self.preview(first)["allowed"])
+                self.delete(derived)
+        last = self.pixel_save(revision="c" * 32, scene=2, prefix=[first])
+        path = self.root / last["revision_metadata"]
+        original = json.loads(path.read_text())
+        for fields in ({"source_checkpoint": first["checkpoint"]},
+                       {"predecessor_revision": first["revision"]},
+                       {"previous_context": {"checkpoint": first["checkpoint"]}}):
+            with self.subTest(fields=fields):
+                modified = json.loads(json.dumps(original))
+                modified["segment"].update(fields)
+                self.write(path, modified)
+                preview = self.preview(first)
+                self.assertFalse(preview["allowed"])
+                self.assertEqual(preview["retained_independent_takes"], [])
+        self.write(path, original)
+        # An embedded processing source is not sequence bookkeeping.
+        manifest = self.manifest([last], source=first)
+        self.assertFalse(self.preview(first)["allowed"])
+        manifest.unlink()
+        self.assertTrue(self.preview(first)["allowed"])
+
+    def test_pixel_manifest_does_not_trust_unverified_or_missing_successor(self):
+        first = self.pixel_save()
+        last = self.pixel_save(revision="b" * 32, scene=2)
+        forged = dict(last, checkpoint_sha256="d" * 64)
+        manifest = self.manifest([first, forged])
+        self.assertFalse(self.preview(first)["allowed"])
+        self.manifest([first, last])
+        (self.root / last["revision_metadata"]).unlink()
+        self.assertFalse(self.preview(first)["allowed"], "mutable pointer cannot substitute for immutable proof")
+        manifest.unlink()
+
+    def test_pixel_history_in_manifests_does_not_invalidate_unrelated_sequence(self):
+        old = self.pixel_save()
+        new = self.pixel_save(revision="b" * 32)
+        new["supersedes"] = old["revision_metadata"]
+        manifest = self.manifest([new])
+        self.delete(old)
+        self.assertTrue(manifest.exists())
+        self.assertTrue(self.exists(new))
+
+    def test_pixel_new_dependency_or_changed_proof_rejects_old_confirmation(self):
+        first = self.pixel_save()
+        last = self.pixel_save(revision="b" * 32, scene=2, prefix=[first])
+        manifest = self.manifest([first, last])
+        preview = self.preview(first)
+        self.assertTrue(preview["allowed"])
+        path = self.root / last["revision_metadata"]
+        value = json.loads(path.read_text())
+        value["segment"]["context_steps"] = 2
+        self.write(path, value)
+        with self.assertRaises(module.CheckpointDeleteBlocked):
+            self.manager.delete("demo", first["revision_metadata"], preview["snapshot"])
+        self.assertTrue(self.exists(first))
+        self.assertTrue(manifest.exists())
+
     def test_all_processing_stages_root_and_chapter(self):
         for i, stage in enumerate(catalogue.STAGES):
             with self.subTest(stage=stage):

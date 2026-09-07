@@ -118,6 +118,44 @@ def assert_extended_selection_resume(chain, upscale, chapter_source, frames):
     assert all(path.read_bytes() == data for path, data in original.items())
 
 
+def assert_independent_pixel_cleanup(chain, upscale, state, manifest, frames):
+    """Real saver metadata, safe deletion, and gap repair without changing S10."""
+    processing = importlib.import_module(upscale.__package__ + ".processing_checkpoint_delete")
+    manager = processing.ProcessingCheckpointManager(chain._output_root())
+    first, middle, last = manifest["segments"]
+    preview = manager.deletion_preview(state["run_name"], middle["revision_metadata"])
+    assert preview["allowed"], preview["dependents"]
+    assert preview["retained_independent_takes"][0]["revision"] == last["revision"]
+    last_files = {Path(chain._absolute_output_path(last[key])) for key in
+                  ("segment", "checkpoint", "generated_audio", "prompt_file", "metadata", "revision_metadata")}
+    last_bytes = {path:path.read_bytes() for path in last_files}
+    manager.delete(state["run_name"], middle["revision_metadata"], preview["snapshot"])
+    upscale._verify_upscale_segment(last, last["index"])
+    assert all(path.read_bytes() == value for path, value in last_bytes.items())
+    # The already-running saver still carries the deleted scene in its
+    # prefix. Its transaction must fail without touching the retained S10.
+    saver = upscale.MiniMaxH3ChainUpscaleSegmentSave()
+    fails(lambda: saver.save(state, frames), "deleted")
+    assert all(path.read_bytes() == value for path, value in last_bytes.items())
+    try:
+        upscale._load_upscale_prefix(state, last["index"])
+    except FileNotFoundError as exc:
+        assert "scene 9 metadata is missing" in str(exc)
+    else:
+        raise AssertionError("a missing middle scene must not be silently skipped")
+    adapter = upscale.MiniMaxH3ChainUpscaleAdapter()
+    _, repair, _, _ = adapter.adapt(
+        state["source_manifest"], state["profile"], "pixel", "{}", middle["index"], middle["index"], False, 18)
+    assert repair["segments"][0]["revision"] == first["revision"]
+    rebuilt = saver.save(repair, frames)["result"][0]
+    assert rebuilt["revision"] != middle["revision"]
+    assert all(path.read_bytes() == value for path, value in last_bytes.items())
+    kept_sequence = upscale._load_upscale_prefix(repair, last["index"] + 1)
+    assert [s["revision"] for s in kept_sequence] == [first["revision"], rebuilt["revision"], last["revision"]]
+    validated = upscale._upscale_manifest(repair, kept_sequence, complete=True)
+    upscale._validate_upscale_manifest(validated)
+
+
 def assert_loop_releases_pixels(package, chain, upscale, manifest, ram_cache=False):
     """Run the real recursive Comfy executor, without models or a live server.
 
@@ -621,8 +659,9 @@ def main():
         assert int(video["nb_frames"]) == chapter_source["total_delivered_frames"]
         assert (video["width"], video["height"]) == (96, 64)
         assert all(path.read_bytes() == content for path, content in before_chapter.items())
+        assert_independent_pixel_cleanup(chain, upscale, scoped_state, chapter_final, hq)
     assert_attributed_branch_upscales(chain, upscale)
-    print("Pixel upscale: exact/nonuniform target geometry, cache/override/max/keyframes/audio, RAW trim, Drift-Control isolation, attributed branch save/resume/assembly and immutable source pass")
+    print("Pixel upscale: geometry, conditioning, RAW trim, Drift-Control isolation, attributed save/resume/assembly, independent cleanup/gap repair and immutable source pass")
 
 
 if __name__ == "__main__":

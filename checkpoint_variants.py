@@ -251,6 +251,14 @@ def saved_checkpoint_variants(output_root, run_name, originals):
                                for scene, revision in sorted(matches)]
         record["source_status"] = "linked" if matches else "original unavailable or source mismatch"
     records.sort(key=lambda item: (item["scene"], item["created_at"], item["key"]), reverse=True)
+    # Independent pixel cleanup can leave a hole in an immutable historical
+    # lineage. Keep every surviving take visible, but don't offer that history
+    # as an executable complete branch or silently substitute a newer take.
+    available = {record["key"]: (record["scene"], record["revision"], record["checkpoint_sha256"])
+                 for record in records if record["ready"]}
+    branches = [branch for branch in branches if all(
+        available.get(item["metadata_path"]) == (item["scene"], item["revision"], item["checkpoint_sha256"])
+        for item in branch["lineage"])]
     for record in records:
         matches = [branch for branch in branches if any(
             item.get("metadata_path") == record["key"] and

@@ -1319,6 +1319,12 @@ function mount(node) {
             }
             deletionBody.append(list);
         }
+        if (processing && state.deletion.retained_independent_takes?.length) {
+            deletionBody.append(element("div", "h3cm-muted",
+                "Independent pixel takes kept: " + state.deletion.retained_independent_takes.map(item =>
+                    `Scene ${item.scene} · ${String(item.revision).slice(0, 8)}`).join(", ") +
+                ". Affected sequence manifests are invalidated; rebuild missing scenes before full-sequence resume."));
+        }
         if (state.deletion.dependents?.length) {
             const heading = element(
                 "div", "h3cm-error",
@@ -1940,7 +1946,10 @@ function mount(node) {
         const confirmed = window.confirm(
             `Permanently delete ${stageLabel()} scene ${record.scene} take ${record.revision.slice(0, 8)} (${record.profile})?\n\n` +
             `${plan.owned_file_count} files · ${formatCheckpointBytes(plan.reclaimed_bytes)}\n` +
-            "Its current processed pointer and affected branch manifests will be cleared. Original clips, shared references, other takes and assembled videos are kept. This cannot be undone.");
+            "Its current processed pointer and affected branch manifests will be cleared. Original clips, shared references, other takes and assembled videos are kept. " +
+            (plan.retained_independent_takes?.length
+                ? "Later independent pixel clips are kept; rebuild missing scenes before full-sequence resume. " : "") +
+            "This cannot be undone.");
         if (!confirmed) return;
         setBusy(true, "Deleting processed version…");
         try {

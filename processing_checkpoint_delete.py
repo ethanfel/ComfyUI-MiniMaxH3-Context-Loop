@@ -24,6 +24,20 @@ ARTIFACTS = {
 }
 
 
+def _independent_pixel_take(metadata):
+    """Only the saved pixel backend proves that HQ prefixes were not used.
+
+    context_steps alone describes the outgoing tail, not incoming context.
+    Never infer independence from a profile name, a UI stage, or missing data.
+    """
+    config = metadata.get("profile_config")
+    segment = metadata.get("segment")
+    return (isinstance(config, dict) and config.get("backend") == "pixel"
+            and isinstance(segment, dict)
+            and type(segment.get("context_steps")) is int
+            and segment["context_steps"] == 0)
+
+
 class ProcessingCheckpointManager:
     def __init__(self, output_root):
         self.root = Path(output_root).resolve()
@@ -146,6 +160,9 @@ class ProcessingCheckpointManager:
 
         def refers(value):
             if isinstance(value, dict):
+                if any(value.get(k) == revision for k in (
+                        "predecessor_revision", "previous_revision", "context_revision")):
+                    return True
                 if (value.get("source_revision") == revision and
                         (not value.get("source_checkpoint") or value["source_checkpoint"] in addresses)):
                     return True
@@ -153,12 +170,31 @@ class ProcessingCheckpointManager:
                 if (value.get("revision") == revision and value.get("index", value.get("scene")) == scene
                         and (not address or address in addresses)):
                     return True
-                return any(refers(v) for v in value.values())
+                return any(refers(v) for k, v in value.items() if k != "supersedes")
             if isinstance(value, list):
                 return any(refers(v) for v in value)
             return isinstance(value, str) and value in addresses
 
         addresses = {self._address(path) for path in owned if path != pointer}
+        independent = _independent_pixel_take(metadata)
+        retained = {}
+
+        def independent_successor(item):
+            if not independent or not isinstance(item, dict) or not item.get("revision_metadata"):
+                return False
+            path = self._path(item["revision_metadata"])
+            saved = docs.get(path)
+            if (path.parent.parent != profile or not saved or not _independent_pixel_take(saved)
+                    or saved["segment"]["index"] <= scene
+                    or any(saved["segment"].get(k) != item.get(k)
+                           for k in ("index", "revision", "checkpoint_sha256"))):
+                return False
+            retained[item["revision_metadata"]] = {
+                "scene": item["index"], "revision": item["revision"],
+                "metadata_path": item["revision_metadata"],
+            }
+            return True
+
         dependents = []
         for path, value in docs.items():
             if path in owned:
@@ -170,22 +206,34 @@ class ProcessingCheckpointManager:
                 elif refers(value["segments"]):
                     positions = [i for i, item in enumerate(value["segments"]) if refers(item)]
                     later = value["segments"][positions[0] + 1:]
-                    if later:
-                        for item in later:
+                    # Sequence membership is not an input dependency for
+                    # independently rendered pixel takes. Invalidate this
+                    # sequence's manifest, never delete its surviving clips.
+                    blocked = [item for item in later if not independent_successor(item)]
+                    if blocked:
+                        for item in blocked:
                             dependents.append({"scene": item.get("index"), "revision": item.get("revision"),
-                                               "metadata_path": item.get("revision_metadata"),
+                                               "metadata_path": item.get("revision_metadata") or self._address(path),
                                                "reason": "saved branch continues after this take"})
                     else:
                         owned[path] = "Affected branch manifest (invalidated; assembled video kept)"
-            elif (refers({k: v for k, v in value.items() if k != "segment"}) or refers(
-                    {k: v for k, v in value["segment"].items() if k != "supersedes"}) or
-                    (not value.get("processing_lineage") and path.parent.parent == profile and
-                     value["segment"]["index"] > scene and segment.get("context_steps", 0))):
+            else:
                 other = value["segment"]
-                dependents.append({"scene": other["index"], "revision": other["revision"],
-                                   "metadata_path": other["revision_metadata"],
-                                   "reason": "saved take depends on this source or branch"})
+                ignored = {"segment"}
+                if (refers(value.get("processing_lineage"))
+                        and independent_successor(other)
+                        and _independent_pixel_take(value)):
+                    ignored.add("processing_lineage")
+                if (refers({k: v for k, v in value.items() if k not in ignored})
+                        or refers(other)
+                        or (not value.get("processing_lineage") and path.parent.parent == profile
+                            and other["index"] > scene and segment.get("context_steps", 0))):
+                    dependents.append({"scene": other["index"], "revision": other["revision"],
+                                       "metadata_path": other["revision_metadata"],
+                                       "reason": "saved take depends on this source or branch"})
         dependents = list({item["metadata_path"]: item for item in dependents}.values())
+        for item in dependents:
+            retained.pop(item["metadata_path"], None)
         files = []
         for path, label in sorted(owned.items()):
             self._path(self._address(path))
@@ -204,6 +252,8 @@ class ProcessingCheckpointManager:
         return {"ok": True, "run_name": run, "metadata_path": address,
                 "scene": scene, "revision": revision, "profile": profile.name,
                 "allowed": not dependents, "dependents": dependents,
+                "retained_independent_takes": sorted(retained.values(), key=lambda item: (
+                    item["scene"], item["metadata_path"])),
                 "blockers": (["Delete the dependent processed takes first; their saved branch/source still uses this take."]
                              if dependents else []),
                 "files": [{k: v for k, v in f.items() if not k.startswith("_")} for f in files],

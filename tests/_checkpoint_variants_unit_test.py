@@ -172,6 +172,22 @@ class VariantTests(unittest.TestCase):
         self.assertEqual(record["processing_branch"]["lineage"], module.processing_lineage([saved["segment"]]))
         self.assertEqual(path.stat().st_mtime_ns, stamp)
 
+    def test_missing_pixel_lineage_member_does_not_hide_survivor_or_substitute_new_take(self):
+        first_path, first = self.save(profile="pixel", backend="pixel")
+        second_path, second = self.save(profile="pixel", backend="pixel", scene=9, revision="d" * 32)
+        second["processing_lineage"] = module.processing_lineage([first["segment"], second["segment"]])
+        self.write(second_path, second)
+        self.assertTrue(all(v["processing_branch"] for v in self.scan()["variants"]))
+        first_path.unlink()
+        # Neither its surviving mutable pointer nor a different same-scene
+        # take may fill this immutable branch's hole.
+        self.save(profile="pixel", backend="pixel", revision="e" * 32)
+        before = second_path.read_bytes()
+        surviving = next(v for v in self.scan()["variants"] if v["revision"] == "d" * 32)
+        self.assertTrue(surviving["ready"])
+        self.assertIsNone(surviving["processing_branch"])
+        self.assertEqual(second_path.read_bytes(), before)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
