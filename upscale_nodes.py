@@ -126,7 +126,12 @@ def _verified_source_manifest(value: dict[str, Any]) -> dict[str, Any]:
             "Checkpoint Upscale Adapter requires a selected lineage manifest "
             "from Checkpoint Manager.")
     segments = chain._validate_manifest(manifest)
-    chain.common_saved_resolution(segments, "Deferred upscale source")
+    if not manifest.get("processing_source"):
+        chain.common_saved_resolution(segments, "Deferred upscale source")
+    else:
+        for segment in segments:
+            if segment.get("processing_source"):
+                _validate_processed_latent_header(segment)
     if isinstance(manifest.get("prelude"), dict):
         raise ValueError(
             "Deferred upscale does not yet support an existing-video prelude. "
@@ -136,6 +141,12 @@ def _verified_source_manifest(value: dict[str, Any]) -> dict[str, Any]:
 
 def _source_hash(manifest: dict[str, Any]) -> str:
     return chain._fingerprint(manifest)
+
+
+def _source_geometry(source, compatibility):
+    if source.get("processing_source"):
+        return {key: int(source[key]) for key in ("width", "height")}
+    return chain.saved_resolution(source) or compatibility
 
 
 def _source_bounds(manifest: dict[str, Any]) -> tuple[int, int]:
@@ -459,6 +470,49 @@ def _derope_drift_continuation_video(video: Any, state: Any
     return output, prefix_steps, route
 
 
+def _validate_recovered_audio_shape(shape, batch, raw):
+    if (len(shape) != 4 or list(shape[:3]) != [batch, 32, 2] or shape[3] < 1 or
+            abs(shape[3] - raw / float(chain.FPS) * 40) > 2):
+        # Audio VAE padding can leave a sub-frame tail at its 40 Hz clock.
+        raise ValueError("Recovered DeRoPE audio latent must be [B,32,2,T] on the original RAW clock.")
+
+
+def _validate_processed_latent_header(source):
+    """Validate full recovered RAW latents without allocating their tensors."""
+    from safetensors import safe_open
+    raw = chain._validate_h3_length(source["raw_frames"], "DeRoPE RAW length")
+    expected = [24, (raw - 5) // 17 * 5 + 2,
+                int(source["height"]) // 16, int(source["width"]) // 16]
+    if any(int(source[key]) < 16 or int(source[key]) % 16 for key in ("width", "height")):
+        raise ValueError("DeRoPE source canvas must be aligned to the H3 VAE.")
+    with safe_open(chain._absolute_output_path(source["checkpoint"]),
+                   framework="pt", device="cpu") as saved:
+        keys = set(saved.keys())
+        layout = source.get("latent_layout")
+        video_key = "upscaled_video" if layout == "joint_av" else "upscaled_samples"
+        if (source.get("latent_saved") is not True or layout not in ("joint_av", "single") or
+                video_key not in keys):
+            raise ValueError("DeRoPE scene %s has no supported full recovered latent." % source["index"])
+        shape = saved.get_slice(video_key).get_shape()
+        if layout == "single" and shape == expected:
+            # Older single-stream saves accidentally unbound the batch axis.
+            # A four-dimensional single stream unambiguously represents B=1.
+            shape = [1, *shape]
+        if len(shape) != 5 or shape[0] < 1 or shape[1:] != expected:
+            raise ValueError(
+                "DeRoPE scene %s latent is %s, expected [B,%s] on its original RAW clock. "
+                "Save VAE Encode after Exact Recover, not the stretched pass-2 latent." %
+                (source["index"], shape, ",".join(map(str, expected))))
+        if layout == "joint_av":
+            audio = saved.get_slice("upscaled_audio").get_shape() if "upscaled_audio" in keys else []
+            _validate_recovered_audio_shape(audio, shape[0], raw)
+        elif source.get("audio_route") == "recovered de-rope audio":
+            raise ValueError(
+                "DeRoPE scene %s changed audio but saved video only. Connect recovered "
+                "audio_latent to Recovered AV and save again; original audio is not a substitute."
+                % source["index"])
+
+
 def _load_source_tensors(source: dict[str, Any],
                          keys: tuple[str, ...] | None = None) -> dict[str, Any]:
     if chain._st_load is None:
@@ -469,12 +523,31 @@ def _load_source_tensors(source: dict[str, Any],
         raise FileNotFoundError("Source H3 checkpoint is missing: %s" % checkpoint)
     if not expected or chain._file_sha256(checkpoint) != expected:
         raise ValueError("Source H3 checkpoint failed its SHA-256 integrity check.")
-    if keys is None:
+    processed = source.get("processing_source")
+    if keys is None and not processed:
         return chain._st_load(checkpoint)
     from safetensors import safe_open
     with safe_open(checkpoint, framework="pt", device="cpu") as saved:
         available = set(saved.keys())
-        return {key: saved.get_tensor(key) for key in keys if key in available}
+        if not processed:
+            return {key: saved.get_tensor(key) for key in keys if key in available}
+        mapping = {"video": "upscaled_video" if source["latent_layout"] == "joint_av"
+                   else "upscaled_samples", "audio": "upscaled_audio",
+                   "delivered_audio": "delivered_audio"}
+        wanted = keys if keys is not None else tuple(mapping)
+        result = {key: saved.get_tensor(mapping[key]) for key in wanted
+                  if key in mapping and mapping[key] in available}
+    if source["latent_layout"] == "single" and "video" in result and result["video"].ndim == 4:
+        result["video"] = result["video"].unsqueeze(0)
+    if "audio" in wanted and "audio" not in result:
+        # Video-only recovery preserves the exact original take's audio. Read
+        # only audio tensors, never load a second full video just to join AV.
+        original_audio = _load_source_tensors(processed["original"], ("denoised_audio", "audio"))
+        audio = original_audio.get("denoised_audio", original_audio.get("audio"))
+        if audio is None:
+            raise ValueError("Original DeRoPE source has no reusable audio latent.")
+        result["audio"] = audio
+    return result
 
 
 def _source_latent(tensors: dict[str, Any]) -> tuple[dict[str, Any], str]:
@@ -667,7 +740,7 @@ def _conditioning_from_tagged_upscale_override(
     scene = int(state["index"])
     scene_count = _source_scene_count(manifest)
     length = int(source.get("raw_frames", 0))
-    geometry = chain.saved_resolution(source) or compatibility
+    geometry = _source_geometry(source, compatibility)
     width = int(geometry.get("width", 0))
     height = int(geometry.get("height", 0))
     if target_video_latent is not None:
@@ -789,13 +862,16 @@ def _cpu_latent(latent: dict[str, Any] | None) -> dict[str, Any] | None:
     samples = latent.get("samples") if isinstance(latent, dict) else None
     if samples is None:
         raise ValueError("Upscale latent has no samples value.")
-    streams = chain._streams_from_latent(latent)
+    streams = ([samples] if chain.torch.is_tensor(samples)
+               else chain._streams_from_latent(latent))
     copied = [chain._tensor_cpu_clone(item) for item in streams]
     return {"samples": _packed_samples(copied)}
 
 
 def _latent_checkpoint_tensors(latent: dict[str, Any]) -> tuple[dict[str, Any], str]:
-    streams = chain._streams_from_latent(latent)
+    samples = latent.get("samples") if isinstance(latent, dict) else None
+    streams = ([samples] if chain.torch.is_tensor(samples)
+               else chain._streams_from_latent(latent))
     if not streams:
         raise ValueError("Upscale latent contains no tensor streams.")
     if len(streams) == 2:
@@ -880,6 +956,7 @@ def _upscale_source_contract(source: dict[str, Any]) -> str:
         "continuation_mode", "context_length", "audio_context_length",
         "visual_context_blocks", "source_audio", "source_audio_timing",
         "reference_cache", "generation_fingerprint",
+        *(["processing_source"] if source.get("processing_source") else []),
     )})
 
 
@@ -1062,6 +1139,11 @@ class MiniMaxH3ChainUpscaleAdapter:
               initial_state=None):
         if initial_state is None:
             manifest = _verified_source_manifest(source_manifest)
+            if any(item.get("processing_source", {}).get("profile_path") ==
+                   chain._relative_output_path(_profile_dir(
+                       manifest["run_name"], chain._safe_name(profile, "upscale"), manifest))
+                   for item in manifest["segments"]):
+                raise ValueError("Choose a new output profile; do not overwrite the selected DeRoPE source profile.")
             first, last = _source_bounds(manifest)
             start = first if int(start_clip) == 1 else int(start_clip)
             stop = last if int(end_clip) == 0 else int(end_clip)
@@ -1157,6 +1239,9 @@ class MiniMaxH3ChainUpscaleCurrent:
         source = _source_segment(state)
         tensors = _load_source_tensors(source)
         latent, route = _source_latent(tensors)
+        if source.get("processing_source"):
+            route = "saved recovered DeRoPE %s; %s audio latent" % (
+                source["revision"][:8], "recovered" if source["latent_layout"] == "joint_av" else "original")
         video_stream, audio_stream = chain._streams_from_latent(latent)
         video_latent = {"samples": video_stream}
         audio_latent = {"samples": audio_stream}
@@ -1171,7 +1256,7 @@ class MiniMaxH3ChainUpscaleCurrent:
         delivered = int(source["delivered_frames"])
         trim = raw - delivered
         compatibility = state["source_manifest"].get("compatibility") or {}
-        geometry = chain.saved_resolution(source) or compatibility
+        geometry = _source_geometry(source, compatibility)
         width = int(geometry.get("width", 0))
         height = int(geometry.get("height", 0))
         if width < 1 or height < 1:
@@ -1713,11 +1798,18 @@ class MiniMaxH3ChainUpscaleReferenceConditioning:
         if motion_ref_mode not in MOTION_REFERENCE_MODES:
             raise ValueError(
                 "Unknown H3 motion reference mode %r." % motion_ref_mode)
-        geometry = chain.saved_resolution(source) or compatibility
+        geometry = _source_geometry(source, compatibility)
         width = int(geometry.get("width", 0))
         height = int(geometry.get("height", 0))
         length = int(source.get("raw_frames", 0))
         descriptor = source.get("reference_cache")
+        if source.get("processing_source"):
+            # Cache lookup belongs to generation, not the later canvas. Adapt
+            # the found references to the processing canvas separately.
+            target_size = target_size or (width, height)
+            original = source["processing_source"]["original"]
+            original_geometry = chain.saved_resolution(original) or compatibility
+            width, height = int(original_geometry["width"]), int(original_geometry["height"])
         if tagged_references is not None:
             if override_ref_image_size not in ("inherit", "match", "max"):
                 raise ValueError(
@@ -2282,6 +2374,18 @@ class MiniMaxH3ChainUpscaleSegmentSave:
             latent_tensors, latent_layout = _latent_checkpoint_tensors(
                 upscaled_latent)
             tensors.update(latent_tensors)
+            from .checkpoint_variants import processing_stage
+            if processing_stage(state["profile_config"]) == "derope":
+                # The saver also guards callers that bypass Recovered AV.
+                video = _video_stream_from_latent(upscaled_latent, "Saved DeRoPE latent")
+                expected_steps = (chain._validate_h3_length(raw, "DeRoPE RAW length") - 5) // 17 * 5 + 2
+                if (int(video.shape[2]) != expected_steps or
+                        int(video.shape[3]) * 16 != height or int(video.shape[4]) * 16 != width):
+                    raise ValueError("Save the full DeRoPE latent after Exact Recover and VAE Encode on the original RAW clock/canvas.")
+                if recovered_audio is not None and latent_layout != "joint_av":
+                    raise ValueError("Saving recovered DeRoPE audio requires audio_latent on Recovered AV for later deferred passes.")
+                if latent_layout == "joint_av":
+                    _validate_recovered_audio_shape(tensors["upscaled_audio"].shape, int(video.shape[0]), raw)
         if context_steps:
             tensors["upscaled_video_context"] = _upscaled_context_tensor(
                 upscaled_latent, context_steps)
@@ -2391,6 +2495,9 @@ class MiniMaxH3ChainUpscaleSegmentSave:
                 "profile_config": state["profile_config"],
                 "segment": segment,
             }
+            from .checkpoint_variants import processing_lineage
+            metadata["processing_lineage"] = processing_lineage(
+                list(state.get("segments", [])) + [segment])
             with chain.checkpoint_run_lock(chain._output_root(), state["run_name"]):
                 chain._atomic_json(metadata_path, metadata)
                 chain._atomic_json(paths["metadata"], metadata)

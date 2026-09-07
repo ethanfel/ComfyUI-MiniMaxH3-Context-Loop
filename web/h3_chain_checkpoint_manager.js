@@ -15,10 +15,11 @@ import {
     checkpointSelectionJson,
     checkpointLocalSelection,
     checkpointLocalSelectionJson,
+    checkpointDeropeSelectionJson,
     checkpointOutputSelectionJson,
     formatCheckpointBytes,
     selectedCheckpointRevision,
-} from "./h3_checkpoint_manager_core.mjs?v=0.7.11";
+} from "./h3_checkpoint_manager_core.mjs?v=0.7.12";
 import {
     parsePlanJson,
     planToJson,
@@ -552,15 +553,18 @@ function mount(node) {
     }
 
     function pinLocalOutput() {
-        if (state.stage !== "original" || state.busy || state.attribution || !selectionWidget) return;
+        if (!["original", "derope"].includes(state.stage) || state.busy || state.attribution || !selectionWidget) return;
         try {
             const tip = state.previewTip;
             if (!tip) throw new Error("Choose a branch heading first; this clip belongs to more than one branch.");
-            writeOutputSelection(checkpointLocalSelectionJson(
-                state.payload, state.runName, tip, chapterRangeFor(tip), outputScope.value));
+            writeOutputSelection(state.stage === "derope"
+                ? checkpointDeropeSelectionJson(state.payload, state.runName, tip, currentVariant(), chapterRangeFor(tip), outputScope.value)
+                : checkpointLocalSelectionJson(state.payload, state.runName, tip, chapterRangeFor(tip), outputScope.value));
             state.outputTip = tip;
             status.className = "h3cm-status";
-            status.textContent = "Whole branch saved for this workflow. Set start/end on the downstream range selector. Project active branch and connected Plan unchanged.";
+            status.textContent = state.stage === "derope"
+                ? "DeRoPE branch selected for deferred processing. Unsaved scenes use the selected original take; missing/corrupt full latents fail explicitly. Set the range downstream. Project unchanged."
+                : "Whole original branch saved for this workflow. Set start/end on the downstream range selector. Project active branch and connected Plan unchanged.";
             render();
         } catch (error) {
             status.className = "h3cm-status h3cm-error";
@@ -590,8 +594,11 @@ function mount(node) {
         const local = checkpointLocalSelection(selectionWidget?.value);
         outputScope.disabled = state.busy || state.stage !== "original";
         if (local) restoreOutputScope();
-        useLocal.disabled = state.busy || Boolean(state.attribution) || !selectionWidget || state.stage !== "original" || !state.previewTip?.ready;
-        useLocal.title = state.previewTip
+        useLocal.textContent = state.stage === "derope" ? "Use DeRoPE branch locally" : "Use branch locally";
+        useLocal.disabled = state.busy || Boolean(state.attribution) || !selectionWidget || !["original", "derope"].includes(state.stage) || !state.previewTip?.ready;
+        useLocal.title = state.stage === "derope"
+            ? "Use this saved DeRoPE branch as the deferred source, with original takes for unsaved scenes. No project activation. A full recovered latent is required."
+            : state.previewTip
             ? "Save the entire browsed branch for this workflow; set start/end on the downstream range selector. No project activation or Plan change."
             : "Choose a branch heading first. A shared clip alone does not identify which branch to use.";
         followSelection.disabled = state.busy || !local || state.stage !== "original" || !state.previewTip;
@@ -626,7 +633,8 @@ function mount(node) {
                     + (local ? ", then Use branch locally" : "") + " to include its later clips";
             }
         }
-        if (state.stage !== "original") outputSummary.textContent += " · processing preview only; original manifest output unchanged";
+        if (saved?.processing_source?.stage === "derope") outputSummary.textContent += ` · DeRoPE source: ${saved.processing_source.profile_path} · original fallback for unsaved scenes`;
+        if (state.stage !== "original") outputSummary.textContent += " · tab browsing does not change output";
     }
 
     function setBusy(value, message = "") {
@@ -706,9 +714,10 @@ function mount(node) {
         return state.selected ? checkpointStageVariants(state.payload, state.stage, state.selected)[0] ?? null : null;
     }
 
-    function selectVariant(record, original = null) {
+    function selectVariant(record, original = null, branchTip = null) {
         original ??= (state.payload?.revisions ?? []).find(item => (record.originals ?? []).some(
             source => checkpointRevisionKey(item.scene, item.revision) === checkpointRevisionKey(source.scene, source.revision)));
+        state.previewTip = branchTip ?? checkpointOutputBranchTip(state.payload, original, chapterRangeFor(original), state.previewTip);
         selectRevision(original, false, record.key);
     }
 
@@ -741,7 +750,8 @@ function mount(node) {
             stageTabs.append(tab);
         }
         stageNote.textContent = state.stage === "original" ? ""
-            : `${stageLabel()} versions grouped by their original source branch. Browsing only — deferred source routing is not enabled here yet.`;
+            : `${stageLabel()} versions grouped by their original source branch. Browsing does not change output.`
+                + (state.stage === "derope" ? " Select a saved take, then Use DeRoPE branch locally for deferred upscaling. Unsaved scenes use their original take." : "");
         const warnings = state.payload?.processing_variant_warnings ?? [];
         if (warnings.length) stageNote.textContent += ` ${warnings.length} processing metadata warning(s): ${warnings[0]}`;
         stageNote.hidden = !stageNote.textContent;
@@ -1018,10 +1028,10 @@ function mount(node) {
         }
     }
 
-    function variantCard(record, original = null) {
+    function variantCard(record, original = null, branchTip = null) {
         const card = button(`S${record.scene} · ${record.revision.slice(0, 8)}`,
             `${record.profile_path}\n${checkpointVariantLatentStatus(record)}`,
-            () => selectVariant(record, original), "h3cm-revision h3cm-processing-variant");
+            () => selectVariant(record, original, branchTip), "h3cm-revision h3cm-processing-variant");
         card.append(element("small", "", record.profile));
         card.append(element("small", "", `${record.width || "?"}×${record.height || "?"} · ${record.ready ? "saved" : "missing artifacts"}`));
         card.append(element("small", "", record.latent_saved ? "full latent saved" : "full latent not saved"));
@@ -1041,7 +1051,7 @@ function mount(node) {
                 const group = element("div", "h3cm-variant-group");
                 group.append(element("small", "h3cm-muted", `Original S${original.scene} · ${original.revision.slice(0, 8)}`));
                 const records = checkpointStageVariants(state.payload, state.stage, original);
-                for (const record of records) group.append(variantCard(record, original));
+                for (const record of records) group.append(variantCard(record, original, branch.revisions.at(-1)));
                 if (!records.length) group.append(button(`S${original.scene} · not saved`,
                     `No saved ${stageLabel()} version of this source revision`,
                     () => selectRevision(original, false), "h3cm-revision h3cm-revision-empty"));

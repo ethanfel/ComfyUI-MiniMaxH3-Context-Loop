@@ -99,7 +99,7 @@
         "{\"upscaler\":\"LBH 3D\",\"target_megapixels\":1.5,\"derope\":\"MAINodes adaptive pixel smear\",\"oracle\":\"balanced q0.75 dmax4\",\"pass2_steps\":8,\"inject\":0.5,\"audio_init\":0.5,\"audio_output\":\"original performance\"}",
         1,
         0,
-        false,
+        true,
         18
       ]
     },

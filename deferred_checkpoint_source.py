@@ -1,0 +1,108 @@
+"""Read a pinned processing branch as a deferred H3 source, without promotion."""
+
+from pathlib import Path
+import re
+
+from .checkpoint_variants import processing_lineage, processing_stage, validate_processing_lineage
+
+
+def derope_source_manifest(manifest, selection, chain, upscale):
+    if not isinstance(selection, dict) or selection.get("stage") != "derope":
+        raise ValueError("Unknown Checkpoint Manager processing source.")
+    root = Path(chain._output_root()).resolve()
+    run = root / "h3_chains" / chain._strict_run_name(manifest["run_name"])
+    profile = (root / str(selection.get("profile_path") or "")).resolve()
+    # Exactly run/upscaled/profile or run/chapters/chapter/upscaled/profile.
+    relative = profile.relative_to(run).parts if profile.is_relative_to(run) else ()
+    if not ((len(relative) == 2 and relative[0] == "upscaled") or
+            (len(relative) == 4 and relative[0] == "chapters" and relative[2] == "upscaled")):
+        raise ValueError("DeRoPE source profile is outside the selected run.")
+
+    def confined(address):
+        if not isinstance(address, str) or not address:
+            raise ValueError("DeRoPE source has a missing artifact address.")
+        path = (root / address).resolve()
+        if not path.is_relative_to(profile):
+            raise ValueError("DeRoPE source artifact escapes its profile.")
+        return path
+
+    branch = selection.get("branch")
+    if not isinstance(branch, dict) or not branch.get("lineage"):
+        raise ValueError("Select a saved DeRoPE branch, not an isolated clip.")
+    witness = chain._read_json(str(confined(branch.get("path"))))
+    if (not isinstance(witness, dict) or witness.get("run_name") != manifest["run_name"] or
+            witness.get("profile") != profile.name):
+        raise ValueError("DeRoPE branch belongs to another run/profile.")
+    if (branch.get("kind") == "metadata" and
+            witness.get("format") == "h3_chain_upscale_segment_v1"):
+        saved_lineage = witness.get("processing_lineage")
+    elif (branch.get("kind") == "manifest" and witness.get("format") in (
+            "h3_chain_upscale_manifest_v1", "h3_chain_upscale_partial_manifest_v1")):
+        saved_lineage = processing_lineage(witness.get("segments") or [])
+    else:
+        raise ValueError("Invalid saved DeRoPE branch format.")
+    if saved_lineage != branch["lineage"]:
+        raise ValueError("Saved DeRoPE branch changed. Select that processing branch again.")
+    validate_processing_lineage(saved_lineage)
+    by_scene = {int(item["scene"]): item for item in saved_lineage}
+    output = chain._json_document(manifest)
+    used = []
+    for position, original in enumerate(manifest["segments"]):
+        index = int(original["index"])
+        ref = by_scene.get(index)
+        if ref is None:
+            continue  # Only an absent scene falls back to its selected original.
+        revision = str(ref.get("revision") or "")
+        if not re.fullmatch(r"[0-9a-f]{32}", revision):
+            raise ValueError("Invalid saved DeRoPE revision.")
+        path = confined(ref.get("metadata_path"))
+        if path != profile / "checkpoints" / ("clip_%04d.%s.json" % (index, revision)):
+            raise ValueError("Saved DeRoPE revision address does not match its scene.")
+        metadata = chain._read_json(str(path))
+        if not isinstance(metadata, dict) or not isinstance(metadata.get("segment"), dict):
+            raise ValueError("Saved DeRoPE scene %d has invalid metadata." % index)
+        child = metadata.get("segment") or {}
+        if (metadata.get("format") != "h3_chain_upscale_segment_v1" or
+                metadata.get("run_name") != manifest["run_name"] or
+                metadata.get("profile") != profile.name or
+                processing_stage(metadata.get("profile_config")) != "derope" or
+                child.get("revision") != revision or
+                child.get("checkpoint_sha256") != ref.get("checkpoint_sha256")):
+            raise ValueError("Saved DeRoPE scene %d identity or stage does not match." % index)
+        source_revisions = {original.get("revision"), original.get("adopted_from_revision")}
+        if (not child.get("source_revision") or child.get("source_revision") not in source_revisions or
+                child.get("source_checkpoint_sha256") != original.get("checkpoint_sha256")):
+            raise ValueError("DeRoPE scene %d belongs to a different original take." % index)
+        for key in ("raw_frames", "delivered_frames", "prompt", "prompt_hash", "seed", "steps"):
+            if child.get(key) != original.get(key):
+                raise ValueError("DeRoPE scene %d has different source timing/settings (%s)." % (index, key))
+        if child.get("latent_saved") is not True:
+            raise ValueError(
+                "DeRoPE scene %d has no full latent (preview/continuation tail only). "
+                "Render it with save_latent enabled and Recovered AV connected; "
+                "or explicitly select Original. No silent fallback." % index)
+        for key in ("checkpoint", "segment", "revision_metadata", "prompt_file", "generated_audio"):
+            if child.get(key) is not None:
+                confined(child[key])
+        upscale._verify_upscale_segment(child, index)
+        # Retain the original continuation, timing, prompts, cache descriptor
+        # and generation fingerprint. Only media/latent identity comes from HQ.
+        resolved = dict(original)
+        for key in ("blend_segment", "blend_segment_sha256", "blend_frames",
+                    "generated_audio", "generated_audio_sha256", "resolution"):
+            resolved.pop(key, None)
+        resolved.update(child)
+        resolved["processing_source"] = {
+            "stage": "derope", "profile_path": str(profile.relative_to(root)),
+            "original": chain._json_document(original),
+        }
+        upscale._validate_processed_latent_header(resolved)
+        output["segments"][position] = resolved
+        used.append(index)
+    if not used:
+        raise ValueError("Selected DeRoPE branch has no scenes in this output scope.")
+    output["processing_source"] = {"stage": "derope", "scenes": used,
+                                   "fallback": "selected_original", "selection": selection}
+    # Geometry is checked per scene by deferred readers. A partial combined
+    # DeRoPE+upscale branch can legitimately differ from its original fallback.
+    return output

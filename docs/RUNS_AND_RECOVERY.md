@@ -321,11 +321,19 @@ visible in a separate section. Stage labels come from the saved recipe/backend,
 not the profile folder name; the bundled combined LBH + DeRoPE recipe appears
 under DeRoPE at its actual saved resolution.
 
-These tabs currently **browse saved versions**, not select a downstream
-processing source. Switching tabs or inspecting a derivative does not rewrite
-`selected_manifest`, move a local pin, activate a branch, restore a Plan, or
-delete an original checkpoint. Those actions remain in Original. Automatic
-DeRoPE-to-latent-upscale source routing is a separate follow-up.
+Switching tabs or inspecting a derivative does not rewrite `selected_manifest`,
+move a local pin, activate a branch, restore a Plan, or delete a checkpoint.
+For a later latent-upscale pass, select a saved take in **DeRoPE**, then click
+**Use DeRoPE branch locally**. This pins the whole saved processing branch to
+the browsed original branch; the downstream Adapter still controls start/end.
+Scenes absent from that DeRoPE branch automatically use their selected original
+take. A saved but incomplete/corrupt latent is an error, not an original fallback.
+Return to **Original → Use branch locally** to explicitly use originals again.
+
+New saves keep an immutable processing-lineage snapshot. Older saves can use
+their existing full/partial profile manifest if it identifies the chosen take.
+A shared take with multiple processing descendants is ambiguous: choose a later
+take unique to the desired processing branch. No "latest scene" mixing occurs.
 
 The inspector reports canvas, RAW/delivered frames, audio route, full-latent
 save status, profile and metadata location. A continuation tail is explicitly
@@ -540,10 +548,9 @@ a later independent upscale cannot undo the recovered motion timing.
 
 The current combined example already wires recovered frames through VAE Encode
 and **Chain Recovered AV**, and sends that recovered latent to Upscale Segment
-Save and Loop End. However, the example's Adapter has **save_latent OFF**: the
-video/audio output and any required continuation tail are saved, not the entire
-reusable latent. Existing preview-only results do not gain a latent by opening
-their new DeRoPE tab.
+Save and Loop End. The example now has **save_latent ON**, so new renders retain
+the complete recovered latent for a later pass. Existing workflows keep their
+stored setting; preview-only results do not gain a latent by opening the tab.
 
 For a separate later latent-upscale pass, a DeRoPE save needs:
 
@@ -554,17 +561,22 @@ For a separate later latent-upscale pass, a DeRoPE save needs:
   clock, including the continuation head (the saver trims delivered pixels
   separately). Recovered AV checks the H3 temporal length; a stretched pass-2
   intermediate is not a recovered output.
-- Aligned recovered audio where appropriate. A deferred video-only latent is
-  allowed today, so a future source loader must distinguish that layout from
-  joint AV and explicitly obtain its audio stream from the matching source.
+- Aligned recovered audio where appropriate. Joint AV saves reuse recovered
+  audio latents and the saved delivered waveform. Video-only saves that preserve
+  the original performance reuse the exact original take's audio latent, loading
+  only audio from that checkpoint. If recovered audio replaces the performance,
+  connect its re-encoded `audio_latent` to Recovered AV before saving.
 - Source revision/hash and reference-cache provenance retained through each
   stage. Saved child tensors use `upscaled_video`/`upscaled_audio` or
-  `upscaled_samples`, while Current Scene's original loader expects
-  `denoised_video`/`denoised_audio` or `video`/`audio`. Browsing these files does
-  not yet adapt that storage/layout contract into a new source manifest.
+  `upscaled_samples`; Current Scene translates these into its source AV streams.
+  Reference-cache lookup retains the original generation fingerprint and canvas,
+  then rebuilds conditioning for the processing canvas. New upscale results
+  remain linked through their DeRoPE parent to the original checkpoint.
 
-This is the saving audit for deferred stage chaining, not a change to existing
-workflow defaults or a claim that the automatic source fallback is implemented.
+Select a **different output profile** for the later pass. The original generation
+and DeRoPE source files are not overwritten. Full latent headers and checksums
+are checked at execution; a continuation tail or time-stretched intermediate is
+not a valid recovered source.
 
 When pass 2 should use a different reference set, insert **Upscale Reference +
 Prompt Override** on the normal `H3_TAGGED_REFERENCES` line and connect its

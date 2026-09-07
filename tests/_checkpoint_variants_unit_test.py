@@ -21,15 +21,15 @@ class VariantTests(unittest.TestCase):
         self.originals = [{"scene": 8, "revision": "a" * 32, "checkpoint_sha256": "b" * 64}]
 
     def save(self, profile="hq", revision="c" * 32, chapter=False, recipe=None,
-             source_revision="a" * 32, source_hash="b" * 64, backend="h3_latent"):
+             source_revision="a" * 32, source_hash="b" * 64, backend="h3_latent", scene=8):
         parent = self.root / "h3_chains/demo"
         if chapter:
             parent /= "chapters/02_test"
         parent = parent / "upscaled" / profile
-        path = parent / "checkpoints" / ("clip_0008.%s.json" % revision)
+        path = parent / "checkpoints" / ("clip_%04d.%s.json" % (scene, revision))
         path.parent.mkdir(parents=True, exist_ok=True)
         segment = {
-            "index": 8, "id": "eighth", "revision": revision,
+            "index": scene, "id": "eighth", "revision": revision,
             "source_revision": source_revision, "source_checkpoint_sha256": source_hash,
             "checkpoint_sha256": revision * 2, "width": 960, "height": 544,
             "raw_frames": 175, "delivered_frames": 175,
@@ -45,7 +45,7 @@ class VariantTests(unittest.TestCase):
                  "segment": segment}
         self.write(path, value)
         # Mutable pointer plus its immutable history must appear only once.
-        self.write(path.parent / "clip_0008.json", value)
+        self.write(path.parent / ("clip_%04d.json" % scene), value)
         return path, value
 
     @staticmethod
@@ -129,6 +129,34 @@ class VariantTests(unittest.TestCase):
         for off in (False, "false", "off", "none", "disabled", "", 0):
             self.assertEqual(module.processing_stage({"backend": "h3_latent", "recipe": {"derope": off}}), "latent_upscale")
         self.assertEqual(module.processing_stage({"backend": "h3_latent", "recipe": {"stage": "derope"}}), "derope")
+
+    def test_processing_prefix_extends_to_unique_tip_but_not_across_forks(self):
+        first_path, first = self.save(profile="motion", recipe={"derope": True})
+        first["processing_lineage"] = module.processing_lineage([first["segment"]])
+        self.write(first_path, first)
+        second_path, second = self.save(profile="motion", recipe={"derope": True}, scene=9, revision="d" * 32)
+        second["processing_lineage"] = module.processing_lineage([first["segment"], second["segment"]])
+        self.write(second_path, second)
+        records = self.scan()["variants"]
+        self.assertTrue(all(len(item["processing_branch"]["lineage"]) == 2 for item in records))
+        fork_path, fork = self.save(profile="motion", recipe={"derope": True}, scene=9, revision="e" * 32)
+        fork["processing_lineage"] = module.processing_lineage([first["segment"], fork["segment"]])
+        self.write(fork_path, fork)
+        records = {item["revision"]: item for item in self.scan()["variants"]}
+        self.assertIsNone(records["c" * 32]["processing_branch"])
+        for revision in ("d" * 32, "e" * 32):
+            self.assertEqual(records[revision]["processing_branch"]["lineage"][-1]["revision"], revision)
+
+    def test_legacy_profile_manifest_supplies_saved_branch_without_rewriting(self):
+        path, saved = self.save(profile="motion", recipe={"derope": True})
+        manifest = path.parent.parent / "upscale_manifest.json"
+        self.write(manifest, {"format": "h3_chain_upscale_manifest_v1", "run_name": "demo",
+                              "profile": "motion", "segments": [saved["segment"]]})
+        stamp = path.stat().st_mtime_ns
+        record = self.scan()["variants"][0]
+        self.assertEqual(record["processing_branch"]["kind"], "manifest")
+        self.assertEqual(record["processing_branch"]["lineage"], module.processing_lineage([saved["segment"]]))
+        self.assertEqual(path.stat().st_mtime_ns, stamp)
 
 
 if __name__ == "__main__":

@@ -19057,6 +19057,8 @@ class MiniMaxH3ChainCheckpointManager:
         "scenes. Use branch locally pins this output in the workflow without "
         "changing the project's active branch. Selected chapter only excludes "
         "earlier chapters while keeping original scene numbers and timing. "
+        "Use DeRoPE branch locally substitutes verified recovered latents; "
+        "unsaved processing scenes use their selected originals. "
         "Connect to Checkpoint Upscale "
         "Adapter; no source Plan connection is required.",
     )
@@ -28570,6 +28572,15 @@ def _checkpoint_selection_manifest(value: Any) -> dict[str, Any] | None:
             manifest, int(selected_chapter["number"]), persist=False)
     else:
         _validate_manifest(manifest)
+    if selection.get("processing_source") is not None:
+        from . import upscale_nodes
+        from .deferred_checkpoint_source import derope_source_manifest
+        for segment in manifest["segments"]:
+            original_metadata = loaded[int(segment["index"]) - 1]["segment"]
+            if original_metadata.get("adopted_from_revision"):
+                segment["adopted_from_revision"] = original_metadata["adopted_from_revision"]
+        manifest = derope_source_manifest(
+            manifest, selection["processing_source"], sys.modules[__name__], upscale_nodes)
     return manifest
 
 

@@ -259,6 +259,30 @@ export function checkpointOutputSelectionJson(current, payload, runName, selecte
         : checkpointSelectionJson(payload, runName, selected, range, outputScope);
 }
 
+export function checkpointDeropeSelectionJson(payload, runName, tip, variant, range = null, outputScope = "project") {
+    const base = JSON.parse(checkpointLocalSelectionJson(payload, runName, tip, range, outputScope));
+    if (variant?.stage !== "derope" || !variant.processing_branch) {
+        throw new Error("Select a DeRoPE take with an unambiguous saved branch. For a shared take, choose the desired branch's later take.");
+    }
+    const selected = new Set(base.lineage.filter(item => outputScope !== "chapter" || item.scene >= base.scope_start_scene)
+        .map(item => checkpointRevisionKey(item.scene, item.revision)));
+    const first = outputScope === "chapter" ? base.scope_start_scene : 1;
+    let used = 0;
+    for (const ref of variant.processing_branch.lineage) {
+        if (ref.scene < first || ref.scene > tip.scene) continue;
+        const saved = (payload.processing_variants ?? []).find(item => item.key === ref.metadata_path && item.checkpoint_sha256 === ref.checkpoint_sha256);
+        if (!saved || saved.stage !== "derope" || !saved.ready || !saved.latent_saved) {
+            throw new Error(`DeRoPE scene ${ref.scene} needs an available full latent. Save with save_latent enabled and Recovered AV connected, or explicitly use Original.`);
+        }
+        if (saved.profile_path !== variant.profile_path || !(saved.originals ?? []).some(item => selected.has(checkpointRevisionKey(item.scene, item.revision)))) {
+            throw new Error(`DeRoPE scene ${ref.scene} belongs to a different original branch.`);
+        }
+        used += 1;
+    }
+    if (!used) throw new Error("This DeRoPE branch has no scenes in the selected output scope.");
+    return JSON.stringify({...base, processing_source:{stage:"derope", profile_path:variant.profile_path, branch:variant.processing_branch}});
+}
+
 export function checkpointActivationMode(payload, selected, range = null) {
     if (!selected?.ready || selected?.take_kind === "editorial_alternate") {
         return "disabled";

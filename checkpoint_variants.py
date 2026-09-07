@@ -12,6 +12,30 @@ import re
 STAGES = ("derope", "latent_upscale", "pixel_upscale", "other")
 
 
+def processing_lineage(segments):
+    """Small immutable addresses, not copies of tensors or source manifests."""
+    return [{"scene": int(item["index"]), "revision": item["revision"],
+             "metadata_path": item["revision_metadata"],
+             "checkpoint_sha256": item["checkpoint_sha256"]}
+            for item in segments]
+
+
+def validate_processing_lineage(value):
+    if not isinstance(value, list) or not value:
+        raise ValueError("Saved processing branch has no lineage.")
+    for item in value:
+        if (not isinstance(item, dict) or type(item.get("scene")) is not int or
+                item["scene"] < 1 or
+                not re.fullmatch(r"[0-9a-f]{32}", str(item.get("revision") or "")) or
+                not re.fullmatch(r"[0-9a-f]{64}", str(item.get("checkpoint_sha256") or "")) or
+                not isinstance(item.get("metadata_path"), str) or not item["metadata_path"]):
+            raise ValueError("Saved processing branch has an invalid revision address.")
+    first = value[0]["scene"]
+    if [item["scene"] for item in value] != list(range(first, first + len(value))):
+        raise ValueError("Saved processing branch is not contiguous.")
+    return value
+
+
 def processing_stage(config):
     config = config if isinstance(config, dict) else {}
     recipe = config.get("recipe") or {}
@@ -34,7 +58,8 @@ def saved_checkpoint_variants(output_root, run_name, originals):
     run = (root / "h3_chains" / run_name).resolve()
     if run.parent != root / "h3_chains":
         raise ValueError("Invalid checkpoint variant run directory.")
-    records, warnings, seen = [], [], set()
+    records, warnings, seen, branches = [], [], set(), []
+    legacy_profiles = set()
 
     def inside(path, parent):
         resolved = path.resolve()
@@ -52,6 +77,31 @@ def saved_checkpoint_variants(output_root, run_name, originals):
     def media(path):
         rel = path.relative_to(root)
         return {"filename": rel.name, "subfolder": str(rel.parent), "type": "output"}
+
+    def legacy_branches(profile):
+        # Only legacy DeRoPE takes need these larger, embedded-source files.
+        # New saves use compact immutable lineage snapshots in their metadata.
+        if profile in legacy_profiles:
+            return
+        legacy_profiles.add(profile)
+        manifests = [profile / "upscale_manifest.json"]
+        partial = inside(profile / "partial", profile)
+        if partial.is_dir():
+            manifests.extend(partial.glob("through_clip_*.manifest.json"))
+        for path in manifests:
+            if not path.is_file():
+                continue
+            try:
+                path = inside(path, profile)
+                saved = read(path)
+                if (saved.get("format") not in (
+                        "h3_chain_upscale_manifest_v1", "h3_chain_upscale_partial_manifest_v1") or
+                        saved.get("run_name") != run_name or saved.get("profile") != profile.name):
+                    raise ValueError("Invalid processing branch manifest.")
+                branches.append({"path": str(path.relative_to(root)), "kind": "manifest",
+                                 "lineage": validate_processing_lineage(processing_lineage(saved["segments"]))})
+            except (OSError, ValueError, TypeError, KeyError) as exc:
+                warnings.append("%s: %s" % (path.name, exc))
 
     parents = [run / "upscaled"]
     chapters = run / "chapters"
@@ -145,6 +195,11 @@ def saved_checkpoint_variants(output_root, run_name, originals):
                         **outputs,
                     }
                     records.append(record)
+                    if metadata.get("processing_lineage"):
+                        branches.append({"path": identity, "kind": "metadata",
+                                         "lineage": validate_processing_lineage(metadata["processing_lineage"])})
+                    elif record["stage"] == "derope":
+                        legacy_branches(profile)
                 except (OSError, ValueError, TypeError, KeyError) as exc:
                     warnings.append("%s: %s" % (path.name, exc))
 
@@ -184,4 +239,20 @@ def saved_checkpoint_variants(output_root, run_name, originals):
                                for scene, revision in sorted(matches)]
         record["source_status"] = "linked" if matches else "original unavailable or source mismatch"
     records.sort(key=lambda item: (item["scene"], item["created_at"], item["key"]), reverse=True)
+    for record in records:
+        matches = [branch for branch in branches if any(
+            item.get("metadata_path") == record["key"] and
+            item.get("checkpoint_sha256") == record["checkpoint_sha256"]
+            for item in branch["lineage"] if isinstance(item, dict))]
+        # Remove strict prefixes and duplicate snapshots. Two distinct leaves
+        # are ambiguous: the user must click a take unique to the desired leaf.
+        leaves = {}
+        for branch in matches:
+            lineage = branch["lineage"]
+            if not any(len(other["lineage"]) > len(lineage) and
+                       other["lineage"][:len(lineage)] == lineage for other in matches):
+                key = json.dumps(lineage, sort_keys=True)
+                if key not in leaves or branch["kind"] == "metadata":
+                    leaves[key] = branch
+        record["processing_branch"] = next(iter(leaves.values())) if len(leaves) == 1 else None
     return {"variants": records, "warnings": warnings}

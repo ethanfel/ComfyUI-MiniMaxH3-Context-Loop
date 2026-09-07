@@ -319,6 +319,8 @@ currentGraph.processing_variants = [
         video:{filename:"motion.mp4"}, audio:{filename:"motion.wav"}},
     {key:"demo/motion/two", scene:2, revision:"2".repeat(32), stage:"derope", profile:"motion2",
         profile_path:"demo/upscaled/motion2", originals:[{scene:2, revision:b}], ready:true,
+        checkpoint_sha256:"2".repeat(64), processing_branch:{path:"demo/motion/two", kind:"metadata",
+            lineage:[{scene:2, revision:"2".repeat(32), metadata_path:"demo/motion/two", checkpoint_sha256:"2".repeat(64)}]},
         width:960, height:544, raw_frames:175, delivered_frames:175, latent_saved:true, latent_layout:"joint_av",
         video:{filename:"motion2.mp4"}},
     {key:"demo/hq/one", scene:2, revision:"3".repeat(32), stage:"latent_upscale", profile:"hq",
@@ -338,7 +340,9 @@ assert.equal(byClass(variants, "h3cm-stage-tab")["role"], "tab");
 assert.equal(value(variants), originalOutput);
 assert.equal(byClass(variants, "h3cm-preview").dataset.source, "/view?filename=motion.mp4&subfolder=&type=output");
 assert.ok(elements(variants).some(item => /Continuation tail only/.test(item.textContent)));
-assert.ok(byText(variants, "Use branch locally").disabled);
+byText(variants, "Use DeRoPE branch locally").click();
+assert.equal(value(variants), originalOutput, "an unusable processing branch never changes output");
+assert.match(byClass(variants, "h3cm-status").textContent, /unambiguous saved branch/);
 assert.ok(byText(variants, "Make branch active (project)").disabled);
 assert.ok(byText(variants, "Delete selected revision").disabled);
 select(variants, 2, "2".repeat(32));
@@ -346,6 +350,22 @@ assert.equal(value(variants), originalOutput);
 assert.equal(byClass(variants, "h3cm-audio").hidden, true, "no stale sidecar from another take");
 assert.ok(elements(variants).some(item => /Full latent saved \(joint_av\)/.test(item.textContent)));
 const savedVariantProperties = structuredClone(variants.properties);
+const processingPin = makeNode(originalOutput, savedVariantProperties);
+await settle();
+select(processingPin, 2, "2".repeat(32));
+byText(processingPin, "Use DeRoPE branch locally").click();
+const pinnedProcessing = JSON.parse(value(processingPin));
+assert.equal(pinnedProcessing.processing_source.stage, "derope");
+assert.equal(pinnedProcessing.output_mode, "workflow_local");
+assert.equal(pinnedProcessing.lineage.at(-1).scene, 3, "processing preview does not trim the original branch");
+assert.deepEqual(pinnedProcessing.processing_source.branch.lineage.map(item => item.scene), [2], "absent processing scenes remain original fallbacks");
+const restoredPin = makeNode(value(processingPin), structuredClone(processingPin.properties));
+await settle();
+assert.deepEqual(JSON.parse(value(restoredPin)), pinnedProcessing);
+byText(restoredPin, "Original · 4").click();
+assert.deepEqual(JSON.parse(value(restoredPin)), pinnedProcessing, "tab switch cannot reset DeRoPE output");
+byText(restoredPin, "Use branch locally").click();
+assert.equal(JSON.parse(value(restoredPin)).processing_source, undefined, "explicit Original selection resets source stage");
 const reopenedVariant = makeNode(originalOutput, savedVariantProperties);
 await settle();
 assert.equal(byClass(reopenedVariant, "h3cm-preview").dataset.source, "/view?filename=motion2.mp4&subfolder=&type=output");
