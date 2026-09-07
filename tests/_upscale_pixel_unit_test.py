@@ -156,7 +156,7 @@ def assert_independent_pixel_cleanup(chain, upscale, state, manifest, frames):
     upscale._validate_upscale_manifest(validated)
 
 
-def assert_loop_releases_pixels(package, chain, upscale, manifest, ram_cache=False):
+def assert_loop_releases_pixels(package, chain, upscale, manifest, ram_cache=False, png_export=False):
     """Run the real recursive Comfy executor, without models or a live server.
 
     NullCache deliberately evicts ordinary node outputs. Pending subgraph
@@ -193,7 +193,7 @@ def assert_loop_releases_pixels(package, chain, upscale, manifest, ram_cache=Fal
         @classmethod
         def INPUT_TYPES(cls):
             return {"required": {"state": (upscale.UPSCALE_STATE_TYPE,)}}
-        RETURN_TYPES = (upscale.UPSCALE_STATE_TYPE, "IMAGE")
+        RETURN_TYPES = (upscale.UPSCALE_STATE_TYPE, "IMAGE", "VIDEO")
         FUNCTION = "make"
 
         def make(self, state):
@@ -206,7 +206,37 @@ def assert_loop_releases_pixels(package, chain, upscale, manifest, ram_cache=Fal
             images = torch.full((source["raw_frames"], 64, 96, 3), scene / 10)
             old_frames.append(weakref.ref(images))
             rendered.append(scene)
-            return state, images
+            video = None
+            if png_export:
+                import av
+                from comfy_api.latest import InputImpl
+                path = Path(chain._output_root()) / ("memory_scene_%d.mkv" % scene)
+                with av.open(str(path), "w") as container:
+                    stream = container.add_stream("ffv1", rate=24)
+                    stream.width, stream.height, stream.pix_fmt = 96, 64, "bgr0"
+                    for number, image in enumerate(images):
+                        frame = av.VideoFrame.from_ndarray((image * 255).round().byte().numpy(), format="rgb24")
+                        frame.pts = number
+                        container.mux(stream.encode(frame))
+                    container.mux(stream.encode())
+                video = InputImpl.VideoFromFile(str(path))
+            return state, images, video
+
+    class AfterPNG:
+        @classmethod
+        def INPUT_TYPES(cls):
+            return {"required": {"video": ("VIDEO",), "images": ("IMAGE",), "folder": ("STRING",)}}
+        RETURN_TYPES = ("IMAGE",)
+        FUNCTION = "ready"
+
+        def ready(self, video, images, folder):
+            # This dependency gate models the native VIDEO saver/loop boundary.
+            # PNG publication must have finished before either may advance.
+            record = json.loads((Path(folder) / "export.json").read_text())
+            assert record["last_scene"] == rendered[-1]
+            assert len(record["clips"]) == len(rendered)
+            assert video is not None
+            return (images,)
 
     class Result:
         @classmethod
@@ -225,7 +255,7 @@ def assert_loop_releases_pixels(package, chain, upscale, manifest, ram_cache=Fal
 
     prompt = {
         "adapter": {"class_type": "MiniMaxH3ChainUpscaleAdapter", "inputs": {
-            "source_manifest": manifest, "profile": "memory-test-" + str(ram_cache), "backend": "pixel",
+            "source_manifest": manifest, "profile": "memory-test-" + str(ram_cache) + ("-png" if png_export else ""), "backend": "pixel",
             "recipe_json": "{}", "start_clip": 1, "end_clip": 0,
             "save_latent": False, "segment_crf": 18}},
         "pixels": {"class_type": "MemoryTestPixels", "inputs": {"state": ["adapter", 1]}},
@@ -237,6 +267,15 @@ def assert_loop_releases_pixels(package, chain, upscale, manifest, ram_cache=Fal
         "result": {"class_type": "MemoryTestResult", "inputs": {
             "manifest": ["end", 0], "tail": ["end", 2]}},
     }
+    if png_export:
+        prompt["png"] = {"class_type": "MiniMaxH3ChainExportPNG", "inputs": {
+            "video": ["pixels", 2], "state": ["pixels", 0], "export_name": "loop-sequence",
+            "first_frame_number": 1, "png_compression": 1, "embed_workflow": False,
+            "png_bit_depth": "16", "save_workers": 2}}
+        prompt["after_png"] = {"class_type": "MemoryTestAfterPNG", "inputs": {
+            "video": ["png", 4], "folder": ["png", 0], "images": ["pixels", 1]}}
+        prompt["save"]["inputs"]["images"] = ["after_png", 0]
+        prompt["end"]["inputs"]["images"] = ["after_png", 0]
     server = SimpleNamespace(client_id=None, last_node_id=None,
                              send_sync=lambda *a, **k: None)
     executor = execution.PromptExecutor(server, execution.CacheType.RAM_PRESSURE if ram_cache else execution.CacheType.NONE,
@@ -249,6 +288,7 @@ def assert_loop_releases_pixels(package, chain, upscale, manifest, ram_cache=Fal
 
     with patch.dict(nodes.NODE_CLASS_MAPPINGS, {
             **package.NODE_CLASS_MAPPINGS, "MemoryTestPixels": Pixels,
+            "MemoryTestAfterPNG": AfterPNG,
             "MemoryTestResult": Result,
             "MiniMaxH3ChainUpscaleSegmentSave": (
                 upscale.MiniMaxH3ChainUpscaleSegmentSave if ram_cache else SaveForTest)}):
@@ -370,6 +410,7 @@ def main():
         manifest = pinned
         assert_loop_releases_pixels(package, chain, upscale, manifest)
         assert_loop_releases_pixels(package, chain, upscale, manifest, ram_cache=True)
+        assert_loop_releases_pixels(package, chain, upscale, manifest, ram_cache=True, png_export=True)
         # Chapter output can combine takes with different catalog histories.
         # Cache lookup must use the current take, including an empty legacy
         # fingerprint, not the first chapter scene's catalog.

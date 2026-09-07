@@ -25506,7 +25506,7 @@ def _png_export_source_identity(segment: dict[str, Any]) -> dict[str, Any]:
 
 def _png_export_incremental_identity(
         manifest, segments, editorial_segments, video_vae, audio_vae,
-        first_frame_number, compression, embed_workflow):
+        first_frame_number, compression, embed_workflow, png_bit_depth=8):
     chapter = manifest.get("chapter") or {}
     sources = {int(item["index"]): item for item in segments}
     placements = {
@@ -25521,6 +25521,8 @@ def _png_export_incremental_identity(
             "first_frame_number": int(first_frame_number),
             "png_compression": compression,
             "embed_workflow": bool(embed_workflow),
+            # Keep legacy 8-bit identities reusable; 16-bit is a distinct export.
+            **({"png_bit_depth": 16} if int(png_bit_depth) == 16 else {}),
             # Use the original VAEs for incremental exports. Different weights
             # of the same class require reuse_existing=false (as with other
             # latent re-decode caches, a class signature is not a weights hash).
@@ -25645,9 +25647,9 @@ def _write_png(path: str, pixels: Any, compression: int,
     if Image is None or PngImagePlugin is None or np is None:
         raise RuntimeError("H3 PNG export requires Pillow and NumPy.")
     if (not isinstance(pixels, np.ndarray) or pixels.ndim != 3
-            or pixels.shape[-1] < 3 or pixels.dtype != np.uint8):
+            or pixels.shape[-1] < 3 or pixels.dtype not in (np.uint8, np.uint16)):
         raise ValueError(
-            "H3 PNG export expected one uint8 [height,width,channels] image; "
+            "H3 PNG export expected one uint8/uint16 [height,width,channels] image; "
             "got %r/%r." % (getattr(pixels, "shape", None),
                              getattr(pixels, "dtype", None)))
     pnginfo = PngImagePlugin.PngInfo()
@@ -25656,9 +25658,13 @@ def _write_png(path: str, pixels: Any, compression: int,
             pnginfo.add_text(str(key), str(value))
     temporary = "%s.%s.tmp" % (path, uuid.uuid4().hex)
     try:
-        Image.fromarray(pixels).save(
-            temporary, format="PNG", compress_level=int(compression),
-            pnginfo=pnginfo)
+        if pixels.dtype == np.uint16:
+            from .png_video_export import write_png16
+            write_png16(temporary, pixels, compression, metadata)
+        else:
+            Image.fromarray(pixels).save(
+                temporary, format="PNG", compress_level=int(compression),
+                pnginfo=pnginfo)
         os.replace(temporary, path)
     finally:
         _safe_unlink(temporary)
@@ -25807,10 +25813,6 @@ class MiniMaxH3ChainExportPNG:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "manifest": (MANIFEST_TYPE, {
-                    "tooltip": "Completed or partial manifest from Loop End or "
-                               "Manifest Load. Checkpoint latents are decoded "
-                               "scene by scene; the H.264 segments are not used."}),
                 "export_name": ("STRING", {
                     "default": "png_sequence",
                     "tooltip": "Folder name under the Run frames folder, or "
@@ -25836,6 +25838,9 @@ class MiniMaxH3ChainExportPNG:
                                "first frame of every scene."}),
             },
             "optional": {
+                "manifest": (MANIFEST_TYPE, {
+                    "tooltip": "Latent-export mode: completed or partial manifest from Loop End/Manifest Load. "
+                               "Leave disconnected in VIDEO passthrough mode; connect video and state inside the scene loop instead."}),
                 "video_vae": ("VAE", {
                     "tooltip": "Connect the original MiniMax H3 video VAE to "
                                "export PNG frames. Leave it disconnected for "
@@ -25853,31 +25858,46 @@ class MiniMaxH3ChainExportPNG:
                     "tooltip": "Cached verifies each immutable checkpoint with "
                                "SHA-256 once, then trusts matching size and "
                                "modification time on later exports. Strict "
-                               "re-hashes every checkpoint on every export."}),
+                               "re-hashes every checkpoint on every export. In VIDEO mode this verifies existing PNGs: "
+                               "cached checks size/mtime, strict re-hashes; the incoming VIDEO is always hashed."}),
                 "reuse_existing": ("BOOLEAN", {
                     "default": True,
                     "tooltip": "For Chapter manifests, keep verified unchanged "
                                "PNGs and append newly generated scenes. Changed "
                                "takes, trims or settings create a new folder. "
-                               "Turn off after changing VAE weights or decode "
+                               "VIDEO mode reuses exact saved scenes in the selected folder and appends the next scene; "
+                               "different takes/settings require a new folder. Turn off after changing VAE weights or decode "
                                "settings, or to force a fresh export. Whole-Run "
                                "exports always create a new folder."}),
+                "video": ("VIDEO", {
+                    "tooltip": "Pixel-export mode: final file-backed RAW VIDEO before MP4 compression. "
+                               "Writes one scene at a time and passes the same VIDEO through to Segment Save and Loop End. No VAE needed."}),
+                "state": ("H3_CHAIN_UPSCALE_STATE", {
+                    "tooltip": "Current pixel-upscale scene state. Required with VIDEO for scene identity, RAW overlap trimming and sequence numbering."}),
+                "output_folder": ("STRING", {
+                    "default": "", "tooltip": "VIDEO mode: chosen subfolder inside ComfyUI output (relative or absolute). "
+                               "Empty uses this upscale profile's frames/export_name folder. Different takes/settings never overwrite existing PNGs."}),
+                "png_bit_depth": (["8", "16"], {
+                    "default": "8", "tooltip": "8-bit RGB (existing default) or 16-bit RGB. "
+                               "16-bit preserves the RGB16 file-backed VIDEO precision and uses more disk space. Applies to both video and latent export."}),
             },
         }
 
-    RETURN_TYPES = ("STRING", "INT", "STRING", "STRING")
-    RETURN_NAMES = ("output_directory", "frame_count", "status", "audio_path")
+    RETURN_TYPES = ("STRING", "INT", "STRING", "STRING", "VIDEO")
+    RETURN_NAMES = ("output_directory", "frame_count", "status", "audio_path", "video")
     OUTPUT_TOOLTIPS = (
         "Absolute folder containing the selected deliverables and export.json.",
         "Total PNG frames available, including reused frames; zero in "
         "audio-only mode.",
         "Export folder, generated deliverables, scene count, and duration.",
         "Absolute audio.wav path when audio_vae is connected; blank otherwise.",
+        "Unchanged VIDEO after this scene's PNGs are saved. Connect to Segment Save and Loop End. None in latent-export mode.",
     )
     FUNCTION = "export"
     OUTPUT_NODE = True
     CATEGORY = "conditioning/minimax/context_loop"
-    DESCRIPTION = ("Re-decode saved H3 video and/or audio checkpoints, remove "
+    DESCRIPTION = ("Save file-backed VIDEO scene by scene inside a pixel upscale loop, "
+                   "or re-decode saved H3 video and/or audio checkpoints. Remove "
                    "repeated context overlap, and write a continuous lossless "
                    "PNG sequence, synchronized PCM WAV, or both. Either VAE can "
                    "be connected independently.")
@@ -25886,23 +25906,39 @@ class MiniMaxH3ChainExportPNG:
     def IS_CHANGED(cls, *args, **kwargs):
         return float("NaN")
 
-    def export(self, manifest, video_vae=None, export_name="png_sequence",
+    def export(self, manifest=None, video_vae=None, export_name="png_sequence",
                first_frame_number=1, png_compression=1, embed_workflow=True,
                save_workers=0, checkpoint_verification="cached",
-               audio_vae=None, reuse_existing=True):
+               audio_vae=None, reuse_existing=True, video=None, state=None,
+               output_folder="", png_bit_depth="8"):
+        from .png_video_export import bit_depth, export_video
+        bits = bit_depth(png_bit_depth)
+        if video is not None:
+            if manifest is not None or video_vae is not None or audio_vae is not None:
+                raise ValueError("VIDEO passthrough uses video + state inside the scene loop. Disconnect manifest and VAEs; the segment saver preserves audio.")
+            return export_video(
+                sys.modules[__name__], video, state, export_name, output_folder,
+                first_frame_number, png_compression, bits, embed_workflow,
+                save_workers, checkpoint_verification, reuse_existing)
+        if state is not None or output_folder:
+            raise ValueError("state/output_folder require the VIDEO passthrough input. For latent export connect manifest + VAE.")
+        if manifest is None:
+            raise ValueError("Connect manifest + VAE for latent export, or VIDEO + state inside the pixel upscale scene loop.")
         incremental = (bool(reuse_existing) and isinstance(manifest, dict)
                        and manifest.get("format") == CHAPTER_MANIFEST_FORMAT)
         guard = (_chapter_png_export_lock(manifest, export_name)
                  if incremental else nullcontext())
         with guard:
-            return self._export(
+            result = self._export(
                 manifest, video_vae, export_name, first_frame_number,
                 png_compression, embed_workflow, save_workers,
-                checkpoint_verification, audio_vae, incremental)
+                checkpoint_verification, audio_vae, incremental, bits)
+            result["result"] = (*result["result"], None)
+            return result
 
     def _export(self, manifest, video_vae, export_name, first_frame_number,
                 png_compression, embed_workflow, save_workers,
-                checkpoint_verification, audio_vae, incremental):
+                checkpoint_verification, audio_vae, incremental, png_bit_depth=8):
         if _st_load is None or torch is None or np is None:
             raise RuntimeError(
                 "H3 PNG/WAV export requires safetensors, torch, and NumPy.")
@@ -25948,7 +25984,7 @@ class MiniMaxH3ChainExportPNG:
         cache_path, hash_cache = _load_png_export_hash_cache(manifest)
         identity = (_png_export_incremental_identity(
             manifest, segments, editorial_segments, video_vae, audio_vae,
-            first_frame_number, compression, embed_workflow) if incremental else None)
+            first_frame_number, compression, embed_workflow, png_bit_depth) if incremental else None)
         previous_export = (_find_incremental_png_export(
             manifest, export_name, identity, verification) if incremental else None)
         if previous_export is None:
@@ -25997,6 +26033,7 @@ class MiniMaxH3ChainExportPNG:
                 "timings": list(clip_timings),
                 "settings": {
                     "png_compression": compression,
+                    "png_bit_depth": png_bit_depth,
                     "save_workers": workers,
                     "checkpoint_verification": verification,
                     "conversion_chunk_frames": chunk_frames,
@@ -26143,7 +26180,11 @@ class MiniMaxH3ChainExportPNG:
                         delivered_frames, chunk_start + chunk_frames)
                     chunk_count = chunk_end - chunk_start
                     phase_started = time.perf_counter()
-                    pixels = _png_export_uint8(images[chunk_start:chunk_end])
+                    if png_bit_depth == 16:
+                        pixels = ((images[chunk_start:chunk_end, ..., :3].to(dtype=torch.float32).clamp(0, 1) * 65535).round()
+                                  .to(device="cpu", dtype=torch.uint16).contiguous().numpy())
+                    else:
+                        pixels = _png_export_uint8(images[chunk_start:chunk_end])
                     conversion_seconds += time.perf_counter() - phase_started
                     phase_started = time.perf_counter()
                     futures = []
@@ -26390,6 +26431,7 @@ class MiniMaxH3ChainExportPNG:
             "elapsed_seconds": round(elapsed, 3),
             "settings": {
                 "png_compression": compression,
+                "png_bit_depth": png_bit_depth,
                 "save_workers": workers,
                 "checkpoint_verification": verification,
                 "conversion_chunk_frames": chunk_frames,

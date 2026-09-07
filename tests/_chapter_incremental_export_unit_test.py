@@ -121,6 +121,26 @@ class IncrementalExportTests(unittest.TestCase):
         self.assertEqual(record["reused_frame_count"], 52)
         self.assertIn("WAV reused", result[2])
 
+    def test_16bit_choice_isolated_from_legacy_8bit_and_reusable(self):
+        import av
+        import numpy as np
+
+        eight, _, _ = self.export(audio_vae=None)
+        before = self.png_state(eight)
+        # FP16 white must not overflow when scaled to RGB16's 65535 range.
+        with patch.object(self.video, "decode", return_value=torch.ones((13, 4, 4, 3), dtype=torch.float16)):
+            sixteen, record, result = self.export(audio_vae=None, png_bit_depth="16")
+        self.assertNotEqual(sixteen, eight)
+        self.assertEqual(record["settings"]["png_bit_depth"], 16)
+        self.assertIsNone(result[4])
+        with av.open(str(sixteen / "frame_00000001.png")) as container:
+            actual = next(container.decode(video=0)).to_ndarray(format="rgb48le")
+        np.testing.assert_array_equal(actual, np.full((4, 4, 3), 65535, dtype=np.uint16))
+        with patch.object(self.video, "decode", side_effect=AssertionError("decoded reused scene")):
+            reused, _, _ = self.export(audio_vae=None, png_bit_depth="16", checkpoint_verification="strict")
+        self.assertEqual(reused, sixteen)
+        self.assertEqual(self.png_state(eight), before)
+
     def test_append_exports_only_new_pngs_and_rebuilds_frame_locked_audio(self):
         output, _, _ = self.export()
         before = self.png_state(output)

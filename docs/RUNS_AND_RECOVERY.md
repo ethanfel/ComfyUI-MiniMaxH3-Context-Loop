@@ -921,6 +921,60 @@ relative to that output root, supports nested folders and the same date tokens,
 and may be empty to place the copy directly in `output/`. The existing
 `filename` value is used for both copies, and collisions are versioned.
 
+## Stream pixel-upscale VIDEO to PNG, scene by scene
+
+**Export PNG Sequence + Audio** also has a VIDEO passthrough mode for pixel
+upscales with no saved latent. Put it **inside** the scene loop, before the
+lossy MP4 segment save:
+
+```text
+Final pixel refiner VIDEO -> Export PNG.video -> Segment Save.video
+                                             -> Loop End.video
+Current Scene.state      -> Export PNG.state
+```
+
+Disconnect the exporter's `manifest`, `video_vae` and `audio_vae` in this mode.
+Do not connect the final Loop End manifest back into the in-loop exporter.
+The original four output positions are unchanged; the new `video` output is
+the exact incoming VIDEO, released downstream after the current scene is saved.
+Segment Save still preserves the original audio. The PNG node does not turn
+compressed MP4s back into supposedly lossless originals.
+
+Use `output_folder` for a chosen subfolder of ComfyUI output (relative or
+absolute). When blank, the sequence goes under the upscale profile's
+`frames/<export_name>/`, including the chapter scope when applicable. The first
+exported scene starts at `first_frame_number`; subsequent scenes append without
+resetting numbering. Each scene's repeated RAW context frames are removed using
+the current state, just as in Segment Save. This is the sequential upscale
+delivery clock, not a later editorial reordering or blend pass.
+
+`png_bit_depth` is a user choice: **8** is the existing default; **16** preserves
+the RGB16 file-backed intermediate's precision. Both use lossless PNG compression,
+but 8-bit explicitly quantizes higher-precision input. Neither is an H3 latent
+checkpoint; these are full-resolution pixel backups with provenance and hashes.
+Keep the upscaler's file-backed VIDEO path for bounded memory. Native in-memory
+VIDEO, lazy trims/crops, wrong frame counts and mismatched frame clocks are
+rejected rather than silently materialized or exported incorrectly.
+
+Existing controls remain: `png_compression`, `embed_workflow`, `save_workers`,
+`checkpoint_verification`, and `reuse_existing`. Compression affects speed/size,
+not precision. The decoder streams one frame at a time and never loads all
+scenes; at most `save_workers` PNG jobs are in flight (0 chooses up to eight).
+There is no VAE encode/decode or GPU work in this export path.
+
+Each complete scene is committed to a continuous image sequence plus
+`export.json` before passthrough. The index records source identity, RAW trim,
+numbering, bit depth, profile, source manifest, and PNG hashes. Interrupted
+decode/save operations roll back that scene and keep every earlier scene intact.
+Resume at the next missing scene with the same folder/settings. Exact repeated
+scenes can be reused; `cached` checks previous PNG size/mtime and `strict` also
+hashes them. Incoming VIDEO files are always hashed. Different takes, changed
+settings, missing/modified PNGs, untracked frames or out-of-order scenes never
+overwrite a sequence: select a new folder/export name, or resume the missing
+scene. With reuse disabled, use a new folder for a fresh export. Abrupt process
+death during publication can leave untracked frames; these are kept and reported,
+not silently overwritten. Concurrent writers to one folder are rejected.
+
 ## Re-decode checkpoints to PNG and WAV
 
 Connect a manifest to **Export PNG Sequence + Audio**, then connect the original
@@ -931,7 +985,8 @@ audio latents, preserves the generated AV boundary ownership, and follows the
 same selected scene order and latent-safe trims as the gap-free PNG sequence.
 
 The node verifies each safetensors checkpoint, decodes one scene at a time,
-removes repeated overlap, converts small frame chunks to 8-bit RGB in one
+removes repeated overlap, converts small frame chunks to the selected 8-bit or
+16-bit RGB depth in one
 operation, and writes each chunk through bounded parallel atomic PNG workers.
 ComfyUI's progress bar covers verification, GPU decode, and saving. The server
 log reports verify, checkpoint-load, decode, conversion, and save timings. The
