@@ -2,6 +2,7 @@
 """Real FFV1 VIDEO -> PNG scene streaming; no models or production files."""
 
 import copy
+import errno
 from fractions import Fraction
 import importlib
 import json
@@ -209,12 +210,84 @@ class PNGVideoTests(unittest.TestCase):
         self.assertEqual(Path(result["result"][0]), directory)
 
     def test_network_share_without_hardlinks(self):
-        import errno
-        with patch.object(streaming.os, "link", side_effect=OSError(errno.EOPNOTSUPP, "no links")):
-            result = self.export()
-        self.assertEqual(self.export(checkpoint_verification="strict")["result"][1], 3)
-        record = json.loads((Path(result["result"][0]) / "export.json").read_text())
-        self.assertEqual(len(record["clips"][0]["files"]), 3)
+        for code in (errno.EACCES, errno.EPERM, errno.EXDEV, errno.EOPNOTSUPP, errno.ENOSYS):
+            with self.subTest(errno=code):
+                folder = "share_%d" % code
+                with patch.object(streaming.os, "link", side_effect=OSError(code, "no links")), patch.object(
+                        streaming.shutil, "copyfileobj", wraps=streaming.shutil.copyfileobj) as copier:
+                    result = self.export(output_folder=folder)
+                self.assertEqual(copier.call_count, 3)
+                self.assertTrue(all(call.kwargs["length"] == 1024 * 1024 for call in copier.call_args_list))
+                self.assertEqual(self.export(output_folder=folder, checkpoint_verification="strict")["result"][1], 3)
+                record = json.loads((Path(result["result"][0]) / "export.json").read_text())
+                self.assertEqual(len(record["clips"][0]["files"]), 3)
+                self.assertIs(result["result"][4], self.video)
+
+    def test_denied_hardlink_copy_never_overwrites_existing_file_or_symlink(self):
+        source = self.root / "staged.png"
+        source.write_bytes(b"new PNG")
+        existing = self.root / "existing.png"
+        existing.write_bytes(b"user PNG")
+        linked = self.root / "linked.png"
+        linked.symlink_to(existing)
+        with patch.object(streaming.os, "link", side_effect=PermissionError(errno.EACCES, "links denied")):
+            for target in (existing, linked):
+                with self.subTest(target=target), self.assertRaises(FileExistsError):
+                    streaming._publish_frame(source, target)
+        self.assertEqual(existing.read_bytes(), b"user PNG")
+        self.assertEqual(source.read_bytes(), b"new PNG")
+        self.assertTrue(linked.is_symlink())
+
+    def test_hardlink_fallback_preserves_real_write_errors(self):
+        source, target = self.root / "staged.png", self.root / "denied.png"
+        source.write_bytes(b"new PNG")
+        original_open = Path.open
+        denied = PermissionError(errno.EACCES, "writes denied", str(target))
+
+        def open_file(path, *args, **kwargs):
+            if path == target and args == ("xb",):
+                raise denied
+            return original_open(path, *args, **kwargs)
+
+        with patch.object(streaming.os, "link", side_effect=PermissionError(errno.EACCES, "links denied")), patch.object(
+                Path, "open", open_file):
+            with self.assertRaises(PermissionError) as failure:
+                streaming._publish_frame(source, target)
+        self.assertIs(failure.exception, denied)
+        self.assertFalse(target.exists())
+        self.assertEqual(source.read_bytes(), b"new PNG")
+        full = OSError(errno.ENOSPC, "disk full")
+        with patch.object(streaming.os, "link", side_effect=full), patch.object(
+                streaming.shutil, "copyfileobj", side_effect=AssertionError("unexpected fallback")):
+            with self.assertRaises(OSError) as failure:
+                streaming._publish_frame(source, target)
+        self.assertIs(failure.exception, full)
+
+    def test_network_copy_failure_rolls_back_only_current_scene(self):
+        result = self.export()
+        directory = Path(result["result"][0])
+        before = {p: p.read_bytes() for p in directory.iterdir() if p.is_file()}
+        original_copy = streaming.shutil.copyfileobj
+        for failure in (OSError(errno.EIO, "share disconnected"), KeyboardInterrupt("interrupted")):
+            calls = []
+
+            def copy_frame(incoming, outgoing, length):
+                calls.append(outgoing.name)
+                if len(calls) == 2:
+                    outgoing.write(incoming.read(16))
+                    raise failure
+                return original_copy(incoming, outgoing, length)
+
+            with self.subTest(failure=failure), patch.object(
+                    streaming.os, "link", side_effect=PermissionError(errno.EACCES, "links denied")), patch.object(
+                    streaming.shutil, "copyfileobj", copy_frame):
+                with self.assertRaises(type(failure)):
+                    self.export(2)
+            self.assertEqual(len(calls), 2)
+            self.assertEqual(before, {p: p.read_bytes() for p in directory.iterdir() if p.is_file()})
+            self.assertFalse(list(directory.glob(".png_scene_*")))
+        with patch.object(streaming.os, "link", side_effect=PermissionError(errno.EACCES, "links denied")):
+            self.assertEqual(self.export(2, checkpoint_verification="strict")["result"][1], 6)
 
     def test_selected_range_starts_its_own_numbering(self):
         state = dict(self.state, index=3, range_start=3, end_clip=4)

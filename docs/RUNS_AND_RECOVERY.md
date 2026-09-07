@@ -975,6 +975,12 @@ scene. With reuse disabled, use a new folder for a fresh export. Abrupt process
 death during publication can leave untracked frames; these are kept and reported,
 not silently overwritten. Concurrent writers to one folder are rejected.
 
+Hard links are an optional publishing optimization, not a storage requirement.
+If a network share rejects them (including permission denied / errno 13), the
+exporter falls back to an exclusive file copy with a 1 MiB buffer. Existing
+files are never replaced, and genuine write-permission or storage failures
+still stop the export; no filesystem permissions or project ownership change.
+
 ## Re-decode checkpoints to PNG and WAV
 
 Connect a manifest to **Export PNG Sequence + Audio**, then connect the original

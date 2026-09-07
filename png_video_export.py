@@ -125,10 +125,11 @@ def _publish_frame(source, target):
         os.link(source, target)
         return
     except OSError as exc:
-        if exc.errno not in (errno.EPERM, errno.EXDEV, errno.EOPNOTSUPP, errno.ENOSYS):
+        if exc.errno not in (errno.EACCES, errno.EPERM, errno.EXDEV, errno.EOPNOTSUPP, errno.ENOSYS):
             raise
-    # Some network output shares do not support hard links. Exclusive create
-    # still never overwrites a user's file; copy with a small bounded buffer.
+    # Network shares may deny hard links (EACCES/EPERM) while allowing writes.
+    # Exclusive create still enforces real write permissions and never replaces
+    # an existing file or symlink; copy with a small bounded buffer.
     with target.open("xb") as handle:
         try:
             with source.open("rb") as incoming:
@@ -286,7 +287,7 @@ def export_video(chain, video, state, export_name, output_folder, first_frame_nu
                 for item in files:
                     chain._png_export_check_interrupted()
                     target = _safe_path(root, directory / item["file"])
-                    # Atomic exclusive publication: never replace an existing PNG.
+                    # Exclusive publication: never replace an existing PNG.
                     _publish_frame(stage / item["file"], target)
                     published.append(target)
                     item["mtime_ns"] = target.stat().st_mtime_ns
