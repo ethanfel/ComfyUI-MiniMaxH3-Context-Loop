@@ -1379,7 +1379,10 @@ class CheckpointGraphManager:
 
         def mentions(value: Any) -> bool:
             if isinstance(value, dict):
-                return any(mentions(item) for item in value.values())
+                # Superseded takes are audit history, not inputs required to
+                # recover this snapshot. Keep every other recovery edge.
+                return any(mentions(item) for key, item in value.items()
+                           if key != "supersedes")
             if isinstance(value, list):
                 return any(mentions(item) for item in value)
             if not isinstance(value, str):
@@ -1477,7 +1480,8 @@ class CheckpointGraphManager:
             blockers = [
                 item.get("error") or (
                     "Sealed Chapter %s (%s), snapshot %s, requires this revision "
-                    "or its recovery artifacts. Keep it to preserve chapter recovery." %
+                    "or its recovery artifacts. Retire that snapshot explicitly "
+                    "if its chapter recovery is no longer needed." %
                     (item["number"], item["title"], item["snapshot"][:8]))
                 for item in chapter_references]
             try:

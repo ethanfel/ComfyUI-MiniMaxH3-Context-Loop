@@ -1,5 +1,8 @@
 """Chapter recovery pins and edited-vs-source timeline regression tests."""
 import copy
+import asyncio
+from contextlib import contextmanager
+from importlib import import_module
 import json
 from pathlib import Path
 import tempfile
@@ -7,6 +10,8 @@ import unittest
 from unittest.mock import patch
 
 from _checkpoint_revision_unit_test import chain, folder_paths, write_revision
+
+retirement = import_module(chain.__package__ + ".chapter_snapshot_retirement")
 
 
 class ChapterRecoverySafetyTests(unittest.TestCase):
@@ -67,6 +72,165 @@ class ChapterRecoverySafetyTests(unittest.TestCase):
         preview = self.manager.deletion_preview("revision_test", 1, "b" * 32)
         self.assertFalse(preview["allowed"])
         self.assertIn("Cannot verify sealed chapter", preview["blockers"][0])
+
+    def test_supersedes_history_is_not_a_recovery_dependency(self):
+        current = json.loads((self.run / "checkpoints/clip_0001.json").read_text())["segment"]
+        current["supersedes"] = self.metadata["segment"]["revision_metadata"]
+        manifest = dict(self.manifest, segments=[current])
+        snapshot, _ = chain._chapter_manifest_from_manifest(manifest, 1)
+        self.assertEqual(snapshot["segments"][0]["supersedes"], current["supersedes"])
+        preview = self.manager.deletion_preview("revision_test", 1, self.old)
+        self.assertTrue(preview["allowed"])
+        self.manager.delete("revision_test", 1, self.old, preview["snapshot"])
+        recovered, _ = chain._load_chapter_manifest("revision_test", 1, snapshot["chapter_manifest_id"])
+        self.assertEqual(recovered["segments"][0]["revision"], "b" * 32)
+
+    def test_retirement_archives_only_snapshot_and_releases_only_its_pins(self):
+        snapshot, path = chain._chapter_manifest_from_manifest(self.manifest, 1)
+        original_bytes = Path(path).read_bytes()
+        manager = retirement.ChapterSnapshotManager(self.temp.name)
+        address = snapshot["chapter_manifest_path"]
+        preview = manager.retirement_preview("revision_test", address)
+        self.assertFalse(preview["scenes"][0]["active"])
+        before = {p: p.read_bytes() for p in self.run.rglob("*") if p.is_file()}
+        result = manager.retire("revision_test", address, preview["snapshot"])
+        archive = Path(self.temp.name) / result["retired_path"]
+        self.assertEqual(archive.read_bytes(), original_bytes)
+        self.assertFalse(Path(path).exists())
+        for p, content in before.items():
+            if p != Path(path):
+                self.assertEqual(p.read_bytes(), content)
+        self.assertTrue(self.manager.deletion_preview("revision_test", 1, self.old)["allowed"])
+        with self.assertRaisesRegex(FileNotFoundError, "No sealed"):
+            chain._load_chapter_manifest("revision_test", 1, snapshot["chapter_manifest_id"])
+        # An in-memory snapshot cannot silently recreate the retired pin.
+        with self.assertRaisesRegex(ValueError, "retired"):
+            chain._persist_chapter_manifest(snapshot)
+        self.assertFalse(Path(path).exists())
+        # Archival is reversible while its recovery inputs remain intact.
+        archive.rename(path)
+        recovered, _ = chain._load_chapter_manifest("revision_test", 1, snapshot["chapter_manifest_id"])
+        self.assertEqual(recovered["segments"][0]["revision"], self.old)
+
+    def test_other_snapshot_and_shared_branch_dependencies_still_block(self):
+        first, _ = chain._chapter_manifest_from_manifest(self.manifest, 1)
+        other, _ = chain._chapter_manifest_from_manifest(dict(self.manifest, plan_hash="other"), 1)
+        child, child_files = write_revision(self.run, 2, "c" * 32, 3,
+                                             predecessor=self.metadata)
+        manager = retirement.ChapterSnapshotManager(self.temp.name)
+        for snapshot in (first, other):
+            address = snapshot["chapter_manifest_path"]
+            preview = manager.retirement_preview("revision_test", address)
+            manager.retire("revision_test", address, preview["snapshot"])
+            blocked = self.manager.deletion_preview("revision_test", 1, self.old)
+            self.assertFalse(blocked["allowed"])
+            self.assertEqual(blocked["dependents"][0]["revision"], child["segment"]["revision"])
+            self.assertEqual(len(blocked["chapter_references"]), 1 if snapshot is first else 0)
+        self.assertTrue(all(path.exists() for path in child_files))
+        # Only a subsequent, explicit leaf-first deletion removes any clips.
+        preview = self.manager.deletion_preview("revision_test", 2, "c" * 32)
+        self.manager.delete("revision_test", 2, "c" * 32, preview["snapshot"])
+        self.assertTrue(self.manager.deletion_preview("revision_test", 1, self.old)["allowed"])
+
+    def test_retirement_rejects_missing_and_stale_confirmations(self):
+        snapshot, path = chain._chapter_manifest_from_manifest(self.manifest, 1)
+        manager = retirement.ChapterSnapshotManager(self.temp.name)
+        address = snapshot["chapter_manifest_path"]
+        preview = manager.retirement_preview("revision_test", address)
+        for token in ("", "wrong"):
+            with self.assertRaises(retirement.CheckpointDeleteBlocked):
+                manager.retire("revision_test", address, token)
+        snapshot["sealed_at"] = "changed after preview"
+        Path(path).write_text(json.dumps(snapshot))
+        with self.assertRaises(retirement.CheckpointDeleteBlocked):
+            manager.retire("revision_test", address, preview["snapshot"])
+        preview = manager.retirement_preview("revision_test", address)
+        write_revision(self.run, 1, "d" * 32, 4, active=True, audio_context_length=0)
+        with self.assertRaises(retirement.CheckpointDeleteBlocked):
+            manager.retire("revision_test", address, preview["snapshot"])
+        self.assertTrue(Path(path).is_file())
+
+    def test_retirement_refuses_invalid_paths_identity_and_symlinks(self):
+        snapshot, path = chain._chapter_manifest_from_manifest(self.manifest, 1)
+        manager = retirement.ChapterSnapshotManager(self.temp.name)
+        address = snapshot["chapter_manifest_path"]
+        for target in ("../escape.json", str(path), address.replace("revision_test", "foreign"),
+                       address.replace("/manifests/", "/./manifests/"), "", None):
+            with self.subTest(target=target), self.assertRaises(ValueError):
+                manager.retirement_preview("revision_test", target)
+        Path(path).write_text(json.dumps({**snapshot, "run_name": "foreign"}))
+        with self.assertRaisesRegex(ValueError, "identity"):
+            manager.retirement_preview("revision_test", address)
+        Path(path).write_text(json.dumps({**snapshot, "clip_count": 999}))
+        with self.assertRaisesRegex(ValueError, "identity"):
+            manager.retirement_preview("revision_test", address)
+        Path(path).write_text(json.dumps(snapshot))
+        archive = Path(path).parent.parent / "retired_manifests"
+        archive.symlink_to(Path(path).parent, target_is_directory=True)
+        with self.assertRaisesRegex(ValueError, "symlinks"):
+            manager.retirement_preview("revision_test", address)
+        archive.unlink()
+        real = Path(path).with_suffix(".backup")
+        Path(path).rename(real)
+        Path(path).symlink_to(real)
+        with self.assertRaisesRegex(ValueError, "symlinks"):
+            manager.retirement_preview("revision_test", address)
+
+    def test_retirement_does_not_overwrite_archive_and_failed_move_keeps_pin(self):
+        snapshot, path = chain._chapter_manifest_from_manifest(self.manifest, 1)
+        manager = retirement.ChapterSnapshotManager(self.temp.name)
+        address = snapshot["chapter_manifest_path"]
+        preview = manager.retirement_preview("revision_test", address)
+        with patch.object(retirement.os, "rename", side_effect=OSError("test failure")):
+            with self.assertRaises(OSError):
+                manager.retire("revision_test", address, preview["snapshot"])
+        self.assertFalse(self.manager.deletion_preview("revision_test", 1, self.old)["allowed"])
+        destination = Path(self.temp.name) / preview["retired_path"]
+        destination.write_bytes(b"existing archive")
+        with self.assertRaisesRegex(ValueError, "not be overwritten"):
+            manager.retire("revision_test", address, preview["snapshot"])
+        self.assertEqual(destination.read_bytes(), b"existing archive")
+        self.assertTrue(Path(path).is_file())
+
+    def test_retirement_route_requires_ownership_and_preview_confirmation(self):
+        snapshot, path = chain._chapter_manifest_from_manifest(self.manifest, 1)
+        guards = []
+
+        @contextmanager
+        def guard(root, run, proof, action):
+            guards.append(proof)
+            yield
+
+        class Request:
+            path = "/chapter-snapshots/retire-preview"
+            body = {"run_name": "revision_test", "path": snapshot["chapter_manifest_path"]}
+
+            async def json(self):
+                return self.body
+
+        request = Request()
+        call = lambda: asyncio.run(chain._chapter_snapshot_retirement(request))
+        with patch.object(chain, "_request_project_ownership", return_value="owner-proof"), \
+                patch.object(chain, "project_write_guard", side_effect=guard), \
+                patch.object(chain, "_project_write_rejection") as reject:
+            reject.return_value = chain.web.json_response({"error": "read only"}, status=423)
+            response = call()
+            self.assertEqual(response.status, 200)
+            preview = json.loads(response.body)
+            self.assertFalse(reject.called)
+            self.assertEqual(guards, [])
+            request.path = "/chapter-snapshots/retire"
+            self.assertEqual(call().status, 423)
+            reject.return_value = None
+            self.assertEqual(call().status, 409)
+            self.assertTrue(Path(path).exists())
+            request.body["snapshot"] = preview["snapshot"]
+            self.assertEqual(call().status, 200)
+            self.assertIn("owner-proof", guards)
+            self.assertFalse(Path(path).exists())
+            self.assertEqual(call().status, 404)
+            request.body = []
+            self.assertEqual(call().status, 400)
 
     def test_deleted_input_cannot_be_sealed_from_stale_selection(self):
         preview = self.manager.deletion_preview("revision_test", 1, self.old)

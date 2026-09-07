@@ -22764,6 +22764,14 @@ def _persist_chapter_manifest_locked(manifest: dict[str, Any]) -> tuple[
         raise ValueError("H3 chapter delivery requires a JSON manifest.")
     snapshot_id = _chapter_manifest_digest(snapshot)
     path = _chapter_manifest_storage_path(snapshot, snapshot_id)
+    retired_path = os.path.join(
+        os.path.dirname(os.path.dirname(path)), "retired_manifests",
+        snapshot_id + ".json")
+    if os.path.lexists(retired_path):
+        raise ValueError(
+            "Chapter snapshot %s was retired for cleanup. It cannot be "
+            "republished from a stale selection; select the desired branch "
+            "and create an updated snapshot." % snapshot_id[:8])
     snapshot.update({
         "chapter_manifest_id": snapshot_id,
         "chapter_manifest_path": _relative_output_path(path),
@@ -29151,6 +29159,44 @@ async def _processing_checkpoint_deletion(request):
     return web.json_response(payload)
 
 
+async def _chapter_snapshot_retirement(request):
+    from .chapter_snapshot_retirement import ChapterSnapshotManager
+
+    try:
+        body = await request.json()
+        if not isinstance(body, dict):
+            raise ValueError("Snapshot retirement requires a JSON object.")
+        run_name = _strict_run_name(body.get("run_name", ""))
+        manager = ChapterSnapshotManager(_output_root())
+        if request.path.endswith("/retire-preview"):
+            payload = await asyncio.to_thread(
+                manager.retirement_preview, run_name, body.get("path"))
+        else:
+            ownership_proof = _request_project_ownership(request)
+            rejection = _project_write_rejection(
+                request, run_name, "retire a chapter recovery snapshot")
+            if rejection is not None:
+                return rejection
+
+            def retire_owned():
+                with checkpoint_run_lock(_output_root(), run_name), project_write_guard(
+                        _output_root(), run_name, ownership_proof,
+                        "retire a chapter recovery snapshot"):
+                    return manager.retire(run_name, body.get("path"), body.get("snapshot"))
+
+            payload = await asyncio.to_thread(retire_owned)
+    except ProjectOwnershipError as exc:
+        return web.json_response({"error": str(exc), "code": "h3_project_read_only",
+                                  "run_name": locals().get("run_name", "")}, status=423)
+    except CheckpointDeleteBlocked as exc:
+        return web.json_response({"error": str(exc), "preview": exc.preview}, status=409)
+    except FileNotFoundError as exc:
+        return web.json_response({"error": str(exc)}, status=404)
+    except (OSError, TypeError, ValueError, KeyError) as exc:
+        return web.json_response({"error": str(exc)}, status=400)
+    return web.json_response(payload)
+
+
 async def _delete_checkpoint_revision(request):
     try:
         body = await request.json()
@@ -31047,6 +31093,12 @@ if (PromptServer is not None and web is not None and
     PromptServer.instance.routes.post(
         "/minimax_h3_context_loop/checkpoint-revisions/delete")(
             _delete_checkpoint_revision)
+    PromptServer.instance.routes.post(
+        "/minimax_h3_context_loop/chapter-snapshots/retire-preview")(
+            _chapter_snapshot_retirement)
+    PromptServer.instance.routes.post(
+        "/minimax_h3_context_loop/chapter-snapshots/retire")(
+            _chapter_snapshot_retirement)
     PromptServer.instance.routes.post(
         "/minimax_h3_context_loop/processing-checkpoints/delete-preview")(
             _processing_checkpoint_deletion)

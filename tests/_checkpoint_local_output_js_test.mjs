@@ -71,6 +71,9 @@ let currentGraph = structuredClone(payload), runs = ["demo", "other"], failReque
 let confirms = true, mutations = 0, dirty = 0;
 let attachResponse = null;
 let processingDeletion = false, deleteConflict = false, delayedProcessingPreview = null;
+let snapshotRetirement = false, snapshotRetired = false, retirementError = 0, delayedRetirementPreview = null;
+const snapshotAddress = `h3_chains/demo/chapters/01_one/manifests/${a}.json`;
+const confirmations = [];
 let extension;
 const requests = [];
 const context = vm.createContext({
@@ -101,6 +104,30 @@ const context = vm.createContext({
             currentGraph.processing_variants = currentGraph.processing_variants.filter(item => item.key !== body.metadata_path);
             data = {message:"Deleted processed version; originals unchanged.", reclaimed_bytes:1024};
         }
+        else if (path.endsWith("/chapter-snapshots/retire-preview") && snapshotRetirement) {
+            assert.equal(JSON.parse(options.body).path, snapshotAddress);
+            data = {allowed:true, path:snapshotAddress, snapshot:"retirement-token", chapter_number:1,
+                chapter_manifest_id:a, retired_path:snapshotAddress.replace("/manifests/", "/retired_manifests/"),
+                scenes:[{scene:2, revision:c, active:false}], message:"No clips are deleted."};
+            if (delayedRetirementPreview) {
+                const wait = delayedRetirementPreview; delayedRetirementPreview = null;
+                await wait;
+            }
+        }
+        else if (path.endsWith("/chapter-snapshots/retire") && snapshotRetirement) {
+            mutations++;
+            const body = JSON.parse(options.body);
+            assert.equal(body.path, snapshotAddress);
+            assert.equal(body.snapshot, "retirement-token");
+            if (retirementError) return {ok:false, status:retirementError,
+                json:async () => ({error:retirementError === 423 ? "Project is read only" : "Retirement preview changed"})};
+            snapshotRetired = true;
+            data = {message:"Snapshot retired; no clips deleted."};
+        }
+        else if (path.endsWith("/delete-preview") && snapshotRetirement) {
+            data = {allowed:snapshotRetired, blockers:snapshotRetired ? [] : ["Snapshot pins this take"], files:[],
+                chapter_references:snapshotRetired ? [] : [{number:1, snapshot:a, path:snapshotAddress}]};
+        }
         else if (path.endsWith("/delete-preview")) data = {allowed:false, blockers:["test"]};
         else if (path.endsWith("/attribute") && attachResponse) {
             mutations++;
@@ -117,9 +144,9 @@ const context = vm.createContext({
         else { mutations++; throw new Error(`Unexpected request ${path}`); }
         return {ok:true, json:async () => data};
     }},
-    window:{setTimeout:callback => callback(), confirm:() => confirms},
+    window:{setTimeout:callback => callback(), confirm:message => { confirmations.push(message); return confirms; }},
     projectMutationOptions:(_node, _run, options) => {
-        if (attachResponse || processingDeletion) return options;
+        if (attachResponse || processingDeletion || snapshotRetirement) return options;
         mutations++; throw new Error("Local output attempted project mutation");
     },
     promptCompanionSync:{},
@@ -457,6 +484,50 @@ assert.ok(byText(deleting, "Delete selected revision").disabled);
 assert.equal(value(deleting), outputBeforeDelete);
 processingDeletion = false;
 console.log("Processing deletion UI: preview, cancel, conflict, success, orphan cleanup, stale response and original/output isolation pass");
+
+// Retirement is separate from media deletion and preserves the output selection.
+currentGraph = structuredClone(payload);
+snapshotRetirement = true;
+const retiring = makeNode(local); await settle();
+select(retiring, 2, c); await settle();
+const retireLabel = "Retire Chapter 1 snapshot aaaaaaaa…";
+const retirementPin = value(retiring), retirementGraph = JSON.stringify(currentGraph);
+assert.equal(byText(retiring, "Delete selected revision").disabled, true);
+const beforeRetirementCancel = mutations;
+confirms = false;
+byText(retiring, retireLabel).click(); await settle();
+assert.equal(mutations, beforeRetirementCancel);
+assert.equal(snapshotRetired, false);
+assert.match(confirmations.at(-1), /Scene 2 · cccccccc/);
+assert.match(confirmations.at(-1), /Deleting its inputs later makes full recovery unavailable/);
+assert.match(byClass(retiring, "h3cm-status").textContent, /cancelled/);
+confirms = true;
+for (const code of [423, 409]) {
+    retirementError = code;
+    byText(retiring, retireLabel).click(); await settle();
+    assert.equal(snapshotRetired, false);
+    assert.equal(byText(retiring, "Delete selected revision").disabled, true);
+    assert.match(byClass(retiring, "h3cm-status").textContent, code === 423 ? /read only/ : /preview changed/);
+}
+retirementError = 0;
+let releaseRetirement;
+delayedRetirementPreview = new Promise(resolve => { releaseRetirement = resolve; });
+const beforeSlowRetirement = mutations, beforeSlowConfirmation = confirmations.length;
+byText(retiring, retireLabel).click(); await settle();
+select(retiring, 3, d); await settle();
+releaseRetirement(); await settle();
+assert.equal(mutations, beforeSlowRetirement, "slow retirement preview cannot apply to another selection");
+assert.equal(confirmations.length, beforeSlowConfirmation);
+select(retiring, 2, c); await settle();
+byText(retiring, retireLabel).click(); await settle();
+assert.equal(snapshotRetired, true);
+assert.equal(byText(retiring, retireLabel), undefined);
+assert.equal(byText(retiring, "Delete selected revision").disabled, false);
+assert.equal(JSON.stringify(currentGraph), retirementGraph, "retirement never deletes clips or changes active pointers");
+assert.equal(value(retiring), retirementPin, "retirement never moves a workflow-local pin");
+assert.match(byClass(retiring, "h3cm-status").textContent, /Snapshot retired/);
+snapshotRetirement = false;
+console.log("Chapter retirement UI: preview, cancel, ownership, conflict, stale response and output/media isolation pass");
 
 // Reproduce the reported Chapter 2 pin at scene 8, shared with another branch.
 currentGraph = structuredClone(payload);

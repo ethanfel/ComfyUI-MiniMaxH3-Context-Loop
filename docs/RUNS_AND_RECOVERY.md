@@ -305,6 +305,25 @@ This first release does not bulk-delete branches. The leaf-first workflow makes
 the exact context consequences visible and avoids silently orphaning later
 checkpoints.
 
+Chapter recovery snapshots also protect the takes and recovery files they use.
+Historical `supersedes` links do **not** protect a replaced take: they are an
+audit trail, not recovery inputs. Actual scene, alternate and recovery-file
+references still block deletion.
+
+If an unwanted snapshot is the blocker, the deletion inspector offers
+**Retire Chapter … snapshot …**. Inspect the scenes and confirm to move only
+that snapshot's JSON from `chapters/<chapter>/manifests/` into the sibling
+`retired_manifests/` directory. No clip, active pointer, processing take,
+reference or assembled export is deleted. Other retained snapshots and branch
+dependencies still block unsafe deletion; remove unused leaves first.
+
+Retired snapshots no longer appear in Chapter Loader, release their recovery
+pins and cannot be silently republished by a stale selection. Workflows pinned
+to them need a new source. The archived JSON keeps the original bytes; it can
+be moved back to `manifests/` to restore the snapshot only while all its inputs
+still exist. Deleting those inputs later makes full recovery unavailable.
+Retirement requires project ownership and a fresh preview on confirmation.
+
 ### Saved processing tabs
 
 Checkpoint Manager has **Original**, **DeRoPE**, and **Latent Upscale** tabs.

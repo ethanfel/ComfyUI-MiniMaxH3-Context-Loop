@@ -407,6 +407,7 @@ function mount(node) {
     const deletionTitle = element("div", "h3cm-delete-title", "Select a checkpoint revision.");
     const deletionBody = element("div");
     const deletionActions = element("div", "h3cm-delete-actions");
+    let retireButtons = [];
     const status = element("div", "h3cm-status");
     const load = button("Load selected branch", "Project-wide: activate this chapter lineage and restore the connected Plan for generation", () => void loadSelected());
     const activate = button("Make branch active (project)", "Project-wide: promote this chapter for all workflows using this Run", () => void activateSelected());
@@ -646,6 +647,7 @@ function mount(node) {
         load.disabled = state.busy || Boolean(state.attribution) || !canLoadSelected();
         activate.disabled = state.busy || Boolean(state.attribution) || !canActivateSelected();
         remove.disabled = state.busy || Boolean(state.attribution) || !state.deletion?.allowed;
+        for (const control of retireButtons) control.disabled = state.busy || Boolean(state.attribution);
         if (state.attributionButton) {
             state.attributionButton.disabled = state.busy || !state.attribution?.candidate;
         }
@@ -1261,6 +1263,7 @@ function mount(node) {
 
     function renderDeletion() {
         deletionBody.replaceChildren();
+        retireButtons = [];
         const processing = state.stage !== "original";
         const activationMode = selectedActivationMode();
         const rollsBack = !processing && activationMode === "rollback";
@@ -1291,6 +1294,21 @@ function mount(node) {
             remove.disabled = true;
         }
         if (!state.deletion) return;
+        if (!processing && state.deletion.chapter_references?.length) {
+            const snapshots = element("div", "h3cm-delete-actions");
+            for (const reference of state.deletion.chapter_references) {
+                if (reference.error || !reference.path || !reference.snapshot) continue;
+                const control = button(
+                    `Retire Chapter ${reference.number} snapshot ${reference.snapshot.slice(0, 8)}…`,
+                    "Preview releasing this snapshot's recovery pins. Its JSON is archived; no clips are deleted.",
+                    () => void retireChapterSnapshot(reference),
+                );
+                control.disabled = state.busy || Boolean(state.attribution);
+                retireButtons.push(control);
+                snapshots.append(control);
+            }
+            deletionBody.append(snapshots);
+        }
         const files = (state.deletion.files ?? []).filter((item) => item.exists);
         if (files.length) {
             const list = element("ul", "h3cm-files");
@@ -1831,6 +1849,47 @@ function mount(node) {
                 `${payload.retired_scope_pointers || 0} later pointer${payload.retired_scope_pointers === 1 ? " was" : "s were"} cleared inside this chapter; other chapters were preserved; all immutable revisions were kept` +
                 `${planUpdated ? "; connected Plan scene settings were restored." : "."}`;
         } catch (error) {
+            status.className = "h3cm-status h3cm-error";
+            status.textContent = error.message;
+        } finally {
+            setBusy(false);
+        }
+    }
+
+    async function retireChapterSnapshot(reference) {
+        const runName = state.runName, record = state.selected;
+        if (state.busy || state.stage !== "original" || state.attribution || !record) return;
+        setBusy(true, "Inspecting chapter snapshot retirement…");
+        try {
+            const plan = await jsonRequest(
+                "/minimax_h3_context_loop/chapter-snapshots/retire-preview", {
+                    method:"POST", headers:{"Content-Type":"application/json"},
+                    body:JSON.stringify({run_name:runName, path:reference.path}),
+                });
+            // A slow response must not apply to a different run or selection.
+            if (state.runName !== runName || state.selected !== record || state.stage !== "original") return;
+            const scenes = (plan.scenes ?? []).map(item =>
+                `Scene ${item.scene} · ${String(item.revision).slice(0, 8)}${item.active ? " · currently active" : ""}`).join("\n");
+            if (!window.confirm(
+                `Retire Chapter ${plan.chapter_number} snapshot ${plan.chapter_manifest_id.slice(0, 8)}?\n\n` +
+                `${scenes}\n\n${plan.message}\n\n` +
+                `Archive: ${plan.retired_path}\n\n` +
+                "This snapshot will no longer load in Chapter Loader or protect its old takes from cleanup. " +
+                "Workflows pinned to it need a new source. Deleting its inputs later makes full recovery unavailable. " +
+                "Other snapshots and branch dependencies remain protected.")) {
+                status.textContent = "Snapshot retirement cancelled; nothing changed.";
+                return;
+            }
+            const result = await mutationRequest(node, runName,
+                "/minimax_h3_context_loop/chapter-snapshots/retire", {
+                    method:"POST", headers:{"Content-Type":"application/json"},
+                    body:JSON.stringify({run_name:runName, path:plan.path, snapshot:plan.snapshot}),
+                });
+            await refreshDeletionPreview();
+            status.className = "h3cm-status";
+            status.textContent = result.message;
+        } catch (error) {
+            await refreshDeletionPreview();
             status.className = "h3cm-status h3cm-error";
             status.textContent = error.message;
         } finally {
