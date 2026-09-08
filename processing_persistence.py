@@ -8,7 +8,10 @@ import uuid
 
 
 def sync_file(path):
-    with open(path, "rb") as handle:
+    # Windows _commit/FlushFileBuffers needs a writable handle. Reopen the
+    # existing artifact without truncating it; keep read-only access on POSIX.
+    mode = "r+b" if os.name == "nt" else "rb"
+    with open(path, mode) as handle:
         os.fsync(handle.fileno())
 
 

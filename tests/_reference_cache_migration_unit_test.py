@@ -39,6 +39,34 @@ class MigrationTests(unittest.TestCase):
     def migrator(self):
         return self.migration.ReferenceCacheMigrator(self.root)
 
+    def test_conversion_flushes_objects_through_shared_persistence(self):
+        legacy = self.legacy()
+        metadata = self.root / legacy["metadata"]
+        bundle = self.root / legacy["tensors"]
+        before = (metadata.read_bytes(), bundle.read_bytes())
+        persistence = self.migration.persistence
+        with patch.object(persistence, "sync_file", wraps=persistence.sync_file) as flush:
+            report = self.migrator().convert(metadata, apply=True)
+        self.assertEqual(report["status"], "converted")
+        self.assertGreater(flush.call_count, 0)
+        self.assertEqual(before, (metadata.read_bytes(), bundle.read_bytes()))
+        for call in flush.call_args_list:
+            self.assertTrue(Path(call.args[0]).is_file())
+
+    def test_failed_object_flush_keeps_legacy_cache_and_defers_publication(self):
+        legacy = self.legacy()
+        metadata = self.root / legacy["metadata"]
+        bundle = self.root / legacy["tensors"]
+        before = (metadata.read_bytes(), bundle.read_bytes())
+        with patch.object(self.migration.persistence, "sync_file",
+                          side_effect=OSError("object flush failed")):
+            with self.assertRaisesRegex(OSError, "object flush failed"):
+                self.migrator().convert(metadata, apply=True)
+        self.assertFalse(self.migration.converted_path(metadata).exists())
+        self.assertEqual(before, (metadata.read_bytes(), bundle.read_bytes()))
+        self.assertEqual(self.migrator().convert(metadata, apply=True)["status"],
+                         "converted")
+
     def snapshot(self):
         return {path: path.read_bytes() for path in self.root.rglob("*") if path.is_file()}
 

@@ -4,6 +4,11 @@ Newest first. This file keeps release history out of the onboarding README.
 
 ## Unreleased — Deferred checkpoint upscaling
 
+- Fix Windows DeRoPE/upscale and VIDEO PNG saves failing with bad file
+  descriptor during artifact flush. Use a writable, non-truncating file handle
+  on Windows; retain read-only access on POSIX and propagate real flush errors.
+  Legacy reference-cache conversion uses the same corrected helper. Added
+  descriptor-access, file-preservation, and failure-path regressions.
 - Upscale reference reconstruction with `inherit` now defaults to `max` when
   the original take has no recoverable sizing policy. Saved Match/Max policies
   and explicit overrides still take precedence; semantic-anchor settings are
