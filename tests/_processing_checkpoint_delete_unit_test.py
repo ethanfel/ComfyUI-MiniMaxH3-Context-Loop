@@ -41,7 +41,7 @@ class DeleteTests(unittest.TestCase):
         stem = "clip_%04d.%s" % (scene, revision)
         path = folder / "checkpoints" / (stem + ".json")
         segment = {"index": scene, "id": "scene_%d" % scene, "revision": revision,
-                   "revision_metadata": str(path.relative_to(self.root)),
+                   "revision_metadata": path.relative_to(self.root).as_posix(),
                    "checkpoint_sha256": revision * 2,
                    "source_revision": source["revision"] if source else "f" * 32,
                    "source_checkpoint_sha256": source["checkpoint_sha256"] if source else "f" * 64}
@@ -51,7 +51,7 @@ class DeleteTests(unittest.TestCase):
             artifact = folder / subfolder / (stem + suffix)
             artifact.parent.mkdir(parents=True, exist_ok=True)
             artifact.write_bytes(b"test artifact, never load as a tensor")
-            segment[field] = str(artifact.relative_to(self.root))
+            segment[field] = artifact.relative_to(self.root).as_posix()
         metadata = {"format": "h3_chain_upscale_segment_v1", "profile": profile,
                     "run_name": "demo", "segment": segment, "processing_stage": stage,
                     "processing_lineage": catalogue.processing_lineage([*prefix, segment])}
@@ -244,6 +244,59 @@ class DeleteTests(unittest.TestCase):
                 self.assertEqual(export.read_bytes(), b"keep export")
                 self.assertEqual(original.read_bytes(), b"keep")
                 self.assertEqual(reference.read_bytes(), b"keep")
+
+    def legacy_windows_documents(self):
+        def convert(value):
+            if isinstance(value, dict):
+                return {k: convert(v) for k, v in value.items()}
+            if isinstance(value, list):
+                return [convert(v) for v in value]
+            if isinstance(value, str) and value.startswith("h3_chains/"):
+                return value.replace("/", "\\")
+            return value
+        for path in self.root.rglob("*.json"):
+            self.write(path, convert(json.loads(path.read_text())))
+
+    def test_windows_saved_prefix_accepts_mixed_separators_without_rewriting(self):
+        take = self.save(chapter="01_intro")
+        self.legacy_windows_documents()
+        before = {p: p.read_bytes() for p in self.root.rglob("*") if p.is_file()}
+        module.require_saved_processing_segments(self.root, [take])
+        legacy = dict(take, revision_metadata=take["revision_metadata"].replace("/", "\\"))
+        module.require_saved_processing_segments(self.root, [legacy])
+        self.assertEqual(before, {p: p.read_bytes() for p in before})
+        with self.assertRaisesRegex(ValueError, "identity changed"):
+            module.require_saved_processing_segments(self.root, [dict(legacy, checkpoint_sha256="f" * 64)])
+
+    def test_windows_delete_blocks_path_only_cross_profile_dependency(self):
+        take = self.save()
+        self.save(profile="derived", revision="b" * 32, source=take)
+        self.legacy_windows_documents()
+        preview = self.preview(take)
+        self.assertFalse(preview["allowed"])
+        self.assertTrue(all("\\" not in item["metadata_path"] for item in preview["dependents"]))
+        with self.assertRaises(module.CheckpointDeleteBlocked):
+            self.manager.delete("demo", take["revision_metadata"].replace("/", "\\"), preview["snapshot"])
+        self.assertTrue(self.exists(take))
+
+    def test_windows_pixel_history_and_preview_confirmation_share_canonical_paths(self):
+        first = self.pixel_save()
+        last = self.pixel_save(revision="b" * 32, scene=2, prefix=[first])
+        self.manifest([first, last])
+        self.legacy_windows_documents()
+        preview = self.manager.deletion_preview("demo", first["revision_metadata"].replace("/", "\\"))
+        self.assertTrue(preview["allowed"])
+        self.assertEqual(preview["snapshot"], self.preview(first)["snapshot"])
+        self.manager.delete("demo", first["revision_metadata"], preview["snapshot"])
+        self.assertTrue(self.exists(last))
+        self.assertTrue(self.preview(last)["allowed"])
+
+    def test_windows_junction_is_not_followed(self):
+        take = self.save()
+        junction = self.root / "h3_chains/demo/upscaled"
+        with patch.object(Path, "is_junction", new=lambda path: path == junction, create=True):
+            with self.assertRaisesRegex(ValueError, "junction"):
+                self.preview(take)
 
     def test_old_take_deletion_preserves_new_pointer_and_other_profile(self):
         old = self.save()

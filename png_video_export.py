@@ -20,6 +20,7 @@ import zlib
 from . import png_export_transaction as transaction
 from . import processing_persistence as persistence
 from . import png_export_variants as variants
+from .artifact_paths import is_link_or_junction
 
 
 FORMAT = "h3_video_png_sequence_v1"
@@ -86,8 +87,10 @@ def _safe_path(root, value):
     current = root
     for part in path.relative_to(root).parts:
         current /= part
-        if current.is_symlink():
-            raise ValueError("PNG output paths must not follow symbolic links.")
+        if is_link_or_junction(current):
+            raise ValueError("PNG output paths must not follow symbolic links or junctions.")
+    if not path.resolve().is_relative_to(root.resolve()):
+        raise ValueError("PNG output folder escapes the ComfyUI output directory.")
     return path
 
 
@@ -130,7 +133,12 @@ def _publish_frame(source, target):
         os.link(source, target)
         return
     except OSError as exc:
-        if exc.errno not in (errno.EACCES, errno.EPERM, errno.EXDEV, errno.EOPNOTSUPP, errno.ENOSYS):
+        # Windows ERROR_INVALID_FUNCTION / ERROR_NOT_SUPPORTED can both map
+        # to EINVAL on shares/filesystems without hard links. Do not swallow
+        # unrelated EINVAL (bad paths/parameters) or other real I/O failures.
+        unsupported_windows_link = getattr(exc, "winerror", None) in (1, 50)
+        if (exc.errno not in (errno.EACCES, errno.EPERM, errno.EXDEV, errno.EOPNOTSUPP, errno.ENOSYS)
+                and not unsupported_windows_link):
             raise
     # Network shares may deny hard links (EACCES/EPERM) while allowing writes.
     # Exclusive create still enforces real write permissions and never replaces

@@ -237,6 +237,28 @@ class AlternateUpscaleTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "different original take or final-cut ALT"):
             sources.derope_source_manifest(self.manifest, choice, chain, upscale)
 
+    def test_windows_saved_derope_lineage_matches_portable_selection(self):
+        _, state, _, _ = self.adapt(profile="motion", recipe='{"derope":true}', save_latent=True)
+        saved = self.saver.save(state, self.frames, av_latent(0.6))["result"][0]
+        path = self.root / saved["revision_metadata"]
+        meta = chain._read_json(str(path))
+        # Old metadata used backslashes; the updated catalogue emits '/'.
+        meta["processing_lineage"][0]["metadata_path"] = saved["revision_metadata"].replace("/", "\\")
+        path.write_text(json.dumps(meta), encoding="utf-8")
+        before = path.read_bytes()
+        choice = {"stage": "derope", "profile_path": path.parent.parent.relative_to(self.root).as_posix(),
+                  "branch": {"kind": "metadata", "path": saved["revision_metadata"],
+                             "lineage": variants.processing_lineage([saved])}}
+        processed = sources.derope_source_manifest(self.manifest, choice, chain, upscale)
+        self.assertEqual(processed["segments"][0]["revision"], saved["revision"])
+        # Existing workflow selections can retain Windows-style addresses too.
+        choice["profile_path"] = choice["profile_path"].replace("/", "\\")
+        choice["branch"]["path"] = choice["branch"]["path"].replace("/", "\\")
+        choice["branch"]["lineage"] = meta["processing_lineage"]
+        self.assertEqual(sources.derope_source_manifest(self.manifest, choice, chain, upscale)
+                         ["segments"][0]["revision"], saved["revision"])
+        self.assertEqual(path.read_bytes(), before)
+
 
 if __name__ == "__main__":
     unittest.main(argv=[__file__])

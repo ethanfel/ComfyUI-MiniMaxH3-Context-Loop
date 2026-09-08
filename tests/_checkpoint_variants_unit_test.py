@@ -4,10 +4,12 @@
 import importlib.util
 import json
 from pathlib import Path
+import sys
 import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 spec = importlib.util.spec_from_file_location("checkpoint_variants", ROOT / "checkpoint_variants.py")
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
@@ -34,12 +36,12 @@ class VariantTests(unittest.TestCase):
             "checkpoint_sha256": revision * 2, "width": 960, "height": 544,
             "raw_frames": 175, "delivered_frames": 175,
             "latent_saved": True, "latent_layout": "joint_av",
-            "revision_metadata": str(path.relative_to(self.root)),
+            "revision_metadata": path.relative_to(self.root).as_posix(),
         }
         for name, suffix in (("checkpoint", ".safetensors"), ("segment", ".mp4"), ("generated_audio", ".wav")):
             artifact = parent / (revision + suffix)
             artifact.write_bytes(b"fixture: catalogue must not deserialize or hash tensors")
-            segment[name] = str(artifact.relative_to(self.root))
+            segment[name] = artifact.relative_to(self.root).as_posix()
         value = {"format": "h3_chain_upscale_segment_v1", "run_name": "demo",
                  "profile": profile, "profile_config": {"backend": backend, "recipe": recipe or {}},
                  "segment": segment}
@@ -54,6 +56,23 @@ class VariantTests(unittest.TestCase):
 
     def scan(self):
         return module.saved_checkpoint_variants(self.root, "demo", self.originals)
+
+    def test_windows_legacy_lineage_matches_portable_catalogue_keys(self):
+        path, value = self.save(recipe={"derope": True}, chapter=True)
+        value["processing_lineage"] = module.processing_lineage([value["segment"]])
+        for key in ("revision_metadata", "segment", "checkpoint", "generated_audio"):
+            value["segment"][key] = value["segment"][key].replace("/", "\\")
+        value["processing_lineage"][0]["metadata_path"] = value["segment"]["revision_metadata"]
+        self.write(path, value)
+        before = path.read_bytes()
+        result = self.scan()
+        self.assertEqual(result["warnings"], [])
+        self.assertEqual(len(result["variants"]), 1)
+        item = result["variants"][0]
+        self.assertTrue(item["ready"])
+        self.assertEqual(item["processing_branch"]["lineage"][0]["metadata_path"], item["key"])
+        self.assertNotIn("\\", item["key"] + item["profile_path"] + item["video"]["subfolder"])
+        self.assertEqual(path.read_bytes(), before)
 
     def test_profiles_chapters_stages_and_duplicate_pointers(self):
         self.save(profile="derope_in_name_only")

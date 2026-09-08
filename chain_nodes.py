@@ -8380,7 +8380,7 @@ def _delete_run_folder(run_name: Any, snapshot: Any,
 
 def _relative_output_path(path: str) -> str:
     return os.path.relpath(
-        os.path.realpath(os.path.abspath(path)), _output_root())
+        os.path.realpath(os.path.abspath(path)), _output_root()).replace(os.sep, "/")
 
 
 def _absolute_output_path(path: str) -> str:

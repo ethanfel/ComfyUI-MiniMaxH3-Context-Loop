@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import re
+from .artifact_paths import artifact_address, is_link_or_junction
 
 from .checkpoint_manager import (
     CheckpointDeleteBlocked, CheckpointGraphManager, _fingerprint,
@@ -18,20 +19,18 @@ class ChapterSnapshotManager:
     def _path(self, address):
         if not isinstance(address, str) or not address:
             raise ValueError("Select a saved chapter snapshot.")
-        parts = PurePosixPath(address).parts
-        if (PurePosixPath(address).is_absolute() or ".." in parts or
-                "\\" in address or str(PurePosixPath(address)) != address):
-            raise ValueError("Invalid chapter snapshot address.")
+        parts = PurePosixPath(artifact_address(address)).parts
         path = self.root
         for part in parts:
             path /= part
-            if path.is_symlink():
-                raise ValueError("Snapshot retirement cannot follow symlinks.")
+            if is_link_or_junction(path):
+                raise ValueError("Snapshot retirement cannot follow symlinks or junctions.")
         if not path.resolve().is_relative_to(self.root):
             raise ValueError("Chapter snapshot escapes the output directory.")
         return path
 
     def _preview(self, run, address):
+        address = artifact_address(address)
         path = self._path(address)
         parts = PurePosixPath(address).parts
         if not (len(parts) == 6 and parts[:3] == ("h3_chains", run, "chapters")
@@ -59,7 +58,7 @@ class ChapterSnapshotManager:
                     if k not in ("sealed_at", "chapter_manifest_id", "chapter_manifest_path")}
         if (_fingerprint(identity)[:32] != path.stem
                 or data.get("chapter_manifest_id") != path.stem
-                or data.get("chapter_manifest_path") != address):
+                or artifact_address(data.get("chapter_manifest_path")) != address):
             raise ValueError("Chapter snapshot failed its identity check.")
         destination = path.parent.parent / "retired_manifests" / path.name
         retired_address = destination.relative_to(self.root).as_posix()

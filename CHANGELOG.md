@@ -4,6 +4,15 @@ Newest first. This file keeps release history out of the onboarding README.
 
 ## Unreleased — Deferred checkpoint upscaling
 
+- Fix Windows processing saves rejecting their own backslash-separated
+  artifact addresses. New chain addresses use portable separators; legacy
+  addresses remain readable without rewriting metadata or changing hashes.
+  Normalize processing branch selection, dependency comparisons and chapter
+  snapshot retirement too. Reject Windows drive/ADS paths and junctions in
+  destructive/output validation. PNG export now handles Windows unsupported
+  hard-link errors with the existing exclusive-copy fallback. Added Windows
+  path, branch, snapshot, junction, locking and network-export regressions.
+
 - Fix Windows DeRoPE/upscale and VIDEO PNG saves failing with bad file
   descriptor during artifact flush. Use a writable, non-truncating file handle
   on Windows; retain read-only access on POSIX and propagate real flush errors.

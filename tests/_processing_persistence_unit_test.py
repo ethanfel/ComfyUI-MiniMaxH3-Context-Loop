@@ -117,6 +117,10 @@ class SyncFileTests(unittest.TestCase):
         persistence.sync_file(self.path)
         self.assert_preserved()
 
+    def test_windows_directory_flush_does_not_open_a_directory_handle(self):
+        with patch.object(persistence, "os", SimpleNamespace(name="nt")):
+            persistence.sync_directory(self.path.parent)
+
 
 if __name__ == "__main__":
     unittest.main()

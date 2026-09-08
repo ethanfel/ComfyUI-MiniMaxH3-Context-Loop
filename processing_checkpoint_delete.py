@@ -11,6 +11,7 @@ from .checkpoint_manager import (
     CheckpointDeleteBlocked, _strict_run_name, checkpoint_run_lock,
 )
 from .checkpoint_variants import validate_processing_lineage
+from .artifact_paths import artifact_address, is_link_or_junction
 
 
 REVISION = re.compile(r"clip_(\d{4})\.([0-9a-f]{32})\.json")
@@ -45,15 +46,12 @@ class ProcessingCheckpointManager:
     def _path(self, address):
         if not isinstance(address, str) or not address:
             raise ValueError("A saved processing artifact address is required.")
-        parts = PurePosixPath(address).parts
-        if (PurePosixPath(address).is_absolute() or ".." in parts or
-                "\\" in address or str(PurePosixPath(address)) != address):
-            raise ValueError("Invalid processing artifact address.")
+        parts = PurePosixPath(artifact_address(address)).parts
         path = self.root
         for part in parts:
             path /= part
-            if path.is_symlink():
-                raise ValueError("Processing deletion cannot follow symlinks: %s" % address)
+            if is_link_or_junction(path):
+                raise ValueError("Processing deletion cannot follow symlinks or junctions: %s" % address)
         if not path.resolve().is_relative_to(self.root):
             raise ValueError("Processing artifact escapes the output directory.")
         if path.exists() and not (path.is_file() or path.is_dir()):
@@ -71,6 +69,7 @@ class ProcessingCheckpointManager:
         return value
 
     def _target(self, run, address):
+        address = artifact_address(address)
         path = self._path(address)
         parts = PurePosixPath(address).parts
         if not (parts[:2] == ("h3_chains", run) and (
@@ -140,6 +139,7 @@ class ProcessingCheckpointManager:
         return docs
 
     def _preview(self, run, address):
+        address = artifact_address(address)
         target, profile = self._target(run, address)
         docs = self._documents(run)
         metadata = docs[target]
@@ -158,22 +158,30 @@ class ProcessingCheckpointManager:
         if pointer in docs and docs[pointer]["segment"]["revision"] == revision:
             owned[pointer] = "Current processed-take pointer (cleared, not rolled back)"
 
+        def owns_address(value):
+            if not isinstance(value, str):
+                return False
+            try:
+                return artifact_address(value) in addresses
+            except ValueError:
+                return False
+
         def refers(value):
             if isinstance(value, dict):
                 if any(value.get(k) == revision for k in (
                         "predecessor_revision", "previous_revision", "context_revision")):
                     return True
                 if (value.get("source_revision") == revision and
-                        (not value.get("source_checkpoint") or value["source_checkpoint"] in addresses)):
+                        (not value.get("source_checkpoint") or owns_address(value["source_checkpoint"]))):
                     return True
                 address = value.get("revision_metadata", value.get("metadata_path"))
                 if (value.get("revision") == revision and value.get("index", value.get("scene")) == scene
-                        and (not address or address in addresses)):
+                        and (not address or owns_address(address))):
                     return True
                 return any(refers(v) for k, v in value.items() if k != "supersedes")
             if isinstance(value, list):
                 return any(refers(v) for v in value)
-            return isinstance(value, str) and value in addresses
+            return owns_address(value)
 
         addresses = {self._address(path) for path in owned if path != pointer}
         independent = _independent_pixel_take(metadata)
@@ -189,9 +197,10 @@ class ProcessingCheckpointManager:
                     or any(saved["segment"].get(k) != item.get(k)
                            for k in ("index", "revision", "checkpoint_sha256"))):
                 return False
-            retained[item["revision_metadata"]] = {
+            address = artifact_address(item["revision_metadata"])
+            retained[address] = {
                 "scene": item["index"], "revision": item["revision"],
-                "metadata_path": item["revision_metadata"],
+                "metadata_path": address,
             }
             return True
 
@@ -231,7 +240,9 @@ class ProcessingCheckpointManager:
                     dependents.append({"scene": other["index"], "revision": other["revision"],
                                        "metadata_path": other["revision_metadata"],
                                        "reason": "saved take depends on this source or branch"})
-        dependents = list({item["metadata_path"]: item for item in dependents}.values())
+        dependents = list({artifact_address(item["metadata_path"]): {
+            **item, "metadata_path": artifact_address(item["metadata_path"])}
+            for item in dependents}.values())
         for item in dependents:
             retained.pop(item["metadata_path"], None)
         files = []
@@ -315,8 +326,9 @@ def require_saved_processing_segments(output_root, segments):
         if not path.is_file():
             raise ValueError("A processed source/branch take was deleted while this run was executing; reselect the source and requeue.")
         saved = manager._read(path).get("segment", {})
-        if any(saved.get(key) != segment.get(key) for key in (
-                "index", "revision", "checkpoint", "checkpoint_sha256")):
+        if (any(saved.get(key) != segment.get(key) for key in (
+                "index", "revision", "checkpoint_sha256"))
+                or manager._path(saved.get("checkpoint")) != manager._path(segment.get("checkpoint"))):
             raise ValueError("Processed source/branch identity changed while this run was executing.")
         if not manager._path(saved.get("checkpoint")).is_file():
             raise ValueError("A processed source/branch checkpoint is missing; reselect the source and requeue.")

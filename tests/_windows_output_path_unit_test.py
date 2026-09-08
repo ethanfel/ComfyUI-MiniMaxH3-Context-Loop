@@ -96,7 +96,7 @@ def windows_checks():
         for artifact in (ntpath.join(output, relative),
                          ntpath.join(canonical_root, relative)):
             saved = helpers["_relative_output_path"](artifact)
-            assert saved == relative
+            assert saved == relative.replace("\\", "/")
             assert helpers["_absolute_output_path"](saved) == (
                 ntpath.join(canonical_root, relative))
             assert helpers["_absolute_output_path"](artifact) == (
@@ -132,7 +132,7 @@ def windows_checks():
     # A different mapping of the same share must still load saved relative data.
     remapped = chain_paths(win, r"S:\comfyui_output", r"I:\comfyui_input")
     assert remapped["_absolute_output_path"](relative) == ntpath.join(unc, relative)
-    assert remapped["_relative_output_path"](ntpath.join(mapped, relative)) == relative
+    assert remapped["_relative_output_path"](ntpath.join(mapped, relative)) == relative.replace("\\", "/")
 
 
 def filesystem_checks():
@@ -152,8 +152,8 @@ def filesystem_checks():
         artifact = physical / relative
         artifact.parent.mkdir(parents=True)
         artifact.write_text("{}", encoding="utf-8")
-        assert helpers["_relative_output_path"](str(artifact)) == relative
-        assert helpers["_relative_output_path"](str(alias / relative)) == relative
+        assert helpers["_relative_output_path"](str(artifact)) == relative.replace(os.sep, "/")
+        assert helpers["_relative_output_path"](str(alias / relative)) == relative.replace(os.sep, "/")
         assert pathlib.Path(helpers["_absolute_output_path"](relative)).samefile(artifact)
 
 

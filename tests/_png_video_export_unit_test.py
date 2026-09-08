@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 import weakref
@@ -563,6 +564,53 @@ test.chain.MiniMaxH3ChainExportPNG().export(
                 record = json.loads((Path(result["result"][0]) / "export.json").read_text())
                 self.assertEqual(len(record["clips"][0]["files"]), 3)
                 self.assertIs(result["result"][4], self.video)
+
+    def test_windows_unsupported_hardlinks_copy_without_overwriting(self):
+        source = self.root / "staged.png"
+        source.write_bytes(b"lossless PNG bytes")
+        for code in (1, 50):
+            error = OSError(errno.EINVAL, "Windows hard links unsupported")
+            error.winerror = code
+            target = self.root / ("windows_%d.png" % code)
+            with patch.object(streaming.os, "link", side_effect=error):
+                streaming._publish_frame(source, target)
+                self.assertEqual(target.read_bytes(), source.read_bytes())
+                with self.assertRaises(FileExistsError):
+                    streaming._publish_frame(source, target)
+        error = OSError(errno.EINVAL, "bad parameter")
+        error.winerror = 87
+        with patch.object(streaming.os, "link", side_effect=error):
+            with self.assertRaises(OSError) as raised:
+                streaming._publish_frame(source, self.root / "invalid.png")
+        self.assertIs(raised.exception, error)
+        self.assertFalse((self.root / "invalid.png").exists())
+
+    def test_windows_junction_output_rejected(self):
+        junction = self.root / "junction"
+        junction.mkdir()
+        with patch.object(Path, "is_junction", new=lambda path: path == junction, create=True):
+            with self.assertRaisesRegex(ValueError, "junction"):
+                self.export(output_folder="junction/frames")
+        self.assertEqual(list(junction.iterdir()), [])
+
+    def test_windows_folder_lock_uses_first_byte_and_releases_on_failure(self):
+        calls = []
+        def locking(fd, operation, count):
+            self.assertEqual(os.lseek(fd, 0, os.SEEK_CUR), 0)
+            self.assertEqual(count, 1)
+            self.assertGreaterEqual(os.fstat(fd).st_size, 1)
+            calls.append(operation)
+        windows = SimpleNamespace(name="nt", SEEK_END=os.SEEK_END)
+        locks = SimpleNamespace(LK_NBLCK=2, LK_UNLCK=0, locking=locking)
+        with patch.object(streaming, "os", windows), patch.dict(sys.modules, msvcrt=locks):
+            with self.assertRaisesRegex(RuntimeError, "cancelled"):
+                with streaming._folder_lock(self.root, self.root / "locked"):
+                    raise RuntimeError("cancelled")
+            self.assertEqual(calls, [2, 0])
+            calls.clear()
+            with streaming._folder_lock(self.root, self.root / "locked"):
+                pass
+            self.assertEqual(calls, [2, 0])
 
     def test_denied_hardlink_copy_never_overwrites_existing_file_or_symlink(self):
         source = self.root / "staged.png"
