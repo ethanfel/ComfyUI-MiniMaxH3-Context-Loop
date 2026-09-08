@@ -2126,15 +2126,14 @@ def _decode_lazy_motion_video(
                 previous_time = relative_time
                 previous_array = None
             if target_index < source_end and previous_frame is not None:
-                display_end = previous_time + 1.0 / source_fps
-                target_time = (
-                    skip_seconds + target_index / float(FPS))
-                while (target_index < source_end and
-                       target_time < display_end - target_tolerance):
+                # The source ran out before the requested 24 fps window did
+                # (e.g. a reference clip shorter than the scene's window).
+                # Hold the last decoded frame for the remainder rather than
+                # failing, matching how the native ref2v path tolerates
+                # reference media of any length.
+                while target_index < source_end:
                     emit_previous()
                     target_index += 1
-                    target_time = (
-                        skip_seconds + target_index / float(FPS))
         return decoded
 
     decoded = decode_window(allow_seek=True)
