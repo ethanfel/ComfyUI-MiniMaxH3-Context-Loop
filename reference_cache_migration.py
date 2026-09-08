@@ -14,8 +14,10 @@ import re
 import uuid
 
 if __package__:
+    from . import processing_persistence as persistence
     from .reference_cache_store import FORMAT, ReferenceTensorStore, objects_digest, tensor_digest
 else:  # Standalone maintenance CLI, without importing ComfyUI or loading models.
+    import processing_persistence as persistence
     from reference_cache_store import FORMAT, ReferenceTensorStore, objects_digest, tensor_digest
 
 
@@ -209,8 +211,7 @@ class ReferenceCacheMigrator:
             for key in handle.keys():
                 value = handle.get_tensor(key)
                 objects[key] = store.put(value)
-                with open(store.verify(objects[key]), "rb") as object_file:
-                    os.fsync(object_file.fileno())
+                persistence.sync_file(store.verify(objects[key]))
                 del value
         if objects:
             sync_directory(store.root)

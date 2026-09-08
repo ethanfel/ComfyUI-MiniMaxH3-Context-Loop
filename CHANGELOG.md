@@ -3,6 +3,67 @@
 Newest first. The [README](README.md#changelog) keeps a short highlight reel;
 this file records the detailed changes.
 
+## Unreleased — Reference reconstruction and Windows save durability
+
+- Fix Windows DeRoPE/upscale and VIDEO PNG saves failing with bad file
+  descriptor during artifact flush. Use a writable, non-truncating file handle
+  on Windows; retain read-only access on POSIX and propagate real flush errors.
+  Legacy reference-cache conversion uses the same corrected helper. Added
+  descriptor-access, file-preservation, and failure-path regressions.
+
+- Upscale reference reconstruction with `inherit` now defaults to `max` when
+  the original take has no recoverable sizing policy. Saved Match/Max policies
+  and explicit overrides still take precedence; semantic-anchor settings are
+  unchanged. Old default-Match rebuilds remain intact and are not reused for
+  the new Max reconstruction. Updated the conditioning tooltip and added
+  pixel/latent recovery and cache-preservation regressions.
+
+## v0.6.8 — Correct fractional H3 denoise masks
+
+- Bring nightly's native-first ComfyUI PR #15988 correction to main. Masked
+  video velocity now matches each token's noise level; audio keeps the proper
+  carry conversion. This affects fractional masks such as feathered AV tails,
+  not reference-cache recovery or reference-video row-count mismatches.
+- Correct only missing streams and leave native fixes untouched, including
+  upstream's allocating and in-place forms and transparent wrappers. Detect
+  actual assignments rather than examples in comments or unused helpers.
+- Preflight reports a runtime bridge when the conversion is missing. Added
+  CPU regressions for partial native fixes, repeated installation, unmasked
+  and binary masks, fractional masks, audio scaling, and source preservation.
+- The proposed shared model_base follow-up is not yet implemented upstream;
+  its eventual hook must be reviewed before claiming compatibility with it.
+
+## v0.6.7 — Automatic PNG sequence variants
+
+- VIDEO PNG export now creates numbered sibling folders (`_2`, `_3`, etc.)
+  when rendered pixels, source branches, settings, or existing files conflict.
+  Disabling reuse also starts a fresh sequence without overwriting prior PNGs.
+- Persist the selected destination per upscale pass so recursive scenes and
+  retries stay in the same variant. After restart, the newest exporter-created
+  variant can be reused or resumed when its saved content matches.
+- A changed render midway through a verified sequence copies earlier scenes
+  into the new variant with bounded memory and continuous numbering. Copies
+  are independent files, so edits to older exports cannot alter the new one.
+- Preserve edited/missing prefixes and untracked files without adopting them.
+  Invalid journals, unsafe paths, and filesystem failures still fail safely.
+- Added seven-scene rerender, forced-fresh, prefix-copy interruption, numbered
+  destination binding, and real process-exit recovery regressions.
+
+## v0.6.6 — Review Gate frame capture and prompt resizing
+
+- Promoted the tested Review Gate frame-capture feature from nightly: scrub a
+  saved preview and save a still as a tagged Project Asset Carousel picture.
+  Existing tags create numbered takes without replacing the original asset.
+- Capture uses the connected project's current name, requires a choice when
+  the destination is ambiguous, and refreshes only matching Carousels. Stale
+  tag lookups and repeated save clicks cannot redirect or duplicate a capture.
+- Serialized catalog mutations preserve concurrent captures; media paths,
+  timestamps, and destination folders are validated before publication.
+- Added a zoom-aware prompt-editor resize grip with saved height and
+  double-click reset. It is hidden when prompt editing is disabled.
+- Includes PR #46 with the tested capture fixes and PR #50. Nightly-only
+  workflow ownership and deferred-review features remain on nightly.
+
 ## v0.6.5 — Explicit upscale anchor settings and source summaries
 
 - Added semantic-anchor size and presentation-mode overrides to latent, pixel,

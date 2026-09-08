@@ -1364,10 +1364,21 @@ def main():
         return None
 
     class NativeModel:
-        def forward(self, x, denoise_mask=None, audio_denoise_mask=None):
-            return x
+        def forward(
+                self, x, timestep=None, context=None,
+                transformer_options={}, minimax_payload=None,
+                denoise_mask=None, audio_denoise_mask=None, **kwargs):
+            out = [x[0].clone(), x[1].clone()]
+            if denoise_mask is not None:
+                out[0] = out[0] * denoise_mask
+            if audio_denoise_mask is not None:
+                out[1] = out[1] * audio_denoise_mask
+            return out
 
-        def _forward(self, x, denoise_mask=None, audio_denoise_mask=None):
+        def _forward(
+                self, x, timestep=None, context=None,
+                transformer_options={}, minimax_payload=None,
+                denoise_mask=None, audio_denoise_mask=None, **kwargs):
             return x
 
     class NativeFinal:
@@ -1429,6 +1440,8 @@ def main():
     assert "process_denoise_mask" not in NativeBase.__dict__
     native_status = mask_compat.capability_status()
     assert native_status["mask_engine_native"]
+    assert native_status["velocity_mask_conversion_native"]
+    assert not native_status["velocity_mask_conversion_compat"]
     assert native_status["mask_helpers_native"]
     assert native_status["scale_latent_inpaint_native"]
     assert native_status["sampler_mask_blend_native"]
@@ -1445,8 +1458,92 @@ def main():
     assert payload_compat._is_compatible_wrapper(wrapper)
     print(
         "mask compatibility: native merged #15375 model/sampler support is "
-        "detected and left untouched; the removed preprocessing hook stays "
-        "removed")
+        "detected and left untouched when native #15988 velocity conversion "
+        "is present; the removed preprocessing hook stays removed")
+
+    # Native #15375 builds from before #15988 need a narrow forward wrapper.
+    # It must scale video velocity directly and apply the audio mask to the
+    # converted residual rather than to the carry base.
+    def time_shift_sigma(sigma, _shift_video, _shift_audio):
+        return sigma * 0.5
+
+    h3m.time_shift_sigma = time_shift_sigma
+
+    class PreVelocityFixModel:
+        sigma_shift_video = 12.0
+        sigma_shift_audio = 3.0
+
+        def forward(
+                self, x, timestep, context, transformer_options={},
+                minimax_payload=None, denoise_mask=None,
+                audio_denoise_mask=None, **kwargs):
+            scale = float((minimax_payload or {}).get("audio_scale", 1.0))
+            audio_src = x[1]
+            sigma_v = (timestep.flatten()[0] / 1000.0).float()
+            sigma_a = time_shift_sigma(
+                sigma_v, self.sigma_shift_video, self.sigma_shift_audio)
+            carry = (sigma_a / sigma_v).to(audio_src.dtype)
+            out = self._forward(
+                x, timestep, context,
+                transformer_options=transformer_options,
+                minimax_payload=minimax_payload,
+                denoise_mask=denoise_mask,
+                audio_denoise_mask=audio_denoise_mask,
+                **kwargs)
+            if scale != 1.0:
+                out[1] = ((1.0 - scale) * (audio_src * carry)
+                          + (1.0 + (scale - 1.0) * sigma_a).to(
+                              out[1].dtype) * out[1])
+            return out
+
+        def _forward(
+                self, x, timestep, context, transformer_options={},
+                minimax_payload=None, denoise_mask=None,
+                audio_denoise_mask=None, **kwargs):
+            return [torch.full_like(x[0], 2.0),
+                    torch.full_like(x[1], 3.0)]
+
+    h3m.MiniMaxH3Model = PreVelocityFixModel
+    velocity_compat = _load("h3_mask_compat")
+    pre_velocity_forward = PreVelocityFixModel.forward
+    assert not velocity_compat.capability_status()[
+        "velocity_mask_conversion"]
+    assert velocity_compat.ensure_h3_mask_compat()
+    assert PreVelocityFixModel.forward is not pre_velocity_forward
+    patched_velocity_forward = PreVelocityFixModel.forward
+    velocity_status = velocity_compat.capability_status()
+    assert velocity_status["velocity_mask_conversion"]
+    assert velocity_status["velocity_mask_conversion_compat"]
+    assert velocity_compat.ensure_h3_mask_compat()
+    assert PreVelocityFixModel.forward is patched_velocity_forward
+
+    video_velocity_mask = torch.tensor(
+        [[[[[1.0, 0.75], [0.5, 0.25]]]]])
+    audio_velocity_mask = torch.tensor(
+        [[[[1.0, 0.5, 0.25], [0.75, 0.5, 0.0]]]])
+    clean_video = torch.arange(8, dtype=torch.float32).reshape(
+        1, 2, 1, 2, 2)
+    video_input = clean_video + 0.5 * video_velocity_mask * 2.0
+    audio_input = torch.full((1, 2, 2, 3), 2.0)
+    velocity_out = PreVelocityFixModel().forward(
+        [video_input, audio_input], torch.tensor([500.0]),
+        torch.empty((1, 1, 1)),
+        minimax_payload={"audio_scale": 4.0},
+        denoise_mask=video_velocity_mask,
+        audio_denoise_mask=audio_velocity_mask)
+    torch.testing.assert_close(
+        velocity_out[0],
+        torch.full_like(video_input, 2.0) * video_velocity_mask)
+    torch.testing.assert_close(
+        video_input - 0.5 * velocity_out[0], clean_video)
+    carry_base = torch.full_like(audio_input, -3.0)
+    expected_audio_velocity = carry_base + (
+        torch.full_like(audio_input, 5.25) * audio_velocity_mask)
+    torch.testing.assert_close(
+        velocity_out[1], expected_audio_velocity)
+    print(
+        "mask compatibility: pre-#15988 native velocity conversion is "
+        "corrected once for masked video and carried audio")
 
     # A checkout from immediately before the merge-time refactor has the
     # direct payload and scale hook, but lacks the final helper contract. It
@@ -1538,6 +1635,7 @@ def main():
     assert fallback_mask.ensure_h3_mask_compat()
     fallback_status = fallback_mask.capability_status()
     assert fallback_status["mask_engine_compat"]
+    assert fallback_status["velocity_mask_conversion_compat"]
     assert fallback_status["mask_helpers_compat"]
     assert fallback_status["process_denoise_mask_compat"]
     assert fallback_status["scale_latent_inpaint_compat"]

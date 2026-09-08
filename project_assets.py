@@ -15,9 +15,12 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 import uuid
+import weakref
 from datetime import datetime, timezone
 from fractions import Fraction
+from functools import wraps
 from typing import Any
 
 if __package__:
@@ -65,6 +68,24 @@ INPUT_BROWSER_EXCLUDED_DIRECTORIES = frozenset((
     "clipspace", "h3_projects",
 ))
 _TAG_RE = re.compile(r"[A-Za-z][A-Za-z0-9_-]{0,63}")
+_PROJECT_LOCKS = weakref.WeakValueDictionary()
+_PROJECT_LOCKS_GUARD = threading.Lock()
+
+
+def _project_mutation(method):
+    """Serialize catalog read/modify/write across request-local store instances.
+
+    Reentrant because slot binding and derived imports call other mutations.
+    Media extraction happens before import and does not hold this lock.
+    """
+    @wraps(method)
+    def locked(self, project, *args, **kwargs):
+        directory, _name = self._project_dir(project)
+        with _PROJECT_LOCKS_GUARD:
+            lock = _PROJECT_LOCKS.setdefault(directory, threading.RLock())
+        with lock:
+            return method(self, project, *args, **kwargs)
+    return locked
 
 
 def _utc_now() -> str:
@@ -142,7 +163,6 @@ def _capture_family_tag(catalog: dict[str, Any], value: Any, fallback: str) -> s
     tag = _safe_tag(value, fallback)
     used = {
         str(item.get("tag") or "") for item in catalog.get("assets", [])
-        if bool(item.get("enabled", True))
     }
     if tag not in used:
         return tag
@@ -424,6 +444,7 @@ class ProjectAssetStore:
             "folders": [],
         }
 
+    @_project_mutation
     def load(self, project: Any, *, create: bool = False) -> dict[str, Any]:
         directory, name = self._project_dir(project)
         path = os.path.join(directory, "catalog.json")
@@ -503,8 +524,8 @@ class ProjectAssetStore:
         _atomic_json(os.path.join(backup, "catalog.json"), document)
         return document
 
-    def public_catalog(self, project: Any) -> dict[str, Any]:
-        catalog = self.load(project, create=True)
+    def public_catalog(self, project: Any, *, create: bool = True) -> dict[str, Any]:
+        catalog = self.load(project, create=create)
         return {
             **catalog,
             "assets": [dict(item) for item in catalog["assets"]],
@@ -652,6 +673,7 @@ class ProjectAssetStore:
         return os.path.join(directory, ".uploads", "%s_%s" % (
             uuid.uuid4().hex, basename))
 
+    @_project_mutation
     def sync_reference_slots(
             self, project: Any, templates: Any) -> dict[str, Any]:
         """Mirror reference metadata without copying or serializing media."""
@@ -719,6 +741,7 @@ class ProjectAssetStore:
         catalog["reference_slots"] = slots
         return self._save_catalog(catalog)
 
+    @_project_mutation
     def bind_reference_slot(
             self, project: Any, slot_id: Any, source_path: Any, *,
             role: Any = "", tag: Any = "", original_name: Any = "",
@@ -748,15 +771,12 @@ class ProjectAssetStore:
         result["bound_slot_id"] = wanted
         return result
 
-    def resolve_capture_tag(self, project: Any, tag: Any, fallback: str) -> str:
-        """Uniquify a tag for a captured video frame (see _capture_family_tag)."""
-        catalog = self.load(project, create=True)
-        return _capture_family_tag(catalog, tag, fallback)
-
+    @_project_mutation
     def import_file(self, project: Any, source_path: Any, *, role: Any = "",
                     tag: Any = "", original_name: Any = "",
                     source_kind: str = "path",
-                    options: dict[str, Any] | None = None) -> dict[str, Any]:
+                    options: dict[str, Any] | None = None,
+                    folder_id: Any = None) -> dict[str, Any]:
         source = os.path.realpath(os.path.abspath(os.path.expanduser(
             str(source_path or "").strip())))
         if not source or not os.path.isfile(source):
@@ -769,7 +789,13 @@ class ProjectAssetStore:
         digest = _file_sha256(source)
         size = int(os.path.getsize(source))
         directory, name = self._project_dir(project)
-        catalog = self.load(name, create=True)
+        catalog = self.load(name)
+        folder_id = str(folder_id or "")
+        if folder_id and folder_id not in {
+                str(item.get("id") or "") for item in catalog.get("folders", [])}:
+            raise FileNotFoundError("Asset folder %s was not found." % folder_id)
+        if len(catalog["assets"]) >= MAX_CATALOG_ASSETS:
+            raise ValueError("Project asset catalog is full.")
         if role == "source_track" and any(
                 item.get("role") == "source_track"
                 and bool(item.get("enabled", True))
@@ -796,7 +822,8 @@ class ProjectAssetStore:
                 except FileNotFoundError:
                     pass
         metadata = _probe_media(destination, kind)
-        tag = _unique_tag(catalog, tag, stem)
+        tag = (_capture_family_tag(catalog, tag, stem)
+               if source_kind == "frame_capture" else _unique_tag(catalog, tag, stem))
         now = _utc_now()
         entry = {
             "id": uuid.uuid4().hex,
@@ -816,6 +843,8 @@ class ProjectAssetStore:
             "metadata": metadata,
             "options": dict(options or {}),
         }
+        if folder_id:
+            entry["folder_id"] = folder_id
         catalog["assets"].append(entry)
         catalog = self._save_catalog(catalog)
         backup, _name = self._backup_dir(name)
@@ -833,6 +862,7 @@ class ProjectAssetStore:
                     pass
         return {"catalog": catalog, "asset": entry}
 
+    @_project_mutation
     def create_folder(self, project: Any, name: Any, *, color: Any = "") -> dict[str, Any]:
         catalog = self.load(project, create=True)
         if len(catalog.get("folders", [])) >= MAX_ASSET_FOLDERS:
@@ -854,6 +884,7 @@ class ProjectAssetStore:
         catalog.setdefault("folders", []).append(folder)
         return {"catalog": self._save_catalog(catalog), "folder": dict(folder)}
 
+    @_project_mutation
     def update_folder(self, project: Any, folder_id: Any,
                       changes: Any) -> dict[str, Any]:
         if not isinstance(changes, dict):
@@ -876,6 +907,7 @@ class ProjectAssetStore:
         folder["updated_at"] = _utc_now()
         return {"catalog": self._save_catalog(catalog), "folder": dict(folder)}
 
+    @_project_mutation
     def delete_folder(self, project: Any, folder_id: Any) -> dict[str, Any]:
         catalog = self.load(project)
         wanted = str(folder_id or "")
@@ -898,6 +930,7 @@ class ProjectAssetStore:
             "assets_unfiled": moved,
         }
 
+    @_project_mutation
     def reorder_folders(self, project: Any, folder_ids: Any) -> dict[str, Any]:
         if not isinstance(folder_ids, list):
             raise ValueError("Folder order must be a JSON list of folder IDs.")
@@ -914,6 +947,7 @@ class ProjectAssetStore:
         catalog["folders"] = [by_id[item] for item in requested]
         return {"catalog": self._save_catalog(catalog)}
 
+    @_project_mutation
     def duplicate(self, project: Any, asset_id: Any, *, tag: Any = "",
                   folder_id: Any = None) -> dict[str, Any]:
         """Create a second catalog card without copying its media bytes."""
@@ -985,6 +1019,7 @@ class ProjectAssetStore:
         }
         return entry, cropped, values
 
+    @_project_mutation
     def register_derived_image(
             self, project: Any, parent_asset_id: Any, rendered_path: Any, *,
             tag: Any = "", folder_id: Any = None,
@@ -1068,6 +1103,7 @@ class ProjectAssetStore:
             except FileNotFoundError:
                 pass
 
+    @_project_mutation
     def update(self, project: Any, asset_id: Any, changes: Any) -> dict[str, Any]:
         if not isinstance(changes, dict):
             raise ValueError("Asset changes must be a JSON object.")
@@ -1136,6 +1172,7 @@ class ProjectAssetStore:
         catalog = self._save_catalog(catalog)
         return {"catalog": catalog, "asset": dict(entry)}
 
+    @_project_mutation
     def reorder(self, project: Any, asset_ids: Any) -> dict[str, Any]:
         """Persist one exact permutation of the project's asset cards."""
         if not isinstance(asset_ids, list):
@@ -1153,6 +1190,7 @@ class ProjectAssetStore:
         catalog["assets"] = [by_id[asset_id] for asset_id in requested]
         return {"catalog": self._save_catalog(catalog)}
 
+    @_project_mutation
     def delete(self, project: Any, asset_id: Any) -> dict[str, Any]:
         """Remove a catalog asset and its project-owned media copies."""
         catalog = self.load(project)

@@ -1,4 +1,4 @@
-"""Capability-aware runtime compatibility for ComfyUI PR #15375.
+"""Capability-aware runtime compatibility for ComfyUI H3 mask support.
 
 This module contains the H3 AV-mask diffusion behavior and the narrow legacy
 sampler bridge required by masked target-prefix continuation. It does not
@@ -11,14 +11,17 @@ ComfyUI reverts all runtime modifications.
 
 Originally adapted from seitanism/ComfyUI-H3-Motion-Context-MultiRef
 (GPL-3.0). This compatibility snapshot tracks the merged ComfyUI PR #15375,
-including final refactor commit c676536, reviewed on 2026-08-18.
+including final refactor commit c676536, reviewed on 2026-08-18, plus the
+masked-velocity x0 conversion correction from ComfyUI PR #15988.
 """
 
 from __future__ import annotations
 
+import ast
 import functools
 import inspect
 import logging
+import textwrap
 import types
 
 
@@ -35,6 +38,7 @@ _LEGACY_MARKERS = (
 )
 _SAMPLER_MARKER = "_h3_motion_context_pr15375_sampler_blend_v3"
 _ACTIVE_MASK_ATTR = "_h3_motion_context_active_denoise_mask_v3"
+_VELOCITY_MASK_MARKER = "_h3_motion_context_pr15988_velocity_mask_v1"
 
 
 def _exec_into(module, source, name):
@@ -67,6 +71,10 @@ def _is_sampler_compat(fn):
     return bool(getattr(fn, _SAMPLER_MARKER, False))
 
 
+def _is_velocity_mask_compat(fn):
+    return bool(getattr(fn, _VELOCITY_MASK_MARKER, False))
+
+
 def _signature_has(fn, *names):
     try:
         params = inspect.signature(fn).parameters
@@ -97,6 +105,86 @@ def _function_has_keyword_group(fn, *names):
                     return True
         current = getattr(current, "__wrapped__", None)
     return False
+
+
+def _source_velocity_mask_streams(fn):
+    """Recognize the upstream assignments, not examples in comments/docstrings.
+
+    This deliberately describes the reviewed H3 forward contract. A future
+    shared model_base conversion needs its own reviewed capability check;
+    the presence of an unrelated mask hook is not proof of velocity scaling.
+    """
+    try:
+        # inspect.getsource(function) unwraps decorators, hiding operations
+        # performed by the wrapper itself. Inspect each code object instead.
+        tree = ast.parse(textwrap.dedent(inspect.getsource(
+            getattr(fn, "__code__", fn))))
+    except (OSError, TypeError, SyntaxError, IndentationError):
+        return set()
+    if not tree.body or not isinstance(
+            tree.body[0], (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return set()
+
+    def output_index(node):
+        if (isinstance(node, ast.Subscript)
+                and isinstance(node.value, ast.Name)
+                and node.value.id == "out"
+                and isinstance(node.slice, ast.Constant)
+                and type(node.slice.value) is int
+                and node.slice.value in (0, 1)):
+            return node.slice.value
+        return None
+
+    def is_mask(node, index):
+        return (index is not None and isinstance(node, ast.Name)
+                and node.id == ("denoise_mask", "audio_denoise_mask")[index])
+
+    found = set()
+    pending = list(tree.body[0].body)
+    while pending:
+        node = pending.pop()
+        # Helpers that are only defined here do not necessarily execute.
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
+                             ast.ClassDef, ast.Lambda)):
+            continue
+        if isinstance(node, ast.Assign) and len(node.targets) == 1:
+            index = output_index(node.targets[0])
+            value = node.value
+            if isinstance(value, ast.BinOp) and isinstance(value.op, ast.Mult):
+                for output, mask in ((value.left, value.right),
+                                     (value.right, value.left)):
+                    if output_index(output) == index and is_mask(mask, index):
+                        found.add(index)
+        elif isinstance(node, ast.AugAssign) and isinstance(node.op, ast.Mult):
+            index = output_index(node.target)
+            if is_mask(node.value, index):
+                found.add(index)
+        elif (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+              and node.func.attr == "mul_" and len(node.args) == 1):
+            index = output_index(node.func.value)
+            if is_mask(node.args[0], index):
+                found.add(index)
+        pending.extend(ast.iter_child_nodes(node))
+    return found
+
+
+def _forward_velocity_mask_streams(fn):
+    """Find each corrected stream through transparent forward wrappers."""
+    current = fn
+    seen = set()
+    found = set()
+    while callable(current) and id(current) not in seen:
+        seen.add(id(current))
+        if _is_velocity_mask_compat(current):
+            return {0, 1}
+        found.update(_source_velocity_mask_streams(current))
+        current = getattr(current, "__wrapped__", None)
+    return found
+
+
+def _forward_scales_masked_velocity(fn):
+    """Detect the #15988 conversion without relying on a ComfyUI version."""
+    return _forward_velocity_mask_streams(fn) == {0, 1}
 
 
 def _sampler_call():
@@ -181,6 +269,10 @@ def capability_status():
         and _is_known_engine_compat(forward)
         and _is_known_engine_compat(inner)
     )
+    velocity_mask_ready = bool(
+        callable(forward) and _forward_scales_masked_velocity(forward))
+    velocity_mask_compat = bool(
+        callable(forward) and _is_velocity_mask_compat(forward))
     helpers = _model_mask_helpers(cls)
 
     return {
@@ -197,6 +289,10 @@ def capability_status():
         "mask_engine_native": bool(engine_complete and not engine_ours),
         "mask_engine_compat": engine_ours,
         "mask_engine_indicators": engine_indicators,
+        "velocity_mask_conversion": velocity_mask_ready,
+        "velocity_mask_conversion_native": bool(
+            velocity_mask_ready and not velocity_mask_compat),
+        "velocity_mask_conversion_compat": velocity_mask_compat,
         "mask_helpers_complete": helpers["complete"],
         "mask_helpers_native": helpers["native"],
         "mask_helpers_compat": helpers["compat"],
@@ -204,7 +300,7 @@ def capability_status():
 
 
 def _install_engine_compat(h3m):
-    """Install the coupled MiniMax-H3 diffusion-mask engine from #15375."""
+    """Install the coupled MiniMax-H3 mask engine from #15375 and #15988."""
     mask_row_values = _exec_into(
         h3m,
         '''def mask_row_values(mask, latent_t, lat_h, lat_w):
@@ -275,6 +371,13 @@ def _install_engine_compat(h3m):
         comfy.patcher_extension.get_all_wrappers(comfy.patcher_extension.WrappersMP.DIFFUSION_MODEL, transformer_options)
     ).execute(x, timestep, context, transformer_options, minimax_payload=minimax_payload,
               denoise_mask=denoise_mask, audio_denoise_mask=audio_denoise_mask, **kwargs)
+
+    # Masked rows predict at mask * sigma. CONST converts velocity to x0 with
+    # the global sigma, so scale the returned velocity to the same local time.
+    if denoise_mask is not None:
+        out[0] = out[0] * denoise_mask
+    if audio_denoise_mask is not None:
+        out[1] = out[1] * audio_denoise_mask
 
     if scale != 1.0:
         out[1] = ((1.0 - scale) * (audio_src * carry)
@@ -474,6 +577,71 @@ def _install_engine_compat(h3m):
         h3_inner_forward,
     ):
         _mark(fn)
+    _mark(h3_forward, _VELOCITY_MASK_MARKER)
+
+
+def _install_velocity_mask_compat(h3m):
+    """Correct pre-#15988 native mask velocity conversion in place.
+
+    The native method converts audio velocity into the sampler's carried
+    coordinate system after the diffusion wrapper runs. Applying the audio
+    mask only to that converted residual is algebraically equivalent to
+    applying it immediately before the carry conversion, while allowing this
+    compatibility layer to remain a small wrapper around the live core.
+    """
+    model_cls = getattr(h3m, "MiniMaxH3Model", None)
+    original = getattr(model_cls, "forward", None) if model_cls else None
+    if not callable(original):
+        raise RuntimeError(
+            "h3_masked_prefix: MiniMaxH3Model.forward is unavailable.")
+    native_streams = _forward_velocity_mask_streams(original)
+    if native_streams == {0, 1}:
+        return original
+
+    @functools.wraps(original)
+    def wrapper(
+            self, x, timestep, context, transformer_options={},
+            minimax_payload=None, denoise_mask=None,
+            audio_denoise_mask=None, **kwargs):
+        out = original(
+            self, x, timestep, context,
+            transformer_options=transformer_options,
+            minimax_payload=minimax_payload,
+            denoise_mask=denoise_mask,
+            audio_denoise_mask=audio_denoise_mask,
+            **kwargs)
+        if not isinstance(out, list):
+            out = list(out)
+
+        if 0 not in native_streams and denoise_mask is not None:
+            out[0] = out[0] * denoise_mask
+
+        if 1 not in native_streams and audio_denoise_mask is not None:
+            scale = float((minimax_payload or {}).get("audio_scale", 1.0))
+            if scale == 1.0:
+                out[1] = out[1] * audio_denoise_mask
+            else:
+                options = transformer_options or {}
+                shift_v = float(options.get(
+                    "minimax_h3_sigma_shift_video",
+                    self.sigma_shift_video))
+                shift_a = float(options.get(
+                    "minimax_h3_sigma_shift_audio",
+                    self.sigma_shift_audio))
+                sigma_v = (
+                    timestep.flatten()[0] / 1000.0
+                ).float().clamp(min=1e-6)
+                sigma_a = h3m.time_shift_sigma(
+                    sigma_v, shift_v, shift_a)
+                carry = (sigma_a / sigma_v).to(x[1].dtype)
+                carry_base = (1.0 - scale) * (x[1] * carry)
+                out[1] = carry_base + (
+                    out[1] - carry_base) * audio_denoise_mask
+        return out
+
+    _mark(wrapper, _VELOCITY_MASK_MARKER)
+    model_cls.forward = wrapper
+    return wrapper
 
 
 def _install_model_base_hooks(model_base):
@@ -638,7 +806,7 @@ def _install_sampler_mask_bridge(model_base):
 
 
 def ensure_h3_mask_compat():
-    """Install only current #15375 capabilities missing from the live build."""
+    """Install current #15375/#15988 capabilities missing from the live build."""
     import comfy.model_base as model_base
     import comfy.ldm.minimax.model as h3m
 
@@ -666,6 +834,13 @@ def ensure_h3_mask_compat():
         _install_engine_compat(h3m)
         _LOG.info(
             "h3_masked_prefix: PR #15375 diffusion-mask compatibility enabled")
+
+    velocity_status = capability_status()
+    if not velocity_status["velocity_mask_conversion"]:
+        _install_velocity_mask_compat(h3m)
+        _LOG.info(
+            "h3_masked_prefix: PR #15988 masked-velocity x0 conversion "
+            "compatibility enabled")
 
     # The current PR passes denoise_mask directly into scale_latent_inpaint.
     # Older cores need a narrow sampler wrapper which exposes the same value
@@ -714,6 +889,7 @@ def ensure_h3_mask_compat():
     after = capability_status()
     ready = (
         after["mask_engine_complete"]
+        and after["velocity_mask_conversion"]
         and (
             after["scale_latent_inpaint_native"]
             or after["scale_latent_inpaint_compat"]
@@ -738,6 +914,7 @@ def is_ready():
         return False
     return bool(
         status["mask_engine_complete"]
+        and status["velocity_mask_conversion"]
         and (
             status["scale_latent_inpaint_native"]
             or status["scale_latent_inpaint_compat"]

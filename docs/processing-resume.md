@@ -37,6 +37,19 @@ accepted **only when its delivered RGB pixels match at the selected 8/16-bit
 export precision**. This also works for older exports without pixel digests.
 Different rendered pixels, changed source branches/settings, and edited or
 missing committed PNGs remain protected: they are not silently adopted.
+Instead, VIDEO export automatically selects a numbered sibling such as
+`final_upscale_2`, then `final_upscale_3`. The `output_directory` output and
+status report the actual destination. Setting `reuse_existing = false` forces
+a fresh sequence; it does not create a separate folder for every scene.
+
+The chosen folder is bound to the upscale pass on disk, so recursive scenes
+and retries stay together. After a restart, a new pass considers the newest
+exporter-created variant. Identical saved pixels still reuse it normally.
+If a changed render forks midway through an otherwise verified sequence,
+earlier unchanged scenes are copied into the new folder with bounded memory,
+preserving continuous numbering. Those copies are independent files, so edits
+to the older sequence cannot change them. Edited/missing prefix frames are
+not copied; that fresh variant begins with the scene being exported.
 
 PNG publication writes a `.png_pending.json` journal after staging a complete
 scene. Normal cancellation rolls back that attempt when it can safely do so.
@@ -49,8 +62,10 @@ A killed network copy can leave an incomplete file. Recovery preserves
 conflicting bytes as `conflict_*` files in the private `.png_scene_*` directory,
 logs the location, and publishes the verified staged frame. Earlier scenes and
 untracked files outside the journal's frame range are never overwritten or
-deleted. Untracked files from **pre-journal** interrupted exports still require
-manual recovery or a different folder; ownership cannot safely be inferred.
+deleted. Untracked files from **pre-journal** interrupted exports are left
+untouched and a new numbered export is used. Invalid journals, unsafe paths,
+and genuine filesystem errors still require attention; numbering does not
+bypass those checks.
 
 These protections do not guarantee survival of a failed disk or a server that
 does not honour flush requests. Graceful Cancel remains preferable to killing

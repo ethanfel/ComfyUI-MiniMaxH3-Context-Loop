@@ -31,6 +31,26 @@ merged into `nightly`.
 
 ## Changelog
 
+### 0.6.8 — Fractional H3 mask correction
+
+- Bring nightly's fractional video/audio denoise-mask correction to main,
+  including feathered AV continuity and native-first compatibility.
+- Correct only missing streams; leave native fixes and source latents intact.
+
+### 0.6.7 — Automatic PNG sequence variants
+
+- Conflicting VIDEO PNG exports automatically use `_2`, `_3`, etc. folders,
+  preserving earlier exports and keeping subsequent scenes in one variant.
+- Copy verified earlier scenes safely when a rerender changes mid-sequence;
+  retain bounded memory and interrupted-publication recovery.
+
+### 0.6.6 — Review Gate capture and resizing
+
+- Capture a still from a saved Review Gate preview into the Project Asset
+  Carousel, with safe project selection and numbered tags for new takes.
+- Resize the optional prompt editor using its new drag handle; height is
+  saved with the workflow and double-click resets it.
+
 ### 0.6.5 — Upscale anchor overrides and clear checkpoint sources
 
 - Choose semantic-anchor size and mode for cached, rebuilt, or connected
@@ -157,6 +177,11 @@ upscale packs and example assets are listed in the [workflow catalog](example_wo
 
 For Studio workflows, set the run name in **Project Asset Carousel** instead.
 See [Getting started](docs/GETTING_STARTED.md) for setup and recovery steps.
+
+To reuse a still as a reference, scrub the saved Review Gate preview, click
+**Capture frame…**, check the destination project and tag, then **Save to
+Carousel**. Reusing a tag creates a numbered take without replacing the
+original asset or video. Capture requires `ffmpeg`.
 
 ## Choose a workflow
 

@@ -104,6 +104,7 @@ from .reference_cache_migration import ReferenceCacheMigrator, matches_legacy
 from .reference_cache_usage import note_converted_use, confirm_saved_use
 from .project_assets import (
     PROJECT_ASSET_FORMAT,
+    VIDEO_EXTENSIONS,
     ProjectAssetStore,
 )
 from .av_timing import (
@@ -16009,6 +16010,7 @@ def _preflight_runtime_compatibility(
             "ok": not partial,
             "mode": ("ready" if (
                 engine.get("mask_engine_complete")
+                and engine.get("velocity_mask_conversion")
                 and (payload.get("native_av_mask_payload")
                      or payload.get("wrapper_present")))
                 else "runtime_bridge_available"),
@@ -24715,8 +24717,8 @@ class MiniMaxH3ChainExportPNG:
                     "tooltip": "For Chapter manifests, keep verified unchanged "
                                "PNGs and append newly generated scenes. Changed "
                                "takes, trims or settings create a new folder. "
-                               "VIDEO mode reuses exact saved scenes in the selected folder and appends the next scene; "
-                               "different takes/settings require a new folder. Turn off after changing VAE weights or decode "
+                               "VIDEO mode reuses exact saved scenes and appends the next scene; "
+                               "different takes/settings automatically create _2, _3, etc. sequence folders. Turn off after changing VAE weights or decode "
                                "settings, or to force a fresh export. Whole-Run "
                                "exports always create a new folder."}),
                 "video": ("VIDEO", {
@@ -24726,7 +24728,8 @@ class MiniMaxH3ChainExportPNG:
                     "tooltip": "Current pixel-upscale scene state. Required with VIDEO for scene identity, RAW overlap trimming and sequence numbering."}),
                 "output_folder": ("STRING", {
                     "default": "", "tooltip": "VIDEO mode: chosen subfolder inside ComfyUI output (relative or absolute). "
-                               "Empty uses this upscale profile's frames/export_name folder. Different takes/settings never overwrite existing PNGs."}),
+                               "Empty uses this upscale profile's frames/export_name folder. Conflicts create numbered siblings (_2, _3, etc.); "
+                               "all later scenes in this pass use the same selected folder. Existing PNGs are never overwritten."}),
                 "png_bit_depth": (["8", "16"], {
                     "default": "8", "tooltip": "8-bit RGB (existing default) or 16-bit RGB. "
                                "16-bit preserves the RGB16 file-backed VIDEO precision and uses more disk space. Applies to both video and latent export."}),
@@ -28944,7 +28947,8 @@ async def _project_asset_catalog(request):
     try:
         project = request.query.get("project", "")
         catalog = await asyncio.to_thread(
-            _project_asset_store().public_catalog, project)
+            _project_asset_store().public_catalog, project,
+            create=request.query.get("create", "true").lower() != "false")
         return web.json_response(catalog)
     except (OSError, TypeError, ValueError) as exc:
         return web.json_response({"error": str(exc)}, status=400)
@@ -29216,20 +29220,41 @@ def _capture_frame_video_path(filename: Any, subfolder: Any, kind: Any) -> str:
     if not name:
         raise ValueError("Video filename cannot be blank.")
     sub = str(subfolder or "").strip()
+    if os.path.isabs(name) or os.path.isabs(sub):
+        raise ValueError("Video source must be relative to its selected media directory.")
     candidate = os.path.join(root, sub, name) if sub else os.path.join(root, name)
+    candidate = os.path.realpath(candidate)
+    if os.path.commonpath((os.path.realpath(root), candidate)) != os.path.realpath(root):
+        raise ValueError("Video source is outside its selected media directory.")
+    if os.path.splitext(candidate)[1].lower() not in VIDEO_EXTENSIONS:
+        raise ValueError("Frame capture requires a supported video file, not a playlist.")
     return _confined_media_path(candidate, "Video source")
+
+
+def _capture_frame_time(value: Any) -> float:
+    if isinstance(value, bool):
+        raise ValueError("Frame time must be a finite, non-negative number.")
+    try:
+        offset = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("Frame time must be a finite, non-negative number.") from exc
+    if not math.isfinite(offset) or offset < 0:
+        raise ValueError("Frame time must be a finite, non-negative number.")
+    return offset
 
 
 def _capture_video_frame(video_path: str, time_seconds: float, output_path: str) -> None:
     ffmpeg = _usable_ffmpeg()
     if ffmpeg is None:
         raise RuntimeError("Capturing a video frame requires a working ffmpeg.")
-    offset = max(0.0, float(time_seconds))
+    offset = _capture_frame_time(time_seconds)
     temporary = "%s.%s.tmp.png" % (output_path, uuid.uuid4().hex)
     command = [
         ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
-        "-ss", "%.6f" % offset, "-i", video_path,
-        "-frames:v", "1", "-an", temporary,
+        "-ss", "%.6f" % offset, "-protocol_whitelist", "file",
+        # Do not let a renamed playlist/concat file dereference other paths.
+        "-format_whitelist", "avi,mov,matroska,webm,mpeg,mpegvideo", "-i", video_path,
+        "-map", "0:v:0", "-frames:v", "1", "-an", temporary,
     ]
     try:
         _run_ffmpeg(command, timeout_seconds=60.0)
@@ -29244,23 +29269,16 @@ def _project_asset_capture_frame_sync(
         project: Any, video_path: Any, subfolder: Any, source_type: Any,
         time_seconds: Any, tag: Any, role: Any,
         folder_id: Any) -> dict[str, Any]:
+    offset = _capture_frame_time(time_seconds)
     source = _capture_frame_video_path(video_path, subfolder, source_type)
     store = _project_asset_store()
     temporary = store.upload_path(project, "frame_capture.png")
     try:
-        _capture_video_frame(source, float(time_seconds or 0.0), temporary)
-        resolved_tag = store.resolve_capture_tag(project, tag, "frame_capture")
-        result = store.import_file(
-            project, temporary, role=role or "", tag=resolved_tag,
-            original_name="frame_capture.png", source_kind="frame_capture")
-        if folder_id not in (None, ""):
-            asset_id = result["asset"]["id"]
-            catalog = store.update(project, asset_id, {"folder_id": folder_id})
-            asset = next(
-                item for item in catalog["assets"]
-                if str(item.get("id") or "") == asset_id)
-            result = {"catalog": catalog, "asset": asset}
-        return result
+        _capture_video_frame(source, offset, temporary)
+        return store.import_file(
+            project, temporary, role=role or "", tag=tag,
+            original_name="frame_capture.png", source_kind="frame_capture",
+            folder_id=folder_id)
     finally:
         _safe_unlink(temporary)
 

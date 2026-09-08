@@ -81,15 +81,17 @@ remain extensions of this loop pack.
 
 The experimental masked AV chain mode directly adapts that GPL-3.0 project's
 masked existing-video extension and its capability-aware runtime compatibility
-for ComfyUI PR #15375. In this loop integration the preserved source is the
-previous accepted scene checkpoint: decoded tail frames are VAE-encoded into
-the next target video latent, its sampled audio-latent tail is copied directly,
-and both target prefixes receive `0 = preserve`, `1 = generate` masks.
+for ComfyUI PR #15375. Its masked-velocity x0 conversion also integrates the
+correction proposed in ComfyUI PR #15988. In this loop integration the
+preserved source is the previous accepted scene checkpoint: decoded tail
+frames are VAE-encoded into the next target video latent, its sampled
+audio-latent tail is copied directly, and both target prefixes receive
+`0 = preserve`, `1 = generate` masks.
 
 Adapted source files and integration:
 
 - `h3_mask_compat.py` — PR #15375 model/sampler capability detection and
-  fallback;
+  fallback, with native-first PR #15988 masked-velocity conversion;
 - `h3_mask_payload_compat.py` — native-first AV mask payload extraction;
 - `masked_context.py` — recursive target-prefix construction derived from the
   MultiRef existing-video implementation, including Update 6's audio-only
