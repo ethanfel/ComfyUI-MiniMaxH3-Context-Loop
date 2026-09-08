@@ -206,6 +206,14 @@ def main():
         flow, upscale_state, source_manifest, _status = adapter.adapt(
             selected_manifest, "quality", "h3_latent", '{"scale":2}',
             1, 1, False, 18)
+        _, recursive_state, _, _ = adapter.adapt(
+            selected_manifest, "quality", "h3_latent", '{"scale":2}',
+            1, 1, False, 18, initial_state=upscale_state)
+        _, fresh_state, _, _ = adapter.adapt(
+            selected_manifest, "quality", "h3_latent", '{"scale":2}',
+            1, 1, False, 18)
+        assert recursive_state["png_export_session"] == upscale_state["png_export_session"]
+        assert fresh_state["png_export_session"] != upscale_state["png_export_session"]
         assert source_manifest["segments"][0]["revision"] == source["revision"]
         assert source_manifest["segments"][1]["revision"] == source_2["revision"]
         current = upscale.MiniMaxH3ChainUpscaleCurrent().current(upscale_state)

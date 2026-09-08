@@ -54,6 +54,7 @@ class PNGVideoTests(unittest.TestCase):
                     "raw_frames": 5, "delivered_frames": 3, "width": 24, "height": 16,
                     "prompt": "A blue door. Café."} for index in range(1, 8)]
         self.state = {"run_name": "demo", "profile": "pixel",
+                      "png_export_session": "test-session",
                       "profile_config": {"backend": "pixel", "save_latent": False},
                       "index": 1, "range_start": 1, "end_clip": 7,
                       "source_manifest": {"run_name": "demo", "clip_count": 7, "segments": sources},
@@ -126,16 +127,16 @@ class PNGVideoTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "gap"):
             self.export(4)
         other, _ = make_video(self.root / "other.mkv", seed=44)
-        with self.assertRaisesRegex(ValueError, "different PNGs"):
-            self.export(video=other)
-        with self.assertRaisesRegex(ValueError, "reuse is disabled"):
-            self.export(reuse_existing=False)
-        with self.assertRaisesRegex(ValueError, "another sequence/settings"):
-            self.export(3, png_bit_depth="16")
+        variant = Path(self.export(video=other)["result"][0])
+        self.assertEqual(variant, directory.with_name(directory.name + "_2"))
+        fresh = self.export(reuse_existing=False, state=dict(self.state, png_export_session="fresh"))
+        self.assertEqual(Path(fresh["result"][0]).name, directory.name + "_3")
+        resized = self.export(3, png_bit_depth="16")
+        self.assertEqual(Path(resized["result"][0]).name, directory.name + "_4")
         changed = copy.deepcopy(self.state)
         changed["source_manifest"]["segments"][0]["revision"] = "a" * 32
-        with self.assertRaisesRegex(ValueError, "branch/order changed"):
-            self.export(3, state=dict(changed, index=3))
+        branch = self.export(3, state=dict(changed, index=3))
+        self.assertEqual(Path(branch["result"][0]).name, directory.name + "_5")
         self.assertEqual(before, {p: p.read_bytes() for p in before})
 
     def test_failed_scene_never_commits_partial_frames_and_can_retry(self):
@@ -161,6 +162,81 @@ class PNGVideoTests(unittest.TestCase):
                 self.export(2)
         self.assertEqual(before, {p: p.read_bytes() for p in directory.iterdir() if p.is_file()})
         self.assertEqual(self.export(2)["result"][1], 6)
+
+    def test_rerender_uses_one_variant_for_seven_scenes_and_third_pass(self):
+        for scene in range(1, 8):
+            original = self.export(scene, output_folder="final_upscale")
+        original_dir = Path(original["result"][0])
+        before = {p: p.read_bytes() for p in original_dir.glob("frame_*.png")}
+        other, _ = make_video(self.root / "other.mkv", seed=44)
+        for scene in range(1, 8):
+            state = dict(self.state, index=scene, png_export_session="second-pass")
+            # Recursive execution can use a different node instance per scene.
+            self.node = chain.MiniMaxH3ChainExportPNG()
+            result = self.export(scene, video=other, state=state, output_folder="final_upscale")
+            self.assertEqual(Path(result["result"][0]).name, "final_upscale_2")
+            self.assertEqual(result["result"][1], scene * 3)
+            self.assertIs(result["result"][4], other)
+        third = self.export(state=dict(self.state, png_export_session="third-pass"), output_folder="final_upscale")
+        self.assertEqual(Path(third["result"][0]).name, "final_upscale_3")
+        self.assertEqual(before, {p: p.read_bytes() for p in before})
+
+    def test_reuse_disabled_creates_one_fresh_variant_per_pass_not_per_scene(self):
+        self.export(output_folder="fresh")
+        for scene in (1, 2, 3):
+            state = dict(self.state, index=scene, png_export_session="forced-pass")
+            result = self.export(scene, state=state, output_folder="fresh", reuse_existing=False)
+            self.assertEqual(Path(result["result"][0]).name, "fresh_2")
+        # Retrying the same accepted scene is not a new forced export.
+        self.assertIn("reused", self.export(3, state=state, output_folder="fresh", reuse_existing=False)["result"][2])
+        resumed = self.export(4, state=dict(self.state, index=4, png_export_session="fresh-at-four"),
+                              output_folder="fresh", reuse_existing=False)
+        self.assertEqual(Path(resumed["result"][0]).name, "fresh_3")
+        self.assertEqual(resumed["result"][1], 3)
+
+    def test_mid_sequence_variant_keeps_independent_prefix_and_recovers_copy_failure(self):
+        for scene in (1, 2, 3):
+            result = self.export(scene, output_folder="prefix")
+        old_dir = Path(result["result"][0])
+        before = {p: p.read_bytes() for p in old_dir.glob("frame_*.png")}
+        other, _ = make_video(self.root / "other.mkv", seed=44)
+        state = dict(self.state, index=3, png_export_session="changed-pass")
+        publish = streaming.transaction.publish
+
+        def stop_after_first_prefix(*args, **kwargs):
+            value = publish(*args, **kwargs)
+            if args[5]["last_scene"] == 1:
+                raise OSError("prefix copy interrupted")
+            return value
+
+        with patch.object(streaming.transaction, "publish", side_effect=stop_after_first_prefix):
+            with self.assertRaisesRegex(OSError, "prefix copy interrupted"):
+                self.export(3, video=other, state=state, output_folder="prefix")
+        result = self.export(3, video=other, state=state, output_folder="prefix")
+        new_dir = Path(result["result"][0])
+        self.assertEqual(new_dir.name, "prefix_2")
+        self.assertEqual(result["result"][1], 9)
+        record = json.loads((new_dir / "export.json").read_text())
+        self.assertEqual([clip["index"] for clip in record["clips"]], [1, 2, 3])
+        for path in sorted(old_dir.glob("frame_*.png"))[:6]:
+            copied = new_dir / path.name
+            self.assertEqual(path.read_bytes(), copied.read_bytes())
+            self.assertNotEqual(path.stat().st_ino, copied.stat().st_ino)
+        self.assertEqual(before, {p: p.read_bytes() for p in before})
+        self.assertIn("reused", self.export(3, video=other, state=state, output_folder="prefix")["result"][2])
+        state["index"] = 4
+        self.assertEqual(self.export(4, video=other, state=state, output_folder="prefix")["result"][1], 12)
+
+    def test_numbering_skips_occupied_siblings_and_old_run_binding_stays_put(self):
+        self.export(output_folder="chosen")
+        (self.root / "chosen_2").mkdir()
+        user_file = self.root / "chosen_2" / "notes.txt"
+        user_file.write_text("keep")
+        other, _ = make_video(self.root / "other.mkv", seed=44)
+        result = self.export(video=other, state=dict(self.state, png_export_session="other-run"), output_folder="chosen")
+        self.assertEqual(Path(result["result"][0]).name, "chosen_3")
+        self.assertEqual(Path(self.export(2, output_folder="chosen")["result"][0]).name, "chosen")
+        self.assertEqual(user_file.read_text(), "keep")
 
     def test_recreated_container_reuses_identical_pixels_in_new_and_legacy_exports(self):
         for bits in ("8", "16"):
@@ -267,6 +343,39 @@ test.chain.MiniMaxH3ChainExportPNG().export(
                     self.assertFalse(list(directory.glob(".png_scene_*")))
                 self.assertEqual(self.export(4, output_folder=folder)["result"][1], 12)
 
+    def test_process_exit_recovers_in_variant_and_new_session_resumes_it(self):
+        self.export(1, output_folder="variant_crash")
+        old, _ = make_video(self.root / "old.mkv", seed=44)
+        result = self.export(1, video=old, output_folder="variant_crash")
+        directory = Path(result["result"][0])
+        self.assertEqual(directory.name, "variant_crash_2")
+        self.crash_export(2, "variant_crash", "copy")
+        self.assertTrue((directory / streaming.transaction.PENDING).exists())
+        with patch.object(chain, "_write_png", side_effect=AssertionError("variant recovery decoded again")):
+            result = self.export(2, state=dict(self.state, index=2, png_export_session="after-restart"),
+                                 output_folder="variant_crash")
+        self.assertEqual(Path(result["result"][0]), directory)
+        self.assertEqual(result["result"][1], 6)
+        self.assertFalse((directory / streaming.transaction.PENDING).exists())
+
+    def test_variant_corrupt_journal_and_binding_cannot_escape_output(self):
+        self.export(output_folder="bindings")
+        binding = next((self.root / "bindings/.png_variants").glob("*.json"))
+        chain._atomic_json(str(binding), {"directory": "../escape"})
+        with self.assertRaisesRegex(ValueError, "binding"):
+            self.export(output_folder="bindings")
+        self.assertFalse((self.root / "escape").exists())
+
+    def test_legacy_state_without_session_continues_newest_variant(self):
+        state = dict(self.state)
+        state.pop("png_export_session")
+        self.export(state=state, output_folder="legacy")
+        other, _ = make_video(self.root / "other.mkv", seed=44)
+        result = self.export(state=state, video=other, output_folder="legacy")
+        self.assertEqual(Path(result["result"][0]).name, "legacy_2")
+        state["index"] = 2
+        self.assertEqual(self.export(2, state=state, video=other, output_folder="legacy")["result"][0], result["result"][0])
+
     def test_uncertain_index_acknowledgement_never_rolls_back_committed_frames(self):
         directory = Path(self.export(1)["result"][0])
         original = streaming.persistence.atomic_json
@@ -294,8 +403,8 @@ test.chain.MiniMaxH3ChainExportPNG().export(
         changed["source_manifest"]["segments"][2]["revision"] = "f" * 32
         with self.assertRaisesRegex(ValueError, "branch/order"):
             self.export(3, output_folder=folder, state=changed)
-        with self.assertRaisesRegex(ValueError, "settings"):
-            self.export(3, output_folder=folder, png_bit_depth="16")
+        variant = self.export(3, output_folder=folder, png_bit_depth="16")
+        self.assertEqual(Path(variant["result"][0]).name, folder + "_2")
         self.assertEqual(before, {p: p.read_bytes() for p in before})
         pending = directory / streaming.transaction.PENDING
         saved = json.loads(pending.read_text())
@@ -319,8 +428,8 @@ test.chain.MiniMaxH3ChainExportPNG().export(
         directory = Path(result["result"][0])
         untracked = directory / "frame_00000004.png"
         untracked.write_bytes(b"user image")
-        with self.assertRaisesRegex(ValueError, "untracked"):
-            self.export(2, output_folder="chosen")
+        variant = self.export(2, output_folder="chosen")
+        self.assertEqual(Path(variant["result"][0]).name, "chosen_2")
         self.assertEqual(untracked.read_bytes(), b"user image")
         for folder in ("../escape", str(self.root), "/outside/output"):
             with self.subTest(folder=folder), self.assertRaises(ValueError):
@@ -337,8 +446,9 @@ test.chain.MiniMaxH3ChainExportPNG().export(
         path.write_bytes(data[:-1] + bytes([data[-1] ^ 1]))
         import os
         os.utime(path, ns=(saved.st_atime_ns, saved.st_mtime_ns))
-        with self.assertRaisesRegex(ValueError, "missing or changed"):
-            self.export(2, checkpoint_verification="strict")
+        variant = self.export(2, checkpoint_verification="strict")
+        self.assertEqual(Path(variant["result"][0]).name, Path(result["result"][0]).name + "_2")
+        self.assertEqual(path.read_bytes(), data[:-1] + bytes([data[-1] ^ 1]))
 
     def test_timestamp_only_changes_reuse_and_append_without_rewriting_pngs(self):
         for verification in ("cached", "strict"):
@@ -384,10 +494,8 @@ test.chain.MiniMaxH3ChainExportPNG().export(
                 path.write_bytes(data[:-1] + bytes([data[-1] ^ 1]))
                 os.utime(path, ns=(saved.st_atime_ns, saved.st_mtime_ns + 49_000_000_000))
                 before = {p: p.read_bytes() for p in directory.iterdir() if p.is_file()}
-                with self.assertRaisesRegex(ValueError, "missing or changed") as failure:
-                    self.export(2, output_folder=verification, checkpoint_verification=verification)
-                self.assertIn("scene 1", str(failure.exception))
-                self.assertIn(str(path), str(failure.exception))
+                variant = self.export(2, output_folder=verification, checkpoint_verification=verification)
+                self.assertEqual(Path(variant["result"][0]).name, verification + "_2")
                 self.assertEqual(before, {p: p.read_bytes() for p in directory.iterdir() if p.is_file()})
 
     def test_intentional_png_edits_are_preserved_but_not_silently_adopted(self):
@@ -407,8 +515,8 @@ test.chain.MiniMaxH3ChainExportPNG().export(
                     metadata.add_text("edit_note", "User intentionally saved this frame")
                     edited.save(path, pnginfo=metadata, compress_level=9)
                     before = {p: p.read_bytes() for p in directory.iterdir() if p.is_file()}
-                    with self.assertRaisesRegex(ValueError, "missing or changed"):
-                        self.export(2, output_folder=folder, checkpoint_verification=verification)
+                    variant = self.export(2, output_folder=folder, checkpoint_verification=verification)
+                    self.assertEqual(Path(variant["result"][0]).name, folder + "_2")
                     self.assertEqual(before, {p: p.read_bytes() for p in directory.iterdir() if p.is_file()})
 
     def test_input_guards_and_failed_frame_clock(self):

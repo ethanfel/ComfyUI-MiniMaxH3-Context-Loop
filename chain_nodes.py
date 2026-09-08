@@ -25883,8 +25883,8 @@ class MiniMaxH3ChainExportPNG:
                     "tooltip": "For Chapter manifests, keep verified unchanged "
                                "PNGs and append newly generated scenes. Changed "
                                "takes, trims or settings create a new folder. "
-                               "VIDEO mode reuses exact saved scenes in the selected folder and appends the next scene; "
-                               "different takes/settings require a new folder. Turn off after changing VAE weights or decode "
+                               "VIDEO mode reuses exact saved scenes and appends the next scene; "
+                               "different takes/settings automatically create _2, _3, etc. sequence folders. Turn off after changing VAE weights or decode "
                                "settings, or to force a fresh export. Whole-Run "
                                "exports always create a new folder."}),
                 "video": ("VIDEO", {
@@ -25894,7 +25894,8 @@ class MiniMaxH3ChainExportPNG:
                     "tooltip": "Current pixel-upscale scene state. Required with VIDEO for scene identity, RAW overlap trimming and sequence numbering."}),
                 "output_folder": ("STRING", {
                     "default": "", "tooltip": "VIDEO mode: chosen subfolder inside ComfyUI output (relative or absolute). "
-                               "Empty uses this upscale profile's frames/export_name folder. Different takes/settings never overwrite existing PNGs."}),
+                               "Empty uses this upscale profile's frames/export_name folder. Conflicts create numbered siblings (_2, _3, etc.); "
+                               "all later scenes in this pass use the same selected folder. Existing PNGs are never overwritten."}),
                 "png_bit_depth": (["8", "16"], {
                     "default": "8", "tooltip": "8-bit RGB (existing default) or 16-bit RGB. "
                                "16-bit preserves the RGB16 file-backed VIDEO precision and uses more disk space. Applies to both video and latent export."}),

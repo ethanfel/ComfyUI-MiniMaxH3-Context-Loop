@@ -1202,6 +1202,9 @@ class MiniMaxH3ChainUpscaleAdapter:
                 "source_manifest_hash": _source_hash(manifest),
                 "index": start,
                 "range_start": start,
+                # Shared by every recursive scene, but fresh for each queue.
+                # PNG export uses this only for durable numbered-folder routing.
+                "png_export_session": uuid.uuid4().hex,
                 "end_clip": stop,
                 "segments": [],
                 "previous_frames": None,
