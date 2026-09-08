@@ -37,6 +37,9 @@ const PROMPT_HEIGHT_PROPERTY = "h3_chain_review_prompt_height";
 const DEFAULT_VIDEO_HEIGHT = 300;
 const MIN_VIDEO_HEIGHT = 140;
 const MAX_VIDEO_HEIGHT = 1200;
+const DEFAULT_PROMPT_HEIGHT = 120;
+const MIN_PROMPT_HEIGHT = 120;
+const MAX_PROMPT_HEIGHT = 800;
 const notifiedTokens = new Set();
 const mountedReviewNodes = new Set();
 let notificationAudioContext = null;
@@ -239,8 +242,18 @@ function injectStyles() {
         .h3r-capture-error { color:#ff9a9a; }
         .h3r-capture-actions { display:flex; justify-content:flex-end; gap:7px; }
         .h3r-label { display:flex; flex-direction:column; gap:4px; color:#aeb5c5; }
-        .h3r-prompt { width:100%; min-height:120px; resize:vertical; padding:7px;
-            border:1px solid #56637e; border-radius:5px; background:#101218; color:#eef1f7; }
+        .h3r-prompt-panel { width:100%; height:120px; min-height:120px; max-height:800px;
+            display:flex; flex-direction:column; overflow:hidden;
+            border:1px solid #56637e; border-radius:5px; background:#101218; }
+        .h3r-prompt { width:100%; height:calc(100% - 11px); min-height:0; resize:none;
+            padding:7px; border:0; border-radius:0; background:transparent; color:#eef1f7; }
+        .h3r-prompt-grip { height:11px; flex:0 0 11px; cursor:ns-resize;
+            border-top:1px solid #343b4b; background:linear-gradient(180deg,#252a35,#171a21);
+            position:relative; touch-action:none; }
+        .h3r-prompt-grip::after { content:""; position:absolute; left:calc(50% - 20px); top:4px;
+            width:40px; height:2px; border-top:1px solid #7e899f;
+            border-bottom:1px solid #4f586b; }
+        .h3r-prompt-grip:hover { background:linear-gradient(180deg,#313848,#1d212b); }
         .h3r-prompt-notice { padding:8px 9px; border:1px solid #56637e;
             border-radius:6px; background:#202431; color:#cbd3e5; white-space:pre-wrap; }
         .h3r-row { display:flex; align-items:flex-end; gap:7px; }
@@ -1148,7 +1161,16 @@ function mount(node) {
     const prompt = document.createElement("textarea");
     prompt.className = "h3r-prompt";
     prompt.title = "The connected Prompt Editor and this fallback field share the current Plan scene. Retry regenerates it from the same accepted predecessor.";
-    promptLabel.append(prompt);
+    const promptPanel = document.createElement("div");
+    promptPanel.className = "h3r-prompt-panel";
+    const promptGrip = document.createElement("div");
+    promptGrip.className = "h3r-prompt-grip";
+    promptGrip.title = "Drag vertically to resize the prompt editor. Double-click to reset.";
+    promptGrip.setAttribute("role", "separator");
+    promptGrip.setAttribute("aria-label", "Resize scene prompt editor");
+    promptGrip.setAttribute("aria-orientation", "horizontal");
+    promptPanel.append(prompt, promptGrip);
+    promptLabel.append(promptPanel);
     let promptEditedInGate = false;
     prompt.addEventListener("input", () => { promptEditedInGate = true; });
 
@@ -1160,41 +1182,67 @@ function mount(node) {
         const enabled = reviewPromptEditorEnabled();
         promptLabel.hidden = !enabled;
         prompt.disabled = !enabled;
+        promptGrip.hidden = !enabled;
         promptNotice.hidden = enabled;
     }
     node._h3ReviewRefreshPromptSetting = refreshPromptEditorSetting;
     refreshPromptEditorSetting();
 
-    let promptResizeObserver = null;
+    function setPromptHeight(height, persist = false) {
+        const next = Math.round(Math.max(
+            MIN_PROMPT_HEIGHT,
+            Math.min(MAX_PROMPT_HEIGHT, Number(height) || DEFAULT_PROMPT_HEIGHT),
+        ));
+        promptPanel.style.height = `${next}px`;
+        promptGrip.setAttribute("aria-valuenow", String(next));
+        if (persist) {
+            node.properties[PROMPT_HEIGHT_PROPERTY] = next;
+            node.graph?.setDirtyCanvas?.(true, true);
+            app.graph?.setDirtyCanvas?.(true, true);
+        }
+    }
+    let promptResize = null;
+    promptGrip.addEventListener("pointerdown", (event) => {
+        event.preventDefault();
+        const layoutHeight = promptPanel.offsetHeight;
+        const visualHeight = promptPanel.getBoundingClientRect().height;
+        const displayScale = layoutHeight > 0 && visualHeight > 0
+            ? visualHeight / layoutHeight : 1;
+        promptResize = {
+            pointerId: event.pointerId,
+            startY: event.clientY,
+            startHeight: layoutHeight || DEFAULT_PROMPT_HEIGHT,
+            displayScale,
+        };
+        promptGrip.setPointerCapture?.(event.pointerId);
+    });
+    promptGrip.addEventListener("pointermove", (event) => {
+        if (!promptResize || event.pointerId !== promptResize.pointerId) return;
+        event.preventDefault();
+        setPromptHeight(promptResize.startHeight
+            + (event.clientY - promptResize.startY) / promptResize.displayScale);
+    });
+    function finishPromptResize(event) {
+        if (!promptResize || event.pointerId !== promptResize.pointerId) return;
+        promptResize = null;
+        setPromptHeight(promptPanel.offsetHeight, true);
+        promptGrip.releasePointerCapture?.(event.pointerId);
+    }
+    promptGrip.addEventListener("pointerup", finishPromptResize);
+    promptGrip.addEventListener("pointercancel", finishPromptResize);
+    promptGrip.addEventListener("dblclick", (event) => {
+        event.preventDefault();
+        setPromptHeight(DEFAULT_PROMPT_HEIGHT, true);
+    });
+
     function applySavedLayout() {
         node.properties ??= {};
         const restoredVideoHeight = Number(node.properties[VIDEO_HEIGHT_PROPERTY]);
         setVideoHeight(Number.isFinite(restoredVideoHeight)
             ? restoredVideoHeight : DEFAULT_VIDEO_HEIGHT);
         const restoredPromptHeight = Number(node.properties[PROMPT_HEIGHT_PROPERTY]);
-        if (Number.isFinite(restoredPromptHeight) && restoredPromptHeight >= 120) {
-            prompt.style.height = `${Math.round(restoredPromptHeight)}px`;
-        } else {
-            prompt.style.removeProperty("height");
-        }
-    }
-    if (typeof ResizeObserver === "function") {
-        let initialized = false;
-        promptResizeObserver = new ResizeObserver(() => {
-            if (!prompt.isConnected) return;
-            const next = Math.round(prompt.offsetHeight);
-            if (!Number.isFinite(next) || next < 120) return;
-            if (!initialized) {
-                initialized = true;
-                return;
-            }
-            if (Number(node.properties?.[PROMPT_HEIGHT_PROPERTY]) === next) return;
-            node.properties ??= {};
-            node.properties[PROMPT_HEIGHT_PROPERTY] = next;
-            node.graph?.setDirtyCanvas?.(true, true);
-            app.graph?.setDirtyCanvas?.(true, true);
-        });
-        promptResizeObserver.observe(prompt);
+        setPromptHeight(Number.isFinite(restoredPromptHeight)
+            ? restoredPromptHeight : DEFAULT_PROMPT_HEIGHT);
     }
     node._h3ReviewApplyLayout = applySavedLayout;
     applySavedLayout();
@@ -2348,7 +2396,6 @@ function mount(node) {
     const removed = node.onRemoved;
     node.onRemoved = function () {
         stopCountdown();
-        promptResizeObserver?.disconnect();
         delete this._h3PromptCompanionSetScenePrompt;
         mountedReviewNodes.delete(this);
         updatePendingPolling();
