@@ -1,3 +1,6 @@
 __pycache__/
 *.pyc
 .release-drafts/
+
+# Local Context Loop test/runtime state
+h3_chains/

@@ -20,6 +20,8 @@ import zlib
 from . import png_export_transaction as transaction
 from . import processing_persistence as persistence
 from . import png_export_variants as variants
+from . import png_export_ownership as ownership
+from .artifact_paths import is_link_or_junction
 
 
 FORMAT = "h3_video_png_sequence_v1"
@@ -86,8 +88,10 @@ def _safe_path(root, value):
     current = root
     for part in path.relative_to(root).parts:
         current /= part
-        if current.is_symlink():
-            raise ValueError("PNG output paths must not follow symbolic links.")
+        if is_link_or_junction(current):
+            raise ValueError("PNG output paths must not follow symbolic links or junctions.")
+    if not path.resolve().is_relative_to(root.resolve()):
+        raise ValueError("PNG output folder escapes the ComfyUI output directory.")
     return path
 
 
@@ -130,7 +134,12 @@ def _publish_frame(source, target):
         os.link(source, target)
         return
     except OSError as exc:
-        if exc.errno not in (errno.EACCES, errno.EPERM, errno.EXDEV, errno.EOPNOTSUPP, errno.ENOSYS):
+        # Windows ERROR_INVALID_FUNCTION / ERROR_NOT_SUPPORTED can both map
+        # to EINVAL on shares/filesystems without hard links. Do not swallow
+        # unrelated EINVAL (bad paths/parameters) or other real I/O failures.
+        unsupported_windows_link = getattr(exc, "winerror", None) in (1, 50)
+        if (exc.errno not in (errno.EACCES, errno.EPERM, errno.EXDEV, errno.EOPNOTSUPP, errno.ENOSYS)
+                and not unsupported_windows_link):
             raise
     # Network shares may deny hard links (EACCES/EPERM) while allowing writes.
     # Exclusive create still enforces real write permissions and never replaces
@@ -208,6 +217,50 @@ def _matching_pixels(chain, path, raw, delivered, bits, existing, directory):
     return hasher.hexdigest() == expected
 
 
+def _verified_prefix(chain, root, directory, previous, config, contracts, index, verification, state):
+    """A new source take may change this scene without changing earlier ones."""
+    if not isinstance(previous, dict) or previous.get("settings") != config:
+        return None
+    clips = previous.get("clips")
+    if not isinstance(clips, list) or not clips or not isinstance(clips[0], dict):
+        return None
+    prefix = []
+    selected_owners = {item["index"]: item.get("png_export_owner")
+                       for item in state.get("segments", []) if item.get("png_export_owner")}
+    frame = config["first_frame_number"]
+    scene = clips[0].get("index")
+    for clip in clips:
+        if not isinstance(clip, dict) or not isinstance(clip.get("index"), int):
+            return None
+        if clip["index"] >= index:
+            break
+        count = clip.get("delivered_frames")
+        files = clip.get("files")
+        if (clip["index"] != scene or clip.get("source_contract") != contracts.get(scene)
+                or (scene in selected_owners and selected_owners[scene] not in clip.get("processing_owners", []))
+                or not isinstance(count, int) or count <= 0
+                or clip.get("first_frame_number") != frame
+                or clip.get("last_frame_number") != frame + count - 1
+                or not isinstance(files, list) or len(files) != count):
+            return None
+        for offset, item in enumerate(files):
+            if not isinstance(item, dict) or item.get("file") != "frame_%08d.png" % (frame + offset):
+                return None
+            _safe_path(root, directory / item["file"])
+            if not chain._png_export_file_unchanged(str(directory), item, verification):
+                return None
+        prefix.append(deepcopy(clip))
+        frame += count
+        scene += 1
+    if not prefix or scene != index:
+        return None
+    record = deepcopy(previous)
+    record.pop("deleted_scenes", None)
+    record.update(clips=prefix, frame_count=frame - config["first_frame_number"],
+                  last_scene=scene - 1, complete=False)
+    return {"directory": directory.relative_to(root).as_posix(), "record": record}
+
+
 def _seed_variant_prefix(chain, root, directory, previous, marker, config, contracts):
     """Copy already verified earlier scenes when a rerender forks mid-sequence.
 
@@ -248,8 +301,16 @@ def _seed_variant_prefix(chain, root, directory, previous, marker, config, contr
         expected_scene += 1
     committed = (previous or {}).get("clips", [])
     # File mtimes change on a bounded copy; normalize only these stat hints.
-    if not transaction._same_record({"clips": committed[:len(clips)]},
-                                    {"clips": clips[:len(committed)]}):
+    def prefix_identity(values):
+        values = deepcopy(values)
+        for value in values:
+            # Identical-pixel reuse may attach another take after the copy.
+            value.pop("processing_owners", None)
+            value.pop("legacy_unattributed", None)
+        return {"clips": values}
+
+    if not transaction._same_record(prefix_identity(committed[:len(clips)]),
+                                    prefix_identity(clips[:len(committed)])):
         raise ValueError("PNG variant prefix changed; saved exports were kept.")
     for clip in clips[len(committed):]:
         copied = deepcopy(clip)
@@ -306,11 +367,15 @@ def export_video(chain, video, state, export_name, output_folder, first_frame_nu
     workers = chain._png_export_worker_count(save_workers)
 
     def write(selected, marker):
+        ownership.register(root, state["run_name"], selected, _safe_path)
         return _export_scene(chain, video, state, source, path, root, selected, config,
                              contracts, source_identity, video_hash, workers, verification,
                              reuse_existing, marker)
 
-    return variants.export(chain, root, directory, state, config, _safe_path, _folder_lock, write)
+    # Serialize with take deletion, including PNG index publication. Folder
+    # locks additionally protect custom destinations shared by different runs.
+    with chain.checkpoint_run_lock(str(root), state["run_name"]):
+        return variants.export(chain, root, directory, state, config, _safe_path, _folder_lock, write)
 
 
 def _export_scene(chain, video, state, source, path, root, directory, config, contracts,
@@ -322,27 +387,37 @@ def _export_scene(chain, video, state, source, path, root, directory, config, co
     # The variant selector holds the destination lock throughout this call.
     record_path = _safe_path(root, directory / "export.json")
     previous = json.loads(record_path.read_text(encoding="utf-8")) if record_path.exists() else None
+
+    def conflict(message):
+        prefix = (_verified_prefix(chain, root, directory, previous, config, contracts,
+                                   index, verification, state) if reuse_existing else None)
+        return variants.SequenceConflict(message, prefix)
+
     clips = []
     if previous is not None:
         if (not isinstance(previous, dict) or previous.get("format") != FORMAT
                 or previous.get("settings") != config):
             raise variants.SequenceConflict("PNG folder contains another sequence/settings.")
         clips = previous.get("clips")
+        if clips == [] and previous.get("deleted_scenes"):
+            raise variants.SequenceConflict("The earlier PNG scenes were explicitly deleted.")
         if not isinstance(clips, list) or not clips:
             raise ValueError("PNG sequence has invalid scene records; choose a new folder.")
+        if previous.get("deleted_scenes"):
+            raise conflict("PNG sequence contains deleted scenes.")
         expected_scene, expected_frame = clips[0]["index"], config["first_frame_number"]
         for clip in clips:
             if (clip["index"] != expected_scene or clip["first_frame_number"] != expected_frame
                     or clip["source_contract"] != contracts.get(clip["index"])
                     or len(clip["files"]) != clip["delivered_frames"]):
-                raise variants.SequenceConflict("PNG sequence branch/order changed.")
+                raise conflict("PNG sequence branch/order changed.")
             for offset, item in enumerate(clip["files"]):
                 if item["file"] != "frame_%08d.png" % (expected_frame + offset):
                     raise ValueError("PNG sequence contains an invalid frame address.")
                 _safe_path(root, directory / item["file"])
                 if not chain._png_export_file_unchanged(str(directory), item, verification):
-                    raise variants.SequenceConflict("An existing PNG is missing or changed (scene %d: %s)." %
-                                     (clip["index"], directory / item["file"]))
+                    raise conflict("An existing PNG is missing or changed (scene %d: %s)." %
+                                   (clip["index"], directory / item["file"]))
             expected_scene += 1
             expected_frame += clip["delivered_frames"]
     previous = transaction.recover(chain, root, directory, previous, config, contracts, _safe_path, _publish_frame)
@@ -356,22 +431,22 @@ def _export_scene(chain, video, state, source, path, root, directory, config, co
             clip.get("export_session") == session for clip in clips):
         raise variants.SequenceConflict("Reuse is disabled; starting a fresh PNG sequence.")
     existing = next((clip for clip in clips if clip["index"] == index), None)
+    owner = ownership.owner_key(state, contracts[index])
     if existing:
         same_session = bool(state.get("png_export_session")) and (
             existing.get("export_session") == state["png_export_session"])
         if (not reuse_existing and not same_session) or (existing["video_sha256"] != video_hash
                 and not _matching_pixels(chain, path, raw, delivered, bits, existing, directory)):
-            prefix = None
-            if reuse_existing:
-                prefix_record = deepcopy(previous)
-                prefix_record["clips"] = [clip for clip in clips if clip["index"] < index]
-                if prefix_record["clips"]:
-                    prefix_record.update(frame_count=sum(c["delivered_frames"] for c in prefix_record["clips"]),
-                                         last_scene=prefix_record["clips"][-1]["index"], complete=False)
-                    prefix = {"directory": str(directory.relative_to(root)), "record": prefix_record}
-            raise variants.SequenceConflict("This scene has different PNGs, or reuse is disabled.", prefix)
+            raise conflict("This scene has different PNGs, or reuse is disabled.")
         if _file_identity(path) != source_identity:
             raise ValueError("VIDEO source file changed during verification; retry with the completed scene.")
+        if owner and owner not in existing.get("processing_owners", []):
+            previous = deepcopy(previous)
+            reused = next(clip for clip in previous["clips"] if clip["index"] == index)
+            if "processing_owners" not in reused:
+                reused["legacy_unattributed"] = True
+            reused.setdefault("processing_owners", []).append(owner)
+            persistence.atomic_json(record_path, previous)
         status = "reused PNG scene %d (%d-bit); VIDEO passed through unchanged -> %s" % (index, bits, directory)
         return {"ui": {"text": [status]}, "result": (str(directory), previous["frame_count"], status, "", video)}
     if clips and index != clips[-1]["index"] + 1:
@@ -419,6 +494,7 @@ def _export_scene(chain, video, state, source, path, root, directory, config, co
         chain._png_export_check_interrupted()
         files.sort(key=lambda item: item["file"])
         clip = {"index": index, "id": source.get("id"), "source_contract": contracts[index],
+                "processing_owners": [owner] if owner else [],
                 "export_session": state.get("png_export_session", ""),
                 "source_revision": source.get("revision"), "video_sha256": video_hash,
                 "pixel_sha256": pixels_hash.hexdigest(),

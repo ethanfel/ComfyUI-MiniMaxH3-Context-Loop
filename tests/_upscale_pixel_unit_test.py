@@ -69,6 +69,9 @@ def assert_extended_selection_resume(chain, upscale, chapter_source, frames):
     metadata_path = chain._absolute_output_path(saved["metadata"])
     metadata = chain._read_json(metadata_path)
     assert metadata["source_scene_contract"]
+    ownership = importlib.import_module(upscale.__package__ + ".png_export_ownership")
+    assert saved["png_export_owner"] == ownership.owner_key(state, metadata["source_scene_contract"])
+    assert len(saved["png_export_owner"]) == 64
     artifacts = {Path(chain._absolute_output_path(saved[key])) for key in (
         "checkpoint", "segment", "revision_metadata")}
     original = {path:path.read_bytes() for path in artifacts}

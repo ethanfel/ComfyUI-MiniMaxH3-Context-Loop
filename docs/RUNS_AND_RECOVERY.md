@@ -64,6 +64,30 @@ the retry instead.
 Disable the floating control under **Settings → MiniMax H3 Context Loop →
 Interface → Cancel & reroll** without affecting Review Gate.
 
+## Top-level prompt lifecycle
+
+`top_level_requeue` is opt-in; `recursive_legacy` remains the default. In the
+opt-in mode Loop End finishes an **accepted scene**, writes a lightweight,
+identity-bound durable handoff, and the frontend may queue the next scene as a
+brand-new top-level prompt after a safe-queue/cleanup check. Disabling the
+setting or cancelling invalidates waiting work at every async checkpoint; it
+never later submits a stale continuation.
+
+Handoffs are keyed by the committed predecessor revision, checkpoint identity,
+workflow fingerprint and requested range. Old pending/terminal records remain
+manual-recovery history and are never silently adopted. A validation rejection
+returns a claim to recovery; an uncertain network delivery remains explicitly
+`uncertain` and is not automatically retried, because it may already exist on
+the server.
+
+This boundary is **between accepted scenes only**. Candidate retries and Review
+Gate decisions still run in the live prompt using the established recursive
+path; a saved review snapshot after a server restart is read-only recovery
+inventory, not an actionable approval. Inspect its saved candidates/checkpoint
+and resume manually. This is the architectural fix for between-scene
+same-prompt retention; `--disable-pinned-memory` is only a separate WSL2
+workaround for host pinning behavior.
+
 ## Between-scene memory cleanup
 
 Loop End can apply a runtime-only `between_scene_cleanup` policy after the

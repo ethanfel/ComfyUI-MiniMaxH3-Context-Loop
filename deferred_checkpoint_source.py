@@ -4,6 +4,7 @@ from pathlib import Path
 import re
 
 from .checkpoint_variants import processing_lineage, processing_stage, validate_processing_lineage
+from .artifact_paths import artifact_address
 
 
 def editorial_source_manifest(manifest, chain):
@@ -53,7 +54,10 @@ def derope_source_manifest(manifest, selection, chain, upscale):
         raise ValueError("Unknown Checkpoint Manager processing source.")
     root = Path(chain._output_root()).resolve()
     run = root / "h3_chains" / chain._strict_run_name(manifest["run_name"])
-    profile = (root / str(selection.get("profile_path") or "")).resolve()
+    try:
+        profile = (root / artifact_address(selection.get("profile_path"))).resolve()
+    except ValueError as exc:
+        raise ValueError("DeRoPE source profile is outside the selected run.") from exc
     # Exactly run/upscaled/profile or run/chapters/chapter/upscaled/profile.
     relative = profile.relative_to(run).parts if profile.is_relative_to(run) else ()
     if not ((len(relative) == 2 and relative[0] == "upscaled") or
@@ -63,7 +67,7 @@ def derope_source_manifest(manifest, selection, chain, upscale):
     def confined(address):
         if not isinstance(address, str) or not address:
             raise ValueError("DeRoPE source has a missing artifact address.")
-        path = (root / address).resolve()
+        path = (root / artifact_address(address)).resolve()
         if not path.is_relative_to(profile):
             raise ValueError("DeRoPE source artifact escapes its profile.")
         return path
@@ -83,9 +87,9 @@ def derope_source_manifest(manifest, selection, chain, upscale):
         saved_lineage = processing_lineage(witness.get("segments") or [])
     else:
         raise ValueError("Invalid saved DeRoPE branch format.")
-    if saved_lineage != branch["lineage"]:
+    saved_lineage = validate_processing_lineage(saved_lineage)
+    if saved_lineage != validate_processing_lineage(branch["lineage"]):
         raise ValueError("Saved DeRoPE branch changed. Select that processing branch again.")
-    validate_processing_lineage(saved_lineage)
     by_scene = {int(item["scene"]): item for item in saved_lineage}
     output = chain._json_document(manifest)
     used = []

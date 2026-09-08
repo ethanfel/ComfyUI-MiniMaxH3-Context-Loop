@@ -1,4 +1,4 @@
-import {MAX_SEED} from "./h3_chain_plan_core.mjs?v=0.6.5";
+import {MAX_SEED} from "./h3_chain_plan_core.mjs?v=0.6.8";
 
 function normalizedPositiveInteger(value, label) {
     const number = Number(value);
@@ -60,5 +60,6 @@ export function activeSceneFromOutput(output) {
         endClip,
         shotId: String(value.shot_id ?? `scene_${clipIndex}`),
         seed: String(value.seed ?? ""),
+        workflowFingerprint: String(value.workflow_fingerprint ?? ""),
     };
 }

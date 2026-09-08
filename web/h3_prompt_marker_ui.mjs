@@ -3,7 +3,7 @@ import {
     promptCompletionQuery,
     promptRetentionReplacementQuery,
     promptTokenReplacementQuery,
-} from "./h3_prompt_completion_core.mjs?v=0.6.5";
+} from "./h3_prompt_completion_core.mjs?v=0.6.8";
 
 /** Attach only to the current scene's input; never touch Plan or workflow state.
  * Existing reference chips handle their own clicks before they bubble here.

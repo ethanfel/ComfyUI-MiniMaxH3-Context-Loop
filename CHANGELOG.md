@@ -5,6 +5,18 @@ this file records the detailed changes.
 
 ## Unreleased — Reference reconstruction and Windows save durability
 
+- PR #48 integration refreshes browser helper cache tokens for the current
+  package, including the new completion identity and requeue coordinator.
+
+- Fix Windows processing saves rejecting their own backslash-separated
+  artifact addresses. New chain addresses use portable separators; legacy
+  addresses remain readable without rewriting metadata or changing hashes.
+  Normalize processing branch selection, dependency comparisons and chapter
+  snapshot retirement too. Reject Windows drive/ADS paths and junctions in
+  destructive/output validation. PNG export now handles Windows unsupported
+  hard-link errors with the existing exclusive-copy fallback. Added Windows
+  path, branch, snapshot, junction, locking and network-export regressions.
+
 - Fix Windows DeRoPE/upscale and VIDEO PNG saves failing with bad file
   descriptor during artifact flush. Use a writable, non-truncating file handle
   on Windows; retain read-only access on POSIX and propagate real flush errors.
@@ -152,6 +164,43 @@ this file records the detailed changes.
   unverifiable legacy exports use a new folder without replacing prior frames.
   A fresh-export switch, per-export process lock, file integrity records, and
   export-index history preserve explicit recovery and whole-Run behaviour.
+
+## v0.6.2 — Maintained workflow and release packaging
+
+- Added a durable review-gate snapshot (`review_inventory.py`, format
+  `h3_review_snapshot_v1`) under the run-local orchestration directory so a
+  candidate batch stays reviewable after a browser refresh or a ComfyUI
+  crash/restart without a live PromptExecutor. The snapshot holds identity
+  only (token, run, scene, candidate revisions/seeds, deadline); previews
+  come from the saved segment/checkpoint inventory, tensors are rejected on
+  write, and the Plan JSON is unchanged. Approve & continue still promotes
+  the selected revision and creates the lightweight next-scene handoff;
+  Approve & stop never queues.
+- Added a top-level scene requeue mode (`execution_mode` on Chain Loop End,
+  default `recursive_legacy`). In `top_level_requeue` mode the loop stops
+  after the scene checkpoint, writes a durable `next_scene` handoff plus a
+  partial through-clip manifest instead of recursing, and the frontend
+  coordinator (new web extension) re-queues the same workflow as a new
+  top-level prompt after queue-safe state plus a configurable cleanup
+  interval, claiming the handoff exactly once. The mode lives on the node,
+  never in the Plan JSON; errors and interruptions never auto-queue.
+- Added a durable top-level handoff store (`handoff_state.py`, format
+  `h3_top_level_handoff_v1`) under
+  `output/h3_chains/<run_name>/orchestration/` for separate run-local
+  orchestration state. Records hold only lightweight identity values
+  (scene/clip, candidate ordinal/count, seed, revision/checkpoint SHA-256,
+  prompt ID, workflow fingerprint, status, attempt counters, timestamps);
+  tensors, models, and live object references are rejected, and nothing is
+  copied into the Plan. Writes are atomic (temp + fsync + replace) behind a
+  per-run lock, the claim primitive is exactly-once with bounded
+  release/retry, and corrupt or unknown records are preserved for manual
+  recovery instead of auto-queueing. Recursive execution behavior is
+  unchanged.
+- Fixed Loop Start's model-free preflight to receive the connected Tagged or
+  legacy Scheduled reference registry. Valid prompt `@tags` now resolve during
+  Loop Start validation without changing Plan JSON or rewriting prompts; the
+  original optional socket order remains intact and the new sockets are
+  appended.
 
 ## v0.6.1 — Chapter output and authoring polish
 

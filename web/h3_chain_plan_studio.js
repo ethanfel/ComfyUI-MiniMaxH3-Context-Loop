@@ -50,18 +50,18 @@ import {
     visualContextDefaultPartition,
     visualContextMaximumBlocks,
     visualContextPartitionFromBoundaries,
-} from "./h3_chain_plan_core.mjs?v=0.6.5";
+} from "./h3_chain_plan_core.mjs?v=0.6.8";
 import {
     promptRevisionHelp,
     promptRevisionLabel,
     promptRevisionNavigation,
-} from "./h3_prompt_history_core.mjs?v=0.6.2";
+} from "./h3_prompt_history_core.mjs?v=0.6.8";
 import {
     availableReferenceRecords,
     convertTaggedPictureReference,
     taggedPictureReferenceMode,
     taggedPictureReferenceToken,
-} from "./h3_reference_preview_core.mjs?v=0.6.2";
+} from "./h3_reference_preview_core.mjs?v=0.6.8";
 import {
     applySceneAudioOverride,
     applySceneLipSync,
@@ -72,16 +72,16 @@ import {
     sceneAudioPolicy,
     sceneTransitionPreset,
     transitionPresetLabel,
-} from "./h3_policy_core.mjs?v=0.6.6";
+} from "./h3_policy_core.mjs?v=0.6.8";
 import {
     resolveAudioContextLength,
     resolveAudioPolicy,
     resolveTransitionPolicy,
-} from "./h3_socket_presentation_core.mjs?v=0.6.6";
+} from "./h3_socket_presentation_core.mjs?v=0.6.8";
 import {
     availableLoRARoutes,
     loraRouteLabel,
-} from "./h3_lora_scheduler_core.mjs?v=0.6.2";
+} from "./h3_lora_scheduler_core.mjs?v=0.6.8";
 import {
     h3StudioGridMarkers,
     locateStudioTimelineSegment,
@@ -112,8 +112,8 @@ import {
     studioRulerTicks,
     studioWaveformIntervalSamples,
     timedLyricAtSecond,
-} from "./h3_chain_plan_studio_core.mjs?v=0.6.4";
-import * as promptCompanionSync from "./h3_prompt_companion_sync.mjs?v=0.6.2";
+} from "./h3_chain_plan_studio_core.mjs?v=0.6.8";
+import * as promptCompanionSync from "./h3_prompt_companion_sync.mjs?v=0.6.8";
 
 const {
     connectedPromptEditors,
@@ -355,6 +355,8 @@ function injectStyles() {
             grid-template-columns:minmax(0,160px) minmax(0,1fr) auto; gap:5px; }
         .h3studio-context-pair { display:grid; grid-template-columns:1fr 1fr; gap:5px; }
         .h3studio-prompt { min-height:250px; width:100%; font:15px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace !important; }
+        .h3studio-basic-prompt-label { display:flex; flex-direction:column; gap:4px; font-size:12px; }
+        .h3studio-basic-prompt { min-height:72px; }
         .h3studio-prompt-tools { display:flex; align-items:center; gap:6px; margin:7px 0; flex-wrap:wrap; }
         .h3studio-prompt-delegated { margin-top:10px; padding:12px; border:1px dashed var(--hs-border);
             border-radius:7px; color:var(--hs-muted); background:var(--hs-bg); }
@@ -652,6 +654,7 @@ function mount(node) {
             node.properties[TIMELINE_ZOOM_PROPERTY]),
         checkpoints:new Map(), checkpointSignature:"", checkpointError:"", checkpointToken:0,
         checkpointPromise:null, checkpointRefreshQueued:false, disposed:false,
+        executionPromptIds:new Set(),
         sourcePreview:null, sourceWaveform:null, sourceWaveformToken:"",
         presentationToken:0,
         sourceWaveformPromise:null,
@@ -3550,6 +3553,18 @@ function mount(node) {
         }
         const alternate = alternateTakePanel();
 
+        const basicPromptLabel = element("label", "h3studio-basic-prompt-label", "Basic prompt (plain language)");
+        const basicPromptTextarea = element("textarea", "h3studio-basic-prompt");
+        basicPromptTextarea.value = String(shot.basic_prompt ?? "");
+        basicPromptTextarea.placeholder = "Optional plain-language scene idea, kept separate from the H3-formatted scene prompt. Optimize it into the scene prompt from Rich Scene Prompt Editor.";
+        basicPromptTextarea.title = "A simple draft description, not H3-formatted. Never delegated: editable here even when prompt editing itself is delegated below.";
+        basicPromptTextarea.spellcheck = true;
+        basicPromptTextarea.addEventListener("input", () => {
+            shot.basic_prompt = basicPromptTextarea.value;
+            writePlan();
+        });
+        basicPromptLabel.append(basicPromptTextarea);
+
         if (state.promptEditors.length) {
             const delegated = element("div", "h3studio-prompt-delegated");
             delegated.append(
@@ -3559,7 +3574,7 @@ function mount(node) {
                     "Scene selection is synchronized in both directions; Studio keeps scene ID, length, steps, seed, timeline, and playback controls.",
                 ),
             );
-            panel.append(head, form, audioOverrides, alternate, delegated);
+            panel.append(head, form, audioOverrides, alternate, basicPromptLabel, delegated);
             return panel;
         }
 
@@ -3590,7 +3605,7 @@ function mount(node) {
         const history = element("div", "h3studio-history");
         state.history.host = history; state.history.textarea = prompt; state.history.status = message;
         panel.append(
-            head, form, audioOverrides, alternate, prompt, tools, tray, history,
+            head, form, audioOverrides, alternate, basicPromptLabel, prompt, tools, tray, history,
         );
         void loadHistory(row.id, prompt.value);
         return panel;
@@ -6201,6 +6216,20 @@ function mount(node) {
         }, 50);
     };
     api.addEventListener("executed", onPromptExecuted);
+    const onExecutionStart = (event) => {
+        const promptId = String(event.detail?.prompt_id ?? "");
+        if (promptId) state.executionPromptIds.add(promptId);
+    };
+    const onExecutionTerminal = (event) => {
+        const promptId = String(event.detail?.prompt_id ?? "");
+        if (!promptId || !state.executionPromptIds.delete(promptId) ||
+                state.executionPromptIds.size !== 0 || state.disposed) return;
+        void refreshCheckpoints();
+    };
+    api.addEventListener("execution_start", onExecutionStart);
+    api.addEventListener("execution_success", onExecutionTerminal);
+    api.addEventListener("execution_error", onExecutionTerminal);
+    api.addEventListener("execution_interrupted", onExecutionTerminal);
     const onLoRARoutesChanged = () => {
         if (!state.disposed && state.plan) {
             renderPanel();
@@ -6221,11 +6250,16 @@ function mount(node) {
         if (state.editorialTimer != null) clearTimeout(state.editorialTimer);
         state.timelineResizeObserver?.disconnect();
         api.removeEventListener("executed", onPromptExecuted);
+        api.removeEventListener("execution_start", onExecutionStart);
+        api.removeEventListener("execution_success", onExecutionTerminal);
+        api.removeEventListener("execution_error", onExecutionTerminal);
+        api.removeEventListener("execution_interrupted", onExecutionTerminal);
         document.removeEventListener(
             "h3-lora-routes-changed", onLoRARoutesChanged);
         document.removeEventListener("keydown", onPlayerKeydown, true);
         delete node._h3PromptCompanionSetActiveScene;
         delete node._h3PromptCompanionSetScenePrompt;
+        delete node._h3PromptCompanionSetBasicPrompt;
         disposePlayer();
         delete node._h3FlushProjectWrites;
         void finalFlush.catch((error) => console.warn(
@@ -6271,12 +6305,25 @@ function mount(node) {
         if (livePlanParsed) state.lastValue = liveValue;
         return true;
     };
+    node._h3PromptCompanionSetBasicPrompt = (planNode, index, text) => {
+        if (planNode !== state.planNode || !state.plan?.shots?.[index]) return false;
+        state.plan.shots[index].basic_prompt = text;
+        if (index === state.active) {
+            const basicPromptTextarea = root.querySelector(".h3studio-basic-prompt");
+            if (basicPromptTextarea && basicPromptTextarea.value !== text) {
+                basicPromptTextarea.value = text;
+            }
+        }
+        return true;
+    };
     node._h3PlanStudioRefresh = () => {
         loadPlan(true);
         publishActiveScene();
     };
     state.pollTimer = setInterval(() => loadPlan(false), 500);
-    state.checkpointTimer = setInterval(() => void refreshCheckpoints(), 5000);
+    state.checkpointTimer = setInterval(() => {
+        if (state.executionPromptIds.size === 0) void refreshCheckpoints();
+    }, 5000);
     loadPlan(true);
 }
 

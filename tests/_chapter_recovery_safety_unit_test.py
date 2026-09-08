@@ -111,6 +111,18 @@ class ChapterRecoverySafetyTests(unittest.TestCase):
         recovered, _ = chain._load_chapter_manifest("revision_test", 1, snapshot["chapter_manifest_id"])
         self.assertEqual(recovered["segments"][0]["revision"], self.old)
 
+    def test_windows_snapshot_address_is_retired_without_rewriting_document(self):
+        snapshot, path = chain._chapter_manifest_from_manifest(self.manifest, 1)
+        address = snapshot["chapter_manifest_path"]
+        snapshot["chapter_manifest_path"] = address.replace("/", "\\")
+        Path(path).write_text(json.dumps(snapshot), encoding="utf-8")
+        before = Path(path).read_bytes()
+        manager = retirement.ChapterSnapshotManager(self.temp.name)
+        preview = manager.retirement_preview("revision_test", snapshot["chapter_manifest_path"])
+        self.assertEqual(preview["snapshot"], manager.retirement_preview("revision_test", address)["snapshot"])
+        result = manager.retire("revision_test", address, preview["snapshot"])
+        self.assertEqual((Path(self.temp.name) / result["retired_path"]).read_bytes(), before)
+
     def test_other_snapshot_and_shared_branch_dependencies_still_block(self):
         first, _ = chain._chapter_manifest_from_manifest(self.manifest, 1)
         other, _ = chain._chapter_manifest_from_manifest(dict(self.manifest, plan_hash="other"), 1)

@@ -57,11 +57,17 @@ const plan = {
         {id: "two", prompt: ["Old two."], seed: "2"},
     ],
 };
-applyReviewEdit(plan, 2, "New two.\n\nCAMERA: Close-up.", "9007199254740993", 56);
+applyReviewEdit(
+    plan, 2, "New two.\n\nCAMERA: Close-up.", "9007199254740993", 56,
+    "a simple plain-language idea",
+);
 assert.deepEqual(plan.shots[0].prompt, ["Old one."]);
 assert.deepEqual(plan.shots[1].prompt, ["New two.", "", "CAMERA: Close-up."]);
 assert.equal(plan.shots[1].seed, "9007199254740993");
 assert.equal(plan.shots[1].length, 56);
+assert.equal(plan.shots[1].basic_prompt, "a simple plain-language idea");
+assert.equal(plan.shots[0].basic_prompt, undefined,
+    "an untouched scene must not gain a basic_prompt field");
 applyReviewEdit(plan, 1, "", "3");
 assert.deepEqual(plan.shots[0].prompt, [""]);
 assert.equal(plan.shots[0].seed, "3");
@@ -297,12 +303,12 @@ assert.match(reviewSource, /preview_revision/);
 assert.match(reviewSource, /sameToken/);
 assert.match(
     reviewSource,
-    /if \(!sameToken\)[\s\S]*setTimeout\(refreshResumeOptions, 0\)/,
+    /if \(!sameToken\)[\s\S]*setTimeout\(\(\) => void refreshResumeOptions\(\{automatic: true\}\), 0\)/,
     "a newly persisted review scene must refresh checkpoint history",
 );
 assert.match(
     reviewSource,
-    /data\.action === "approve" \|\| data\.action === "stop"[\s\S]*setTimeout\(refreshResumeOptions, 0\)/,
+    /data\.action === "approve" \|\| data\.action === "stop"[\s\S]*setTimeout\(\(\) => void refreshResumeOptions\(\{automatic: true\}\), 0\)/,
     "final approval must refresh checkpoint history",
 );
 assert.match(reviewSource, /Checkpoint history/);
@@ -314,17 +320,17 @@ assert.match(reviewSource, /Accept now & continue/);
 assert.match(reviewSource, /review_each_candidate/);
 assert.match(reviewSource, /review-candidate-batch/);
 assert.match(reviewSource, /candidate_batch_active/);
-assert.match(reviewSource, /function planRunNameTrusted\(planNode\)/);
+assert.match(reviewSource, /function reviewRunName\(planNode\)/);
 assert.match(reviewSource, /item\.name === "project_assets"/);
 assert.match(
     reviewSource,
-    /if \(planRunNameTrusted\(planNode\)\) \{[\s\S]*actualRun[\s\S]*actualRun !== expectedRun/,
-    "an exact Review Gate must ignore the stale Plan run-name widget when Project Assets owns it",
+    /widgetByName\(manager, "run_name"\)/,
+    "Project Assets must provide the authoritative run identity for review routing",
 );
 assert.match(
     reviewSource,
-    /const matchingRun = gates\.filter\([\s\S]*if \(!planRunNameTrusted\(planNode\)\) return false/,
-    "run-name fallback routing must not positively match a Project Assets-owned Plan",
+    /const matchingRun = gates\.filter\([\s\S]*reviewRunName\(findUpstreamNode\(item, PLAN_NAMES\)\) === expectedRun/,
+    "fallback routing must match Project Assets' authoritative run identity",
 );
 assert.match(reviewSource, /Pause candidate run/);
 assert.match(reviewSource, /\/api\/jobs\/\$\{encodeURIComponent\(execution\.promptId\)\}\/cancel/);
@@ -377,12 +383,17 @@ assert.match(submitSource, /reviewPromptEditorEnabled\(\)/);
 assert.match(submitSource, /planScenePrompt/);
 assert.match(submitSource, /token: submittedToken/);
 assert.match(submitSource, /scene_prompt: submittedPrompt/);
+assert.doesNotMatch(submitSource, /processRequeue\(/,
+    "Review approval must not bypass Loop End; top-level requeue is driven by the Loop End terminal coordinator");
 assert.match(
     submitSource,
-    /updatePlan\(\s*node, submittedIndex, acceptedPrompt, body\.seed, body\.length\)/,
+    /updatePlan\(\s*node, submittedIndex, acceptedPrompt, body\.seed, body\.length,\s*acceptedBasicPrompt\)/,
 );
 assert.match(reviewSource, /publishCompanionPrompt/);
+assert.match(reviewSource, /publishCompanionBasicPrompt/);
 assert.match(reviewSource, /publishPlanCompanionScene/);
+assert.match(reviewSource, /basic_prompt: submittedBasicPrompt/);
+assert.match(reviewSource, /_h3PromptCompanionSetBasicPrompt/);
 assert.match(reviewSource, /_h3PromptCompanionSetScenePrompt/);
 assert.match(reviewSource, /reviewDurationText\(data\.raw_frames\)/);
 assert.match(reviewSource, /h3r-video-panel/);
@@ -432,10 +443,38 @@ assert.match(reviewSource, /Scene Prompt Editor or Rich Scene Prompt Editor/);
 assert.match(reviewSource, /promptLabel\.hidden = !enabled/);
 assert.match(reviewSource, /promptNotice\.hidden = enabled/);
 assert.match(reviewSource, /_h3ReviewApplyLayout/);
+assert.match(reviewSource, /PROJECT_ASSET_MANAGER_NODE/);
+assert.match(reviewSource, /function reviewRunName\(planNode\)/);
+assert.match(reviewSource, /widgetByName\(manager, "run_name"\)/);
+assert.match(reviewSource, /reviewRunName\(findUpstreamNode\(item, PLAN_NAMES\)\)/);
+assert.doesNotMatch(reviewSource, /function planRunNameTrusted/);
 assert.match(reviewSource, /nodeType\.prototype\.onConfigure/);
 assert.match(reviewSource, /setPointerCapture/);
 assert.match(reviewSource, /visualHeight \/ layoutHeight/);
 assert.match(reviewSource, /videoPanel\.offsetHeight, true/);
 assert.doesNotMatch(reviewSource, /\/h3_motion_context\/review/);
+const fallbackStart = reviewSource.indexOf("function reviewFallbackNode");
+const fallbackSource = reviewSource.slice(fallbackStart, reviewSource.indexOf("function routeReview", fallbackStart));
+assert.match(fallbackSource, /matchingRun\.length === 1\) return matchingRun\[0\];[\s\S]*data\?\.durable === true\) return null;[\s\S]*matchingLeaf[\s\S]*gates\.length === 1/,
+    "durable recovery may use only an authoritative run match, not leaf or singleton fallback");
+const routeStart = reviewSource.indexOf("function routeReview(data)");
+const routeSource = reviewSource.slice(routeStart, reviewSource.indexOf("function routeReviewResolved", routeStart));
+assert.match(routeSource, /data\?\.durable !== true[\s\S]*Pending token/,
+    "expected unrelated durable inventory must not warn on every poll");
+const reviewHandlerStart = reviewSource.indexOf("node._h3ReviewHandler =");
+const reviewHandlerSource = reviewSource.slice(reviewHandlerStart);
+assert.match(reviewHandlerSource, /const candidateBatchComplete = Boolean\(current\?\.candidate_generation_complete\) \|\|[\s\S]*current\.candidates\.length >=[\s\S]*candidate_count/);
+assert.match(reviewHandlerSource, /sameToken && current\?\.actionable !== false &&[\s\S]*candidate_count\) > 1 && candidateBatchComplete &&[\s\S]*!current\?\.candidate_batch_command_pending/);
+assert.match(reviewHandlerSource, /candidateBatchComplete &&[\s\S]*root\.classList\.remove\("h3r-busy"\);[\s\S]*setActionsEnabled\(true\)/);
+assert.match(reviewSource, /activeResumeExecutionIds = new Set\(\)/);
+assert.match(reviewSource, /automatic && activeResumeExecutionIds\.size > 0[\s\S]*deferredAutomaticResumeRefresh = true/);
+assert.match(reviewSource, /resumeRefreshPromise[\s\S]*queuedExplicitResumeRefresh[\s\S]*queuedAutomaticResumeRefresh/);
+assert.match(reviewSource, /api\.addEventListener\("execution_start", onResumeExecutionStart\)/);
+assert.match(reviewSource, /api\.addEventListener\("execution_success", onResumeExecutionTerminal\)/);
+assert.match(reviewSource, /api\.addEventListener\("execution_error", onResumeExecutionTerminal\)/);
+assert.match(reviewSource, /api\.addEventListener\("execution_interrupted", onResumeExecutionTerminal\)/);
+assert.match(reviewSource, /nextResumeChoices[\s\S]*resumeSelect\.replaceChildren\(\)/,
+    "resume UI replacement occurs only after the checkpoint response is parsed");
+assert.match(reviewSource, /if \(enabled && current\?\.candidate_batch_active\) \{[\s\S]*retryButton\.disabled = true;[\s\S]*rerollButton\.disabled = true;[\s\S]*stopButton\.disabled = true;/);
 
 console.log("H3 Chain Review editor helpers: ok");

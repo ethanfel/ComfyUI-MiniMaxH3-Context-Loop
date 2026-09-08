@@ -53,6 +53,7 @@ assert.deepEqual(activeSceneFromOutput({
     endClip: 5,
     shotId: "hallway",
     seed: "9007199254740993",
+    workflowFingerprint: "",
 });
 assert.equal(activeSceneFromOutput({h3_chain_active_scene: []}), null);
 

@@ -2,17 +2,17 @@ import {app} from "/scripts/app.js";
 import {api} from "/scripts/api.js";
 import {
     canCaptureFrame, captureCarousels, captureTargetProject, carouselProject,
-} from "./h3_review_capture_core.mjs?v=0.6.1";
+} from "./h3_review_capture_core.mjs?v=0.6.8";
 import {
     parsePlanJson,
     planToJson,
     promptValueToText,
-} from "./h3_chain_plan_core.mjs?v=0.6.5";
-import * as promptCompanionSync from "./h3_prompt_companion_sync.mjs?v=0.6.2";
+} from "./h3_chain_plan_core.mjs?v=0.6.8";
+import * as promptCompanionSync from "./h3_prompt_companion_sync.mjs?v=0.6.8";
 import {
     refreshRestoredPlanEditors,
     restoreConnectedPolicyInputs,
-} from "./h3_plan_restore_core.mjs?v=0.6.6";
+} from "./h3_plan_restore_core.mjs?v=0.6.8";
 import {
     acceptedPreviewDisposition,
     applyCheckpointRevisionSet,
@@ -25,11 +25,12 @@ import {
     reviewLocalDeadline,
     reviewPlanScenePrompt,
     reviewSeed,
-} from "./h3_chain_review_core.mjs?v=0.6.5";
+} from "./h3_chain_review_core.mjs?v=0.6.8";
 
 const NODE_NAME = "MiniMaxH3ChainReview";
 const PLAN_NAME = "MiniMaxH3ChainPlan";
 const PLAN_NAMES = new Set([PLAN_NAME, "MiniMaxH3ChainPlanModern"]);
+const PROJECT_ASSET_MANAGER_NODE = "MiniMaxH3ProjectAssetManager";
 const PROMPT_EDITOR_SETTING = "MiniMaxH3ContexLoop.ReviewGate.PromptEditor";
 const VIDEO_HEIGHT_PROPERTY = "h3_chain_review_video_height";
 const PROMPT_HEIGHT_PROPERTY = "h3_chain_review_prompt_height";
@@ -136,6 +137,10 @@ function reviewPromptEditorEnabled() {
 // prompt synchronization becomes a no-op until the module cache refreshes.
 function publishCompanionPrompt(...args) {
     return promptCompanionSync.publishCompanionPrompt?.(...args) ?? 0;
+}
+
+function publishCompanionBasicPrompt(...args) {
+    return promptCompanionSync.publishCompanionBasicPrompt?.(...args) ?? 0;
 }
 
 function publishPlanCompanionScene(...args) {
@@ -253,6 +258,8 @@ function injectStyles() {
             width:40px; height:2px; border-top:1px solid #7e899f;
             border-bottom:1px solid #4f586b; }
         .h3r-prompt-grip:hover { background:linear-gradient(180deg,#313848,#1d212b); }
+        .h3r-basic-prompt { width:100%; min-height:70px; resize:vertical; padding:7px;
+            border:1px solid #56637e; border-radius:5px; background:#101218; color:#eef1f7; }
         .h3r-prompt-notice { padding:8px 9px; border:1px solid #56637e;
             border-radius:6px; background:#202431; color:#cbd3e5; white-space:pre-wrap; }
         .h3r-row { display:flex; align-items:flex-end; gap:7px; }
@@ -397,13 +404,14 @@ function planResumeContext(reviewNode) {
     return {runName, clipCount: plan.shots.length};
 }
 
-function updatePlan(reviewNode, index, prompt, seed, length) {
+function updatePlan(reviewNode, index, prompt, seed, length, basicPrompt = undefined) {
     const planNode = upstreamPlanNode(reviewNode);
     const widget = planNode?.widgets?.find((item) => item.name === "plan_json");
     if (!widget) return false;
     const sceneIndex = Number(index) - 1;
     const plan = applyReviewEdit(
         parsePlanJson(String(widget.value ?? "")), index, prompt, seed, length,
+        basicPrompt,
     );
     const value = planToJson(plan);
     widget.value = value;
@@ -416,6 +424,11 @@ function updatePlan(reviewNode, index, prompt, seed, length) {
         sceneIndex,
         promptValueToText(plan.shots[sceneIndex]?.prompt),
     );
+    if (typeof basicPrompt === "string") {
+        publishCompanionBasicPrompt(
+            reviewNode, planNode, sceneIndex, plan.shots[sceneIndex]?.basic_prompt,
+        );
+    }
     return true;
 }
 
@@ -578,7 +591,8 @@ async function activateAcceptedCandidate(reviewNode, submittedReview, body) {
         };
     }
     const saved = updatePlan(
-        reviewNode, clipIndex, body.scene_prompt, body.seed, body.length);
+        reviewNode, clipIndex, body.scene_prompt, body.seed, body.length,
+        body.basic_prompt);
     if (!saved) {
         return {
             immediate: false,
@@ -697,26 +711,30 @@ function fetchPending() {
     return pendingFetchPromise;
 }
 
-function planRunNameTrusted(planNode) {
-    // Project Assets replaces Plan.run_name server-side while the plan editor
-    // deliberately leaves that now-hidden widget unchanged. Psylent_Gamer
-    // (4090) identified this Review Gate routing split through Banodoco.
-    if (!planNode) return true;
-    const input = planNode.inputs?.find((item) => item.name === "project_assets");
-    return input?.link === null || input?.link === undefined;
+function reviewRunName(planNode) {
+    if (!planNode) return "";
+    const assets = planNode.inputs?.find((item) => item.name === "project_assets");
+    if (assets?.link != null) {
+        const link = planNode.graph?.links?.[assets.link];
+        const manager = link
+            ? planNode.graph?.getNodeById?.(link.origin_id) : null;
+        // Project Assets is authoritative: it replaces Plan.run_name
+        // server-side while the Plan editor deliberately keeps its hidden
+        // widget unchanged. Do not fall back to a reused Review node id.
+        if (nodeType(manager) === PROJECT_ASSET_MANAGER_NODE) {
+            const run = String(widgetByName(manager, "run_name")?.value ?? "").trim();
+            if (run) return run;
+        }
+    }
+    return String(widgetByName(planNode, "run_name")?.value ?? "").trim();
 }
 
 function deliverReview(node, data) {
     if (!node || nodeType(node) !== NODE_NAME) return false;
     const expectedRun = String(data?.run_name ?? "").trim();
     if (expectedRun) {
-        const planNode = findUpstreamNode(node, PLAN_NAMES);
-        if (planRunNameTrusted(planNode)) {
-            const actualRun = String(
-                widgetByName(planNode, "run_name")?.value ?? "",
-            ).trim();
-            if (actualRun && actualRun !== expectedRun) return false;
-        }
+        const actualRun = reviewRunName(findUpstreamNode(node, PLAN_NAMES));
+        if (actualRun && actualRun !== expectedRun) return false;
     }
     if (typeof node._h3ReviewHandler === "function") {
         node._h3ReviewHandler(data);
@@ -736,14 +754,14 @@ function reviewFallbackNode(data) {
     ])];
     const expectedRun = String(data?.run_name ?? "").trim();
     if (expectedRun) {
-        const matchingRun = gates.filter((item) => {
-            const planNode = findUpstreamNode(item, PLAN_NAMES);
-            if (!planRunNameTrusted(planNode)) return false;
-            return String(widgetByName(planNode, "run_name")?.value ?? "").trim() ===
-                expectedRun;
-        });
+        const matchingRun = gates.filter((item) =>
+            reviewRunName(findUpstreamNode(item, PLAN_NAMES)) === expectedRun);
+
         if (matchingRun.length === 1) return matchingRun[0];
     }
+    // Durable recovery inventory has no reliable display-node identity. It
+    // may only route through its authoritative run match above.
+    if (data?.durable === true) return null;
     // GraphBuilder execution ids use dots while subgraph-qualified display
     // ids use colons. The visible LiteGraph node is always the final leaf.
     const leaf = String(data?.node_id ?? "").split(/[.:]/).at(-1);
@@ -763,10 +781,12 @@ function routeReview(data) {
         );
         return true;
     }
-    console.warn(
-        `[H3 Chain Review] Pending token ${data?.token ?? "?"} could not be ` +
-        `routed to display node ${data?.node_id ?? "?"}.`,
-    );
+    if (data?.durable !== true) {
+        console.warn(
+            `[H3 Chain Review] Pending token ${data?.token ?? "?"} could not be ` +
+            `routed to display node ${data?.node_id ?? "?"}.`,
+        );
+    }
     return false;
 }
 
@@ -1147,6 +1167,16 @@ function mount(node) {
     prefix.hidden = true;
     prefix.title = "Shared prompt prepended to every scene. It is shown for context and is not changed by retrying this scene.";
 
+    const basicPromptLabel = document.createElement("label");
+    basicPromptLabel.className = "h3r-label";
+    basicPromptLabel.append("Basic prompt (plain language draft)");
+    const basicPrompt = document.createElement("textarea");
+    basicPrompt.className = "h3r-basic-prompt";
+    basicPrompt.title = "A simple, non-H3-formatted scene idea kept alongside the scene prompt. Retrying sends this along; optimizing it into the scene prompt happens in Rich Scene Prompt Editor.";
+    basicPromptLabel.append(basicPrompt);
+    let basicPromptEditedInGate = false;
+    basicPrompt.addEventListener("input", () => { basicPromptEditedInGate = true; });
+
     const promptLabel = document.createElement("label");
     promptLabel.className = "h3r-label";
     promptLabel.append("Scene prompt (used when retrying)");
@@ -1172,6 +1202,8 @@ function mount(node) {
 
     function refreshPromptEditorSetting() {
         const enabled = reviewPromptEditorEnabled();
+        basicPromptLabel.hidden = !enabled;
+        basicPrompt.disabled = !enabled;
         promptLabel.hidden = !enabled;
         prompt.disabled = !enabled;
         promptGrip.hidden = !enabled;
@@ -1382,8 +1414,8 @@ function mount(node) {
     resume.append(resumeTitle, resumeRow, resumeStatus, revisionsPanel);
 
     root.append(
-        head, videoPanel, captureRow, prefix, promptNotice, promptLabel,
-        seedRow, candidateRow, actions, status, resume,
+        head, videoPanel, captureRow, prefix, promptNotice, basicPromptLabel,
+        promptLabel, seedRow, candidateRow, actions, status, resume,
     );
 
     let current = null;
@@ -1393,6 +1425,11 @@ function mount(node) {
     let revisionChain = [];
     let planClipCount = 0;
     let resumeRefreshToken = 0;
+    let resumeRefreshPromise = null;
+    let queuedAutomaticResumeRefresh = false;
+    let queuedExplicitResumeRefresh = false;
+    let deferredAutomaticResumeRefresh = false;
+    const activeResumeExecutionIds = new Set();
     let activeCandidateRevision = "";
     let keptCandidateRevisions = new Set();
     let previewLoadRevision = 0;
@@ -1445,6 +1482,10 @@ function mount(node) {
     }
 
     function setActionsEnabled(enabled) {
+        // Recovered durable inventory has no live PromptExecutor future.
+        // It is intentionally read-only rather than offering decisions that
+        // are guaranteed to fail after a server restart.
+        if (current?.actionable === false) enabled = false;
         for (const button of actionButtons) button.disabled = !enabled;
         if (enabled && current?.candidate_batch_active) {
             retryButton.disabled = true;
@@ -1732,16 +1773,9 @@ function mount(node) {
         }
     }
 
-    async function refreshResumeOptions() {
+    async function performResumeRefresh() {
         const refreshToken = ++resumeRefreshToken;
         const previousResumeScene = Number(resumeSelect.value);
-        resumeSelect.replaceChildren();
-        resumeChoices = [];
-        checkpointRevisions = [];
-        revisionChain = [];
-        revisionsRows.replaceChildren();
-        revisionsPanel.hidden = true;
-        loadResume.disabled = true;
         try {
             const context = planResumeContext(node);
             planClipCount = context.clipCount;
@@ -1752,9 +1786,15 @@ function mount(node) {
             const body = await response.json();
             if (refreshToken !== resumeRefreshToken) return;
             if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
-            resumeChoices = checkpointResumeOptions(
+            const nextResumeChoices = checkpointResumeOptions(
                 body.checkpoints, context.clipCount);
-            checkpointRevisions = body.revisions ?? [];
+            const nextCheckpointRevisions = body.revisions ?? [];
+            resumeSelect.replaceChildren();
+            revisionsRows.replaceChildren();
+            revisionsPanel.hidden = true;
+            resumeChoices = nextResumeChoices;
+            checkpointRevisions = nextCheckpointRevisions;
+            revisionChain = [];
             for (const option of resumeChoices) {
                 const element = document.createElement("option");
                 element.value = String(option.resumeScene);
@@ -1779,9 +1819,35 @@ function mount(node) {
         }
     }
 
-    refreshResume.addEventListener("click", refreshResumeOptions);
+    function refreshResumeOptions({automatic = false} = {}) {
+        if (automatic && activeResumeExecutionIds.size > 0) {
+            deferredAutomaticResumeRefresh = true;
+            return Promise.resolve();
+        }
+        if (resumeRefreshPromise) {
+            if (automatic) queuedAutomaticResumeRefresh = true;
+            else queuedExplicitResumeRefresh = true;
+            return resumeRefreshPromise;
+        }
+        const request = performResumeRefresh();
+        resumeRefreshPromise = request;
+        void request.finally(() => {
+            if (resumeRefreshPromise !== request) return;
+            resumeRefreshPromise = null;
+            const explicit = queuedExplicitResumeRefresh;
+            const automaticFollowup = queuedAutomaticResumeRefresh;
+            queuedExplicitResumeRefresh = false;
+            queuedAutomaticResumeRefresh = false;
+            if (explicit || automaticFollowup) {
+                void refreshResumeOptions({automatic: !explicit});
+            }
+        });
+        return request;
+    }
+
+    refreshResume.addEventListener("click", () => void refreshResumeOptions());
     resumeSelect.addEventListener("change", renderRevisionChoices);
-    node._h3RefreshResume = refreshResumeOptions;
+    node._h3RefreshResume = () => refreshResumeOptions({automatic: true});
     loadResume.addEventListener("click", async () => {
         const resumeScene = Number(resumeSelect.value);
         if (!Number.isInteger(resumeScene)) return;
@@ -1895,7 +1961,9 @@ function mount(node) {
         const complete = Boolean(current.candidate_generation_complete) ||
             generated >= target;
         const batchCommand = current.candidate_batch_command_pending;
-        const message = batchCommand
+        const message = current.actionable === false
+            ? (current.recovery_instructions || "Recovered review inventory is read-only; resume manually from the saved checkpoint.")
+            : batchCommand
             ? batchCommand === "accept"
                 ? "Selected take is being activated; Review Gate is stopping the speculative take."
                 : "Pause queued. The current in-flight candidate will finish, then Review Gate will wait here."
@@ -1957,6 +2025,9 @@ function mount(node) {
                 : (planScenePrompt(node, submittedReview)
                     ?? submittedReview.scene_prompt
                     ?? prompt.value);
+            const submittedBasicPrompt = reviewPromptEditorEnabled() && basicPromptEditedInGate
+                ? basicPrompt.value
+                : (submittedReview.basic_prompt ?? basicPrompt.value);
             const normalizedSeed = action === "retry" ? reviewSeed(seed.value) : seed.value;
             const normalizedDuration = action === "retry" || action === "reroll"
                 ? reviewDuration(duration.value) : null;
@@ -1980,6 +2051,7 @@ function mount(node) {
                     token: submittedToken,
                     action: candidateBatchAction || action,
                     scene_prompt: submittedPrompt,
+                    basic_prompt: submittedBasicPrompt,
                     seed: normalizedSeed,
                     length: normalizedDuration?.length,
                     candidate_revision: (candidateBatchAction === "accept" ||
@@ -2036,12 +2108,19 @@ function mount(node) {
             } else if (action === "retry" || action === "reroll") {
                 const acceptedPrompt = typeof body.scene_prompt === "string"
                     ? body.scene_prompt : submittedPrompt.trim();
+                const acceptedBasicPrompt = typeof body.basic_prompt === "string"
+                    ? body.basic_prompt : undefined;
                 const acceptedDuration = reviewDurationText(body.length);
                 const saved = updatePlan(
-                    node, submittedIndex, acceptedPrompt, body.seed, body.length);
+                    node, submittedIndex, acceptedPrompt, body.seed, body.length,
+                    acceptedBasicPrompt);
                 if (current?.token === submittedToken) {
                     prompt.value = acceptedPrompt;
                     promptEditedInGate = false;
+                    if (acceptedBasicPrompt !== undefined) {
+                        basicPrompt.value = acceptedBasicPrompt;
+                    }
+                    basicPromptEditedInGate = false;
                     seed.value = body.seed;
                     duration.value = acceptedDuration;
                 }
@@ -2060,7 +2139,7 @@ function mount(node) {
                     (selected ? ` ${body.kept_candidate_count} take${body.kept_candidate_count === 1 ? "" : "s"} kept.` : "") +
                     (saved ? " The Plan seed was updated." : "") +
                     (prepared ? ` Loop Start is ready at clip ${submittedReview.clip_index + 1}.` : "");
-                setTimeout(refreshResumeOptions, 0);
+                setTimeout(() => void refreshResumeOptions({automatic: true}), 0);
             }
         } catch (error) {
             root.classList.remove("h3r-busy");
@@ -2100,6 +2179,15 @@ function mount(node) {
             ...data,
             local_deadline: localDeadline,
         };
+        const candidateBatchComplete = Boolean(current?.candidate_generation_complete) ||
+            (Array.isArray(current?.candidates) && current.candidates.length >=
+                Number(current?.candidate_count));
+        if (sameToken && current?.actionable !== false &&
+                Number(current?.candidate_count) > 1 && candidateBatchComplete &&
+                !current?.candidate_batch_command_pending) {
+            root.classList.remove("h3r-busy");
+            setActionsEnabled(true);
+        }
         if (!sameToken) {
             root.classList.remove("h3r-busy");
             setActionsEnabled(true);
@@ -2118,9 +2206,11 @@ function mount(node) {
             // The scene is persisted before Review Gate receives its token.
             // Refresh here so the current (including final) checkpoint appears
             // in history without requiring the user to press Refresh.
-            setTimeout(refreshResumeOptions, 0);
+            setTimeout(() => void refreshResumeOptions({automatic: true}), 0);
         }
         if (!sameToken) {
+            basicPrompt.value = data.basic_prompt ?? "";
+            basicPromptEditedInGate = false;
             prompt.value = data.scene_prompt ?? "";
             promptEditedInGate = false;
             seed.value = data.seed ?? "";
@@ -2163,6 +2253,17 @@ function mount(node) {
         return true;
     };
 
+    node._h3PromptCompanionSetBasicPrompt = (planNode, index, text) => {
+        if (root.classList.contains("h3r-busy")
+                || planNode !== upstreamPlanNode(node)
+                || Number(index) !== Number(current?.clip_index) - 1) {
+            return false;
+        }
+        basicPrompt.value = String(text ?? "").replace(/\r\n?/g, "\n");
+        basicPromptEditedInGate = false;
+        return true;
+    };
+
     node._h3ReviewResolvedHandler = (data) => {
         if (!current || data?.token !== current.token) return;
         stopCountdown();
@@ -2185,9 +2286,26 @@ function mount(node) {
         }
         if (data.action === "approve" || data.action === "stop" ||
                 data.action === "candidate_batch_approve") {
-            setTimeout(refreshResumeOptions, 0);
+            setTimeout(() => void refreshResumeOptions({automatic: true}), 0);
         }
     };
+
+    const onResumeExecutionStart = (event) => {
+        const promptId = String(event.detail?.prompt_id ?? "");
+        if (promptId) activeResumeExecutionIds.add(promptId);
+    };
+    const onResumeExecutionTerminal = (event) => {
+        const promptId = String(event.detail?.prompt_id ?? "");
+        if (!promptId || !activeResumeExecutionIds.delete(promptId) ||
+                activeResumeExecutionIds.size !== 0 ||
+                !deferredAutomaticResumeRefresh) return;
+        deferredAutomaticResumeRefresh = false;
+        void refreshResumeOptions({automatic: true});
+    };
+    api.addEventListener("execution_start", onResumeExecutionStart);
+    api.addEventListener("execution_success", onResumeExecutionTerminal);
+    api.addEventListener("execution_error", onResumeExecutionTerminal);
+    api.addEventListener("execution_interrupted", onResumeExecutionTerminal);
 
     const widget = node.addDOMWidget("h3_chain_review", "h3-chain-review", root, {
         serialize: false,
@@ -2201,6 +2319,11 @@ function mount(node) {
     node.onRemoved = function () {
         stopCountdown();
         delete this._h3PromptCompanionSetScenePrompt;
+        delete this._h3PromptCompanionSetBasicPrompt;
+        api.removeEventListener("execution_start", onResumeExecutionStart);
+        api.removeEventListener("execution_success", onResumeExecutionTerminal);
+        api.removeEventListener("execution_error", onResumeExecutionTerminal);
+        api.removeEventListener("execution_interrupted", onResumeExecutionTerminal);
         mountedReviewNodes.delete(this);
         updatePendingPolling();
         return removed?.apply(this, arguments);
@@ -2210,7 +2333,7 @@ function mount(node) {
     delete node._h3QueuedReview;
     if (queuedReview) node._h3ReviewHandler(queuedReview);
     setTimeout(fetchPending, 0);
-    setTimeout(refreshResumeOptions, 0);
+    setTimeout(() => void refreshResumeOptions({automatic: true}), 0);
 }
 
 api.addEventListener("minimax_h3_context_loop_review", (event) => routeReview(event.detail));

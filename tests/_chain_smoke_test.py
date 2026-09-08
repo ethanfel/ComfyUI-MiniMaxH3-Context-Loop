@@ -1309,6 +1309,7 @@ def main():
                 "end_clip": 2,
                 "shot_id": prepared_plan["shots"][0]["id"],
                 "seed": str(prepared_plan["shots"][0]["seed"]),
+                "workflow_fingerprint": str(prepared_plan["plan_hash"]),
             }]
             current = current_payload["result"]
             assert current[1:3] == (1, 2)
@@ -2002,6 +2003,17 @@ def main():
             assert (chain._history_hash(revised, 2) !=
                     chain._history_hash(prepared_plan, 2))
             print("review: prompt/seed retry preserves accepted predecessor history")
+
+            requeue_return = chain.MiniMaxH3ChainLoopEnd().end(
+                ["1", 0], dict(state1), images1.clone(), av_latent(), dict(segment1),
+                execution_mode="top_level_requeue")
+            parsed_output, parsed_ui, parsed_subgraph = execution.get_output_from_returns(
+                [requeue_return], chain.MiniMaxH3ChainLoopEnd)
+            assert not parsed_subgraph and parsed_output and parsed_ui
+            completion = parsed_ui.get("h3_chain_top_level_requeue")
+            assert isinstance(completion, list) and len(completion) == 1
+            assert completion[0]["handoff_id"]
+            print("top-level requeue: real ComfyUI return parser emits completion UI")
 
             fake_prompt = {
                 "1": {"class_type": "MiniMaxH3ChainLoopStart", "inputs": {

@@ -23,6 +23,7 @@ read the implementation references to run a normal workflow.
 | Choose continuity or audio behavior | [Audio and continuity](AUDIO_AND_CONTINUITY.md) |
 | Use image, video, motion, or audio references | [Scheduled references](SCHEDULED_REFERENCES.md) |
 | Review takes, resume, recover, or assemble | [Runs and recovery](RUNS_AND_RECOVERY.md) |
+| Use the maintained memory-safe top-level prompt lifecycle | [Maintained workflow](MAINTAINED_WORKFLOW.md) |
 | Inpaint, outpaint, extend, or bridge video | [Masked editing](MASKED_EDITING.md) |
 | Extend an existing video or use special context | [Advanced workflows](ADVANCED_WORKFLOWS.md) |
 | Fix a missing-node or runtime compatibility problem | [Compatibility](COMPATIBILITY.md) |

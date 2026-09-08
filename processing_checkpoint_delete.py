@@ -11,6 +11,7 @@ from .checkpoint_manager import (
     CheckpointDeleteBlocked, _strict_run_name, checkpoint_run_lock,
 )
 from .checkpoint_variants import validate_processing_lineage
+from .artifact_paths import artifact_address, is_link_or_junction
 
 
 REVISION = re.compile(r"clip_(\d{4})\.([0-9a-f]{32})\.json")
@@ -45,15 +46,12 @@ class ProcessingCheckpointManager:
     def _path(self, address):
         if not isinstance(address, str) or not address:
             raise ValueError("A saved processing artifact address is required.")
-        parts = PurePosixPath(address).parts
-        if (PurePosixPath(address).is_absolute() or ".." in parts or
-                "\\" in address or str(PurePosixPath(address)) != address):
-            raise ValueError("Invalid processing artifact address.")
+        parts = PurePosixPath(artifact_address(address)).parts
         path = self.root
         for part in parts:
             path /= part
-            if path.is_symlink():
-                raise ValueError("Processing deletion cannot follow symlinks: %s" % address)
+            if is_link_or_junction(path):
+                raise ValueError("Processing deletion cannot follow symlinks or junctions: %s" % address)
         if not path.resolve().is_relative_to(self.root):
             raise ValueError("Processing artifact escapes the output directory.")
         if path.exists() and not (path.is_file() or path.is_dir()):
@@ -71,6 +69,7 @@ class ProcessingCheckpointManager:
         return value
 
     def _target(self, run, address):
+        address = artifact_address(address)
         path = self._path(address)
         parts = PurePosixPath(address).parts
         if not (parts[:2] == ("h3_chains", run) and (
@@ -139,7 +138,8 @@ class ProcessingCheckpointManager:
                     docs[path] = value
         return docs
 
-    def _preview(self, run, address):
+    def _preview(self, run, address, exports=None):
+        address = artifact_address(address)
         target, profile = self._target(run, address)
         docs = self._documents(run)
         metadata = docs[target]
@@ -158,22 +158,30 @@ class ProcessingCheckpointManager:
         if pointer in docs and docs[pointer]["segment"]["revision"] == revision:
             owned[pointer] = "Current processed-take pointer (cleared, not rolled back)"
 
+        def owns_address(value):
+            if not isinstance(value, str):
+                return False
+            try:
+                return artifact_address(value) in addresses
+            except ValueError:
+                return False
+
         def refers(value):
             if isinstance(value, dict):
                 if any(value.get(k) == revision for k in (
                         "predecessor_revision", "previous_revision", "context_revision")):
                     return True
                 if (value.get("source_revision") == revision and
-                        (not value.get("source_checkpoint") or value["source_checkpoint"] in addresses)):
+                        (not value.get("source_checkpoint") or owns_address(value["source_checkpoint"]))):
                     return True
                 address = value.get("revision_metadata", value.get("metadata_path"))
                 if (value.get("revision") == revision and value.get("index", value.get("scene")) == scene
-                        and (not address or address in addresses)):
+                        and (not address or owns_address(address))):
                     return True
                 return any(refers(v) for k, v in value.items() if k != "supersedes")
             if isinstance(value, list):
                 return any(refers(v) for v in value)
-            return isinstance(value, str) and value in addresses
+            return owns_address(value)
 
         addresses = {self._address(path) for path in owned if path != pointer}
         independent = _independent_pixel_take(metadata)
@@ -189,9 +197,10 @@ class ProcessingCheckpointManager:
                     or any(saved["segment"].get(k) != item.get(k)
                            for k in ("index", "revision", "checkpoint_sha256"))):
                 return False
-            retained[item["revision_metadata"]] = {
+            address = artifact_address(item["revision_metadata"])
+            retained[address] = {
                 "scene": item["index"], "revision": item["revision"],
-                "metadata_path": item["revision_metadata"],
+                "metadata_path": address,
             }
             return True
 
@@ -231,9 +240,15 @@ class ProcessingCheckpointManager:
                     dependents.append({"scene": other["index"], "revision": other["revision"],
                                        "metadata_path": other["revision_metadata"],
                                        "reason": "saved take depends on this source or branch"})
-        dependents = list({item["metadata_path"]: item for item in dependents}.values())
+        dependents = list({artifact_address(item["metadata_path"]): {
+            **item, "metadata_path": artifact_address(item["metadata_path"])}
+            for item in dependents}.values())
         for item in dependents:
             retained.pop(item["metadata_path"], None)
+        from . import png_export_cleanup
+        png_owned, png_updates, png_kept = png_export_cleanup.plan(
+            self, metadata, docs, exports or {})
+        owned.update(png_owned)
         files = []
         for path, label in sorted(owned.items()):
             self._path(self._address(path))
@@ -248,6 +263,8 @@ class ProcessingCheckpointManager:
         snapshot = hashlib.sha256(json.dumps({
             "run": run, "target": address, "files": files,
             "documents": {self._address(p): v for p, v in docs.items()},
+            "png_documents": {self._address(p): v for p, v in (exports or {}).items()},
+            "png_updates": {self._address(p): v for p, v in png_updates.items()},
         }, sort_keys=True).encode()).hexdigest()
         return {"ok": True, "run_name": run, "metadata_path": address,
                 "scene": scene, "revision": revision, "profile": profile.name,
@@ -259,23 +276,29 @@ class ProcessingCheckpointManager:
                 "files": [{k: v for k, v in f.items() if not k.startswith("_")} for f in files],
                 "owned_file_count": sum(f["exists"] for f in files),
                 "reclaimed_bytes": sum(f["size_bytes"] for f in files), "snapshot": snapshot,
+                "_png_updates": {self._address(p): v for p, v in png_updates.items()},
                 "not_deleted": ["Original generation clips and checkpoints", "Shared references and reference caches",
-                                "Other processed takes and profiles", "Assembled videos, run archives and prompt history"]}
+                                "Other processed takes and profiles", "Assembled videos, run archives and prompt history", *png_kept]}
 
     def deletion_preview(self, run_name, metadata_path):
+        from .png_export_cleanup import locked_exports
         run = _strict_run_name(run_name)
-        with checkpoint_run_lock(str(self.root), run):
-            return self._preview(run, metadata_path)
+        with checkpoint_run_lock(str(self.root), run), locked_exports(self, run) as exports:
+            return {k: v for k, v in self._preview(run, metadata_path, exports).items()
+                    if not k.startswith("_")}
 
     def delete(self, run_name, metadata_path, expected_snapshot=""):
+        from .png_export_cleanup import locked_exports
+        from .processing_persistence import atomic_json
         run = _strict_run_name(run_name)
-        with checkpoint_run_lock(str(self.root), run):
-            preview = self._preview(run, metadata_path)
+        with checkpoint_run_lock(str(self.root), run), locked_exports(self, run) as exports:
+            preview = self._preview(run, metadata_path, exports)
             if not preview["allowed"]:
                 raise CheckpointDeleteBlocked(" ".join(preview["blockers"]), preview)
             if not expected_snapshot or expected_snapshot != preview["snapshot"]:
                 raise CheckpointDeleteBlocked("Processed files or dependencies changed; preview deletion again.", preview)
             staged = []
+            rewritten = []
             transaction = uuid.uuid4().hex
             try:
                 for item in preview["files"]:
@@ -285,9 +308,26 @@ class ProcessingCheckpointManager:
                     temporary = path.with_name(path.name + ".delete." + transaction + ".tmp")
                     os.replace(path, temporary)
                     staged.append((path, temporary, item["size_bytes"]))
-            except Exception:
+                for address, record in preview["_png_updates"].items():
+                    path = self._path(address)
+                    original = self._read(path)
+                    rewritten.append((path, original))
+                    atomic_json(path, record)
+            except BaseException:
+                rollback_errors = []
+                for path, original in reversed(rewritten):
+                    try:
+                        atomic_json(path, original)
+                    except OSError as exc:
+                        rollback_errors.append(str(exc))
                 for path, temporary, _ in reversed(staged):
-                    os.replace(temporary, path)
+                    try:
+                        os.replace(temporary, path)
+                    except OSError as exc:
+                        rollback_errors.append(str(exc))
+                if rollback_errors:
+                    raise OSError("Deletion rollback could not finish; staged .delete.%s.tmp files "
+                                  "were retained for recovery: %s" % (transaction, "; ".join(rollback_errors)))
                 raise
             pending, reclaimed = [], 0
             for path, temporary, size in staged:
@@ -315,8 +355,9 @@ def require_saved_processing_segments(output_root, segments):
         if not path.is_file():
             raise ValueError("A processed source/branch take was deleted while this run was executing; reselect the source and requeue.")
         saved = manager._read(path).get("segment", {})
-        if any(saved.get(key) != segment.get(key) for key in (
-                "index", "revision", "checkpoint", "checkpoint_sha256")):
+        if (any(saved.get(key) != segment.get(key) for key in (
+                "index", "revision", "checkpoint_sha256"))
+                or manager._path(saved.get("checkpoint")) != manager._path(segment.get("checkpoint"))):
             raise ValueError("Processed source/branch identity changed while this run was executing.")
         if not manager._path(saved.get("checkpoint")).is_file():
             raise ValueError("A processed source/branch checkpoint is missing; reselect the source and requeue.")
