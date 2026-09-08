@@ -36,6 +36,41 @@ const ROLE_LABELS = {
     audio_reference: "tagged audio reference",
     source_track: "source track",
 };
+const VIDEO_ROLE_HELP = {
+    video: "Gives the model the whole clip to see and reuse: identity, "
+        + "wardrobe, setting, lighting, and composition. Only activates in a "
+        + "scene when that scene's prompt includes this asset's tag. Pick "
+        + "this when you want the generated scene to look like the "
+        + "reference, not just move like it.",
+    motion: "Extracts only the pose, action, and motion timing from this "
+        + "clip and transfers it onto the Target Subject named below - the "
+        + "source's own appearance is deliberately suppressed (see "
+        + "Reference short edge). Pick this when you want a character to "
+        + "move the way the reference moves without copying who or what is "
+        + "in it.",
+    source_track: "Not activated by any scene prompt - only one may be "
+        + "enabled per project. This becomes the project's exact Source "
+        + "Timeline (a prerecorded video or audio track, such as dialogue "
+        + "or footage, that must stay unaltered) which Chain Policy's "
+        + "Source reference / Final audio settings decide how to use. Pick "
+        + "this for a fixed track scenes are generated against, not a "
+        + "look or motion to imitate.",
+};
+const TIMELINE_MODE_HELP = {
+    restart_each_scene: "Every scene that uses this reference starts "
+        + "playback at frame 0 of the clip, so every activation looks "
+        + "identical. Use this for a short loop or an appearance/motion "
+        + "reference that should not change across the run - it never "
+        + "requires the clip to be any particular length.",
+    sequential: "Plays the reference forward continuously in lockstep with "
+        + "the Plan, starting from the first scene that activates it, so "
+        + "later scenes see later parts of the clip. The clip must be at "
+        + "least as long as everything generated from that point on, or "
+        + "generation stops with an error telling you to shorten the Plan, "
+        + "supply a longer reference, or switch back to Restart each "
+        + "scene. Use this when the reference is itself a continuous "
+        + "performance or source to walk through scene by scene.",
+};
 
 function displayRole(role) {
     return ROLE_LABELS[role] ?? String(role || "").replaceAll("_", " ");
@@ -1446,8 +1481,17 @@ function mount(node) {
                 const option = el("option", "", displayRole(value));
                 option.value = value; option.selected = value === asset.role; role.append(option);
             }
-            role.addEventListener("change", () => updateAsset(asset, {role: role.value}));
+            if (asset.kind === "video" && VIDEO_ROLE_HELP[asset.role]) {
+                role.title = VIDEO_ROLE_HELP[asset.role];
+            }
+            role.addEventListener("change", () => {
+                if (VIDEO_ROLE_HELP[role.value]) role.title = VIDEO_ROLE_HELP[role.value];
+                updateAsset(asset, {role: role.value});
+            });
             roleLabel.append(role); editor.append(roleLabel);
+            if (asset.kind === "video" && VIDEO_ROLE_HELP[asset.role]) {
+                editor.append(el("small", "h3pa-status", VIDEO_ROLE_HELP[asset.role]));
+            }
         }
         if (isAudio && isSourceTrack) {
             const tracks = el("div", "h3pa-audio-tracks");
@@ -1560,8 +1604,16 @@ function mount(node) {
                 option.value = value; option.selected = value === (asset.options?.timeline_mode ?? "restart_each_scene");
                 timeline.append(option);
             }
-            timeline.addEventListener("change", () => updateAsset(asset, {options: {timeline_mode: timeline.value}}));
+            const timelineHelp = el("small", "h3pa-status",
+                TIMELINE_MODE_HELP[asset.options?.timeline_mode ?? "restart_each_scene"]);
+            timeline.title = TIMELINE_MODE_HELP[asset.options?.timeline_mode ?? "restart_each_scene"];
+            timeline.addEventListener("change", () => {
+                timeline.title = TIMELINE_MODE_HELP[timeline.value];
+                timelineHelp.textContent = TIMELINE_MODE_HELP[timeline.value];
+                updateAsset(asset, {options: {timeline_mode: timeline.value}});
+            });
             timelineLabel.append(timeline); editor.append(timelineLabel);
+            editor.append(timelineHelp);
             if (asset.metadata?.has_audio) {
                 const pairedLabel = el("label");
                 const paired = el("input"); paired.type = "checkbox";

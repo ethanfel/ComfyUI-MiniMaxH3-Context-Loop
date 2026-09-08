@@ -45,12 +45,14 @@ source project is not changed.
 
 ## Assign a role
 
-| Role | What it does |
-|---|---|
-| Native tagged reference | Makes the asset available to prompt-selected `@tag` references. |
-| Semantic picture | Makes a picture available as a `#tag` presentation anchor. |
-| Source track | Supplies the project's recoverable source video/audio timeline. |
-| Unassigned | Keeps the card visible without using an H3 reference slot or changing the generation fingerprint. |
+| Role | What it does | Use it for |
+|---|---|---|
+| Picture reference | Makes a picture available to prompt-selected `@tag` references. | An appearance/identity photo the model should reuse. |
+| Semantic anchor | Makes a picture available as a `#tag` presentation anchor. | A composition or layout guide, not a literal appearance to copy. |
+| Video reference | Gives the model the whole clip as a native `<Video N>` reference — identity, wardrobe, setting, lighting, and composition included. Activates only in scenes whose prompt includes the asset's tag. | You want the generated scene to *look like* the reference, not just move like it. |
+| Motion reference | Extracts only the pose, action, and motion timing from the clip and transfers it onto a named `<Subject N>` (set in **Target Subject**); the clip is downsampled (**Reference short edge**) specifically to suppress its own appearance from leaking through. | You want a character to *move* the way the reference moves, without copying who or what is actually in it. |
+| Source track | Not activated by any scene prompt. Supplies the project's recoverable Source Timeline — an exact prerecorded video or audio track (e.g. dialogue, or footage that must stay unaltered) that Chain Policy's Source reference / Final audio settings decide how to use. Only one Source track may be enabled per project. | A fixed track scenes are generated against, not a look or motion to imitate. |
+| Unassigned | Keeps the card visible without using an H3 reference slot or changing the generation fingerprint. | Staging a file before deciding its role, or archiving it from active use. |
 
 When you connect an existing `tagged_references` line, the Carousel creates
 Unassigned cards for its tags and media roles. Bind each card to an input file,
@@ -59,6 +61,16 @@ generation. Move other server media into the configured ComfyUI input folder
 first; browser requests cannot import arbitrary filesystem paths.
 
 Only references used by the current scene are decoded during sampling.
+
+### Timeline mode (Video reference and Motion reference)
+
+Both roles expose a **Timeline mode** control that decides which part of the
+reference clip a scene sees:
+
+| Mode | What it does | Use it for |
+|---|---|---|
+| Restart each scene (default) | Every scene that activates this reference starts playback at frame 0 of the clip, so every activation looks identical. Never requires any particular clip length. | A short loop, or any appearance/motion reference that should stay the same across the whole run. |
+| Sequential | Plays the reference forward continuously in lockstep with the Plan, starting from the first scene that activates it — later scenes see later parts of the clip. The clip must be at least as long as everything generated from that point on, or generation stops with an error telling you to shorten the Plan, supply a longer reference, or switch back to Restart each scene. | The reference is itself a continuous performance or source that should be walked through scene by scene, in step with the generated video. |
 
 ## Group a song and its stems
 
