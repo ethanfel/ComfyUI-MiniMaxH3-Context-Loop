@@ -146,6 +146,12 @@ def _settings(chain, root, source, lineage, metadata, overrides=None):
                     if value is not None:
                         settings[key] = value
                         recovered.add(key)
+    # Keep historical node defaults when an immutable recipe proves them,
+    # but preserve native picture detail when the take's policy is unknown.
+    # Settings are part of the rebuild identity, so old default-Match caches
+    # remain intact and cannot be mistaken for this Max reconstruction.
+    if "ref_image_size" not in recovered:
+        settings["ref_image_size"] = "max"
     settings.update(overrides)
     recovered.update(overrides)
     if settings["ref_image_size"] not in ("match", "max"):

@@ -4,6 +4,12 @@ Newest first. This file keeps release history out of the onboarding README.
 
 ## Unreleased — Deferred checkpoint upscaling
 
+- Upscale reference reconstruction with `inherit` now defaults to `max` when
+  the original take has no recoverable sizing policy. Saved Match/Max policies
+  and explicit overrides still take precedence; semantic-anchor settings are
+  unchanged. Old default-Match rebuilds remain intact and are not reused for
+  the new Max reconstruction. Updated the conditioning tooltip and added
+  pixel/latent recovery and cache-preservation regressions.
 - Harden the native-first PR #15988 mask conversion guard: recognize real
   assignments and transparent wrappers, ignore comment/docstring examples,
   and correct only missing video/audio streams on partially patched cores.

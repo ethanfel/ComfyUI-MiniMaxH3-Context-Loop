@@ -1838,7 +1838,9 @@ class MiniMaxH3ChainUpscaleReferenceConditioning:
                     "default": "inherit",
                     "tooltip": "Picture sizing for cached, rebuilt, or connected "
                                "refs. inherit preserves the saved match/max "
-                               "policy; match/max explicitly overrides it. "
+                               "policy. Reconstruction defaults to max when "
+                               "no saved policy is available. match/max "
+                               "explicitly overrides it. "
                                "Changing cached sizing requires video_vae."}),
                 "override_reference_policy": (
                     list(chain.REFERENCE_COMPLIANCE_MODES), {

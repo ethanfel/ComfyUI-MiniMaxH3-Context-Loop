@@ -142,7 +142,7 @@ class RecoveryTests(unittest.TestCase):
 
     def test_fixed_recipe_does_not_reuse_old_default_match_rebuild(self):
         self.large_picture()
-        self.condition()
+        self.condition(override_ref_image_size="match")
         self.recipe({"1": {"class_type": "MiniMaxH3CurrentTaggedReferenceScene",
                             "inputs": {"options": ["2", 0]}},
                      "2": {"class_type": "MiniMaxH3TaggedSceneOptions", "inputs": {"ref_image_size": "max"}}})
@@ -153,7 +153,7 @@ class RecoveryTests(unittest.TestCase):
 
     def test_explicit_max_reencodes_existing_match_cache_without_mutating_it(self):
         self.large_picture()
-        match = self.condition()
+        match = self.condition(override_ref_image_size="match")
         cached = self.pin_rebuilt_cache()
         before = copy.deepcopy(self.source)
         files = {str(path): chain._file_sha256(str(path)) for path in (self.run / "reference_cache").rglob("*") if path.is_file()}
@@ -188,7 +188,7 @@ class RecoveryTests(unittest.TestCase):
 
     def test_max_override_without_target_canvas_and_missing_vae(self):
         self.large_picture()
-        self.condition()
+        self.condition(override_ref_image_size="match")
         self.pin_rebuilt_cache()
         conditioner = upscale.MiniMaxH3ChainUpscaleReferenceConditioning()
         with self.assertRaisesRegex(ValueError, "video VAE"):
@@ -312,7 +312,7 @@ class RecoveryTests(unittest.TestCase):
 
     def test_legacy_match_cache_recovers_originals_before_max_override(self):
         self.large_picture()
-        self.condition()
+        self.condition(override_ref_image_size="match")
         cached = self.pin_rebuilt_cache()
         cached.pop("source_images")
         with patch.object(chain, "_load_run_reference_cache_descriptor", return_value=cached):
@@ -322,7 +322,7 @@ class RecoveryTests(unittest.TestCase):
 
     def test_legacy_match_to_max_cannot_silently_relabel_small_tensors(self):
         self.large_picture()
-        self.condition()
+        self.condition(override_ref_image_size="match")
         cached = self.pin_rebuilt_cache()
         cached.pop("source_images")
         (self.run / "project_assets" / self.picture["relative_path"]).unlink()
@@ -356,7 +356,7 @@ class RecoveryTests(unittest.TestCase):
         result = self.condition()
         self.assertTrue(result[5])
         self.assertIn("rebuilt references from verified saved media", result[-1])
-        self.assertIn("legacy presentation defaults: ref_image_size=match", result[-1])
+        self.assertIn("legacy presentation defaults: ref_image_size=max", result[-1])
         self.assertNotIn("@subject", result[4])
         self.assertNotIn("#setting", result[4])
         self.assertEqual(len(result[0][0][1]["minimax_refs"]), 1)
@@ -366,6 +366,59 @@ class RecoveryTests(unittest.TestCase):
         self.assertTrue(list((self.run / "reference_cache/objects").glob("*.safetensors")))
         with patch.object(chain, "_cache_reference_scene", side_effect=AssertionError("must reuse")):
             self.assertIn("reused references rebuilt", self.condition()[-1])
+
+    def test_inherit_reconstruction_defaults_to_max_despite_old_match_rebuild(self):
+        self.large_picture()
+        # The old default produced the same identity as an explicit Match.
+        # Leave it unpinned, as on legacy takes without a source cache link.
+        self.condition(override_ref_image_size="match")
+        before = copy.deepcopy(self.state)
+        files = {str(path): chain._file_sha256(str(path))
+                 for path in (self.run / "reference_cache").rglob("*") if path.is_file()}
+        result = self.condition(override_ref_image_size="inherit")
+        self.assertIn("policy=max", result[-1])
+        self.assertIn("legacy presentation defaults: ref_image_size=max", result[-1])
+        self.assertEqual(tuple(result[0][0][1]["minimax_refs"][0]["latent"].shape[-2:]), (8, 12))
+        self.assertEqual(self.state, before)
+        self.assertEqual(files, {name: chain._file_sha256(name) for name in files})
+        self.assertEqual(len(list((self.run / "reference_cache").glob("rebuilt_*.json"))), 2)
+        with patch.object(VideoVAE, "encode", side_effect=AssertionError("reuse native Max cache")):
+            self.assertIn("policy=max", self.condition()[-1])
+
+    def test_inherit_reconstruction_preserves_saved_recipe_match(self):
+        self.large_picture()
+        self.recipe({"1": {"class_type": "MiniMaxH3TaggedReferenceToVideo",
+                            "inputs": {"ref_image_size": "match"}}})
+        result = self.condition()
+        self.assertIn("policy=match", result[-1])
+        self.assertNotIn("legacy presentation defaults: ref_image_size", result[-1])
+        self.assertEqual(tuple(result[0][0][1]["minimax_refs"][0]["latent"].shape[-2:]), (4, 4))
+
+    def test_inherit_reconstruction_preserves_saved_options_default(self):
+        # An immutable scene recipe without Options records the generation
+        # node's known Match default, not an unknown historical policy.
+        self.recipe({"1": {"class_type": "MiniMaxH3CurrentTaggedReferenceScene", "inputs": {}}})
+        settings, defaults = recovery.saved_reference_settings(chain, self.source, self.state["source_manifest"])
+        self.assertEqual(settings["ref_image_size"], "match")
+        self.assertNotIn("ref_image_size", defaults)
+
+    def test_inherit_reconstruction_preserves_exact_match_cache_with_missing_tensors(self):
+        self.large_picture()
+        self.condition(override_ref_image_size="match")
+        cached = self.pin_rebuilt_cache()
+        before = copy.deepcopy(self.source)
+        (self.root / cached["tensor_objects"]["block_000_latent"]["tensors"]).unlink()
+        result = self.condition()
+        self.assertIn("policy=match", result[-1])
+        self.assertEqual(self.source, before)
+
+    def test_inherit_latent_reconstruction_defaults_to_max(self):
+        self.large_picture()
+        result = upscale.MiniMaxH3ChainUpscaleReferenceConditioning().condition(
+            self.state, Clip(), "error", video_vae=VideoVAE(),
+            target_video_latent={"samples": torch.zeros(1, 24, 2, 4, 4)})
+        self.assertIn("policy=max", result[-1])
+        self.assertEqual(tuple(result[0][0][1]["minimax_refs"][0]["latent"].shape[-2:]), (8, 12))
 
     def test_old_media_not_current_tag_assignment_or_catalog_required(self):
         self.image("subject", "picture", (200, 200, 200))
