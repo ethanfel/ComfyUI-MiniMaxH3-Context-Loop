@@ -28,10 +28,9 @@ Already merged upstream:
 - Frame-capture support in the Review Gate (scrub a saved segment, save a
   frame straight into the Project Asset Carousel) — merged into `nightly`,
   then released in `main` as part of 0.6.6.
-- [`feature/review-gate-prompt-resize`](https://github.com/Psylenceo/ComfyUI-MiniMaxH3-Context-Loop/tree/feature/review-gate-prompt-resize) —
-  drag-to-resize grip for the Review Gate's scene prompt editor — merged via
+- Drag-to-resize grip for the Review Gate's scene prompt editor — merged via
   [PR #50](https://github.com/ethanfel/ComfyUI-MiniMaxH3-Context-Loop/pull/50),
-  released in 0.6.6.
+  released in 0.6.6. (Branch closed out; both merged.)
 
 ## Changelog
 
