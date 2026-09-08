@@ -4,6 +4,12 @@ Newest first. This file keeps release history out of the onboarding README.
 
 ## Unreleased — Deferred checkpoint upscaling
 
+- Harden the native-first PR #15988 mask conversion guard: recognize real
+  assignments and transparent wrappers, ignore comment/docstring examples,
+  and correct only missing video/audio streams on partially patched cores.
+  CPU regressions cover audio carry, binary/fractional masks, idempotence,
+  source preservation, and upstream in-place multiplication. The proposed
+  shared model_base follow-up still needs review once its API exists.
 - Added semantic-anchor size and presentation-mode overrides to latent, pixel,
   and inherited VIDEO upscale conditioning, matching Tagged Scene Options plus
   `inherit`. Cached, rebuilt, and connected references honor the settings;

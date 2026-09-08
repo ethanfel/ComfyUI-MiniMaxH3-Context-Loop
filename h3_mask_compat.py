@@ -17,9 +17,11 @@ masked-velocity x0 conversion correction from ComfyUI PR #15988.
 
 from __future__ import annotations
 
+import ast
 import functools
 import inspect
 import logging
+import textwrap
 import types
 
 
@@ -105,32 +107,84 @@ def _function_has_keyword_group(fn, *names):
     return False
 
 
-def _forward_scales_masked_velocity(fn):
-    """Detect the #15988 conversion without relying on a ComfyUI version."""
+def _source_velocity_mask_streams(fn):
+    """Recognize the upstream assignments, not examples in comments/docstrings.
+
+    This deliberately describes the reviewed H3 forward contract. A future
+    shared model_base conversion needs its own reviewed capability check;
+    the presence of an unrelated mask hook is not proof of velocity scaling.
+    """
+    try:
+        # inspect.getsource(function) unwraps decorators, hiding operations
+        # performed by the wrapper itself. Inspect each code object instead.
+        tree = ast.parse(textwrap.dedent(inspect.getsource(
+            getattr(fn, "__code__", fn))))
+    except (OSError, TypeError, SyntaxError, IndentationError):
+        return set()
+    if not tree.body or not isinstance(
+            tree.body[0], (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return set()
+
+    def output_index(node):
+        if (isinstance(node, ast.Subscript)
+                and isinstance(node.value, ast.Name)
+                and node.value.id == "out"
+                and isinstance(node.slice, ast.Constant)
+                and type(node.slice.value) is int
+                and node.slice.value in (0, 1)):
+            return node.slice.value
+        return None
+
+    def is_mask(node, index):
+        return (index is not None and isinstance(node, ast.Name)
+                and node.id == ("denoise_mask", "audio_denoise_mask")[index])
+
+    found = set()
+    pending = list(tree.body[0].body)
+    while pending:
+        node = pending.pop()
+        # Helpers that are only defined here do not necessarily execute.
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
+                             ast.ClassDef, ast.Lambda)):
+            continue
+        if isinstance(node, ast.Assign) and len(node.targets) == 1:
+            index = output_index(node.targets[0])
+            value = node.value
+            if isinstance(value, ast.BinOp) and isinstance(value.op, ast.Mult):
+                for output, mask in ((value.left, value.right),
+                                     (value.right, value.left)):
+                    if output_index(output) == index and is_mask(mask, index):
+                        found.add(index)
+        elif isinstance(node, ast.AugAssign) and isinstance(node.op, ast.Mult):
+            index = output_index(node.target)
+            if is_mask(node.value, index):
+                found.add(index)
+        elif (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+              and node.func.attr == "mul_" and len(node.args) == 1):
+            index = output_index(node.func.value)
+            if is_mask(node.args[0], index):
+                found.add(index)
+        pending.extend(ast.iter_child_nodes(node))
+    return found
+
+
+def _forward_velocity_mask_streams(fn):
+    """Find each corrected stream through transparent forward wrappers."""
     current = fn
     seen = set()
+    found = set()
     while callable(current) and id(current) not in seen:
         seen.add(id(current))
         if _is_velocity_mask_compat(current):
-            return True
-        try:
-            compact = "".join(inspect.getsource(current).split())
-        except (OSError, TypeError):
-            compact = ""
-        video_scaled = any(pattern in compact for pattern in (
-            "out[0]=out[0]*denoise_mask",
-            "out[0]*=denoise_mask",
-            "out[0].mul_(denoise_mask)",
-        ))
-        audio_scaled = any(pattern in compact for pattern in (
-            "out[1]=out[1]*audio_denoise_mask",
-            "out[1]*=audio_denoise_mask",
-            "out[1].mul_(audio_denoise_mask)",
-        ))
-        if video_scaled and audio_scaled:
-            return True
+            return {0, 1}
+        found.update(_source_velocity_mask_streams(current))
         current = getattr(current, "__wrapped__", None)
-    return False
+    return found
+
+
+def _forward_scales_masked_velocity(fn):
+    """Detect the #15988 conversion without relying on a ComfyUI version."""
+    return _forward_velocity_mask_streams(fn) == {0, 1}
 
 
 def _sampler_call():
@@ -540,7 +594,8 @@ def _install_velocity_mask_compat(h3m):
     if not callable(original):
         raise RuntimeError(
             "h3_masked_prefix: MiniMaxH3Model.forward is unavailable.")
-    if _forward_scales_masked_velocity(original):
+    native_streams = _forward_velocity_mask_streams(original)
+    if native_streams == {0, 1}:
         return original
 
     @functools.wraps(original)
@@ -558,10 +613,10 @@ def _install_velocity_mask_compat(h3m):
         if not isinstance(out, list):
             out = list(out)
 
-        if denoise_mask is not None:
+        if 0 not in native_streams and denoise_mask is not None:
             out[0] = out[0] * denoise_mask
 
-        if audio_denoise_mask is not None:
+        if 1 not in native_streams and audio_denoise_mask is not None:
             scale = float((minimax_payload or {}).get("audio_scale", 1.0))
             if scale == 1.0:
                 out[1] = out[1] * audio_denoise_mask
