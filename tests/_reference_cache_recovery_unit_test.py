@@ -207,6 +207,109 @@ class RecoveryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "inherit, match, or max"):
             self.condition(override_ref_image_size="invalid")
 
+    def test_anchor_override_schema_matches_scene_options_without_moving_pixel_widgets(self):
+        for node in (upscale.MiniMaxH3ChainUpscaleReferenceConditioning,
+                     upscale.MiniMaxH3ChainUpscalePixelConditioning):
+            optional = node.INPUT_TYPES()["optional"]
+            for key, choices in (("semantic_anchor_size", chain.SEMANTIC_ANCHOR_SIZES),
+                                 ("semantic_anchor_mode", chain.SEMANTIC_ANCHOR_MODES)):
+                field = optional["override_" + key]
+                self.assertEqual(field[0], ["inherit", *choices])
+                self.assertEqual(field[1]["default"], "inherit")
+        self.assertEqual(list(optional)[-4:], ["conditioning_width", "conditioning_height",
+                         "override_semantic_anchor_size", "override_semantic_anchor_mode"])
+        for key in ("override_semantic_anchor_size", "override_semantic_anchor_mode"):
+            for refs in (None, {}):
+                with self.subTest(key=key, live=refs is not None):
+                    with self.assertRaisesRegex(ValueError, key.removeprefix("override_")):
+                        self.condition(tagged_references=refs, **{key: "invalid"})
+
+    def test_explicit_anchor_settings_replace_legacy_defaults_during_recovery(self):
+        self.entries[1].update(semantic_anchor_size="inherit", semantic_anchor_mode="inherit")
+        self.set_lineage()
+        result = self.condition(override_ref_image_size="max",
+                                override_semantic_anchor_size="1280",
+                                override_semantic_anchor_mode="timestamped_video")
+        cached = self.pin_rebuilt_cache()
+        self.assertEqual(cached["presentation_contract"]["semantic_anchor_size"], "1280")
+        self.assertEqual(cached["presentation_contract"]["semantic_anchor_mode"], "timestamped_video")
+        self.assertNotIn("legacy presentation defaults", result[-1])
+        self.assertIn("explicit anchor overrides: semantic_anchor_size=1280", result[-1])
+        self.assertIn("<Video 1>", result[4])
+        items = result[0][0][1]["tokens"]["presentation"]
+        expected = chain._h3_semantic_anchor_image(torch.zeros(1, 64, 48, 3), "1280")
+        self.assertEqual([item["type"] for item in items], ["image", "image", "video"])
+        self.assertEqual(tuple(items[-1]["data"].shape[1:3]), tuple(expected.shape[1:3]))
+
+    def test_anchor_override_rebuilds_pinned_cache_without_mutation_and_reuses_it(self):
+        self.large_picture()
+        self.condition(override_ref_image_size="max")
+        cached = self.pin_rebuilt_cache()
+        before = copy.deepcopy(self.source)
+        files = {str(path): chain._file_sha256(str(path)) for path in self.run.rglob("*") if path.is_file()}
+        options = {"override_semantic_anchor_size": "1280",
+                   "override_semantic_anchor_mode": "timestamped_video"}
+        result = self.condition(**options)
+        self.assertIn("policy=max", result[-1], "an anchor override must not reset native picture sizing")
+        self.assertIn("<Video 1>", result[4])
+        self.assertEqual(tuple(result[0][0][1]["minimax_refs"][0]["latent"].shape[-2:]), (8, 12))
+        self.assertEqual(self.source, before)
+        self.assertEqual(cached["presentation_contract"]["semantic_anchor_size"], "512")
+        self.assertEqual(files, {name: chain._file_sha256(name) for name in files})
+        self.assertEqual(len(list((self.run / "reference_cache").glob("rebuilt_*.json"))), 2)
+        with patch.object(chain, "_cache_reference_scene", side_effect=AssertionError("reuse derived cache")), \
+                patch.object(VideoVAE, "encode", side_effect=AssertionError("no duplicate VAE encode")):
+            self.assertIn("reused references rebuilt", self.condition(**options)[-1])
+        self.assertNotIn("<Video 1>", self.condition()[4], "inherit still uses the original pinned presentation")
+
+    def test_mode_only_override_preserves_cached_anchor_size(self):
+        self.condition(override_semantic_anchor_size="768")
+        self.pin_rebuilt_cache()
+        result = self.condition(override_semantic_anchor_mode="timestamped_video")
+        self.assertIn("<Video 1>", result[4])
+        pointers = [json.loads(path.read_text()) for path in (self.run / "reference_cache").glob("rebuilt_*.json")]
+        settings = [item["identity"]["settings"] for item in pointers]
+        self.assertTrue(any(item["semantic_anchor_size"] == "768" and
+                            item["semantic_anchor_mode"] == "timestamped_video" for item in settings))
+
+    def test_matching_anchor_override_does_not_require_original_media(self):
+        self.condition(override_ref_image_size="max")
+        self.pin_rebuilt_cache()
+        (self.run / "project_assets" / self.anchor["relative_path"]).unlink()
+        with patch.object(recovery, "recover_reference_cache", side_effect=AssertionError("cache already matches")):
+            self.condition(override_semantic_anchor_size="512", override_semantic_anchor_mode="picture_storyboard")
+        with self.assertRaisesRegex(ValueError, "Cannot apply semantic-anchor overrides.*media"):
+            upscale.MiniMaxH3ChainUpscaleReferenceConditioning().condition(
+                self.state, Clip(), "text_only", video_vae=VideoVAE(), override_semantic_anchor_size="1280")
+
+    def test_connected_anchor_overrides_change_prompt_and_pixels_and_inherit_bundle(self):
+        picture = {**self.entries[0], "value": torch.zeros(1, 64, 48, 3)}
+        anchor = {**self.entries[1], "value": torch.ones(1, 64, 48, 3)}
+        references = chain._make_tagged_references([picture])
+        references["semantic_anchors"] = chain._make_semantic_anchor_bundle(
+            [anchor], "768", "timestamped_video")
+        before = copy.deepcopy(references)
+        result = self.condition(tagged_references=references, override_semantic_anchor_size="1280",
+                                override_semantic_anchor_mode="picture_storyboard")
+        self.assertFalse(result[5])
+        self.assertNotIn("<Video 1>", result[4])
+        self.assertEqual([item["type"] for item in result[0][0][1]["tokens"]["presentation"]], ["image", "image"])
+        self.assertIn("semantic_anchor_size=1280; semantic_anchor_mode=picture_storyboard", result[-1])
+        self.assertEqual(references["semantic_anchors"]["semantic_anchor_size"], "768")
+        torch.testing.assert_close(references["semantic_anchors"]["entries"][0]["value"],
+                                   before["semantic_anchors"]["entries"][0]["value"])
+        inherited = self.condition(tagged_references=references)
+        self.assertIn("<Video 1>", inherited[4])
+        self.assertIn("semantic_anchor_size=768; semantic_anchor_mode=timestamped_video", inherited[-1])
+
+    def test_latent_path_honors_source_size_anchor_override(self):
+        result = upscale.MiniMaxH3ChainUpscaleReferenceConditioning().condition(
+            self.state, Clip(), "error", video_vae=VideoVAE(),
+            target_video_latent={"samples": torch.zeros(1, 24, 2, 4, 4)},
+            override_semantic_anchor_size="source", override_semantic_anchor_mode="picture_storyboard")
+        self.assertEqual(tuple(result[0][0][1]["tokens"]["presentation"][-1]["data"].shape), (1, 64, 48, 3))
+        self.assertIn("semantic_anchor_size=source", result[-1])
+
     def test_legacy_match_cache_recovers_originals_before_max_override(self):
         self.large_picture()
         self.condition()

@@ -29,6 +29,13 @@ merged into `nightly`.
 
 ## Changelog
 
+### 0.6.5 — Upscale anchor overrides and clear checkpoint sources
+
+- Choose semantic-anchor size and mode for cached, rebuilt, or connected
+  upscale references, including the VIDEO conditioning node.
+- Checkpoint Manager explicitly names the output branch, available scenes,
+  Original/DeRoPE source and fallback scenes, independently of preview browsing.
+
 ### 0.6.4 — Preserve reference sizing during recovery
 
 - Recover saved Max sizing through linked inputs and Tagged Scene Options.

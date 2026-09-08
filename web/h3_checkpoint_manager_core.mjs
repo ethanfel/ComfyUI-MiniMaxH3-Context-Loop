@@ -237,6 +237,60 @@ export function checkpointLocalSelection(value) {
     }
 }
 
+function checkpointSceneRanges(scenes) {
+    const values = [...new Set(scenes)].sort((left, right) => left - right);
+    const ranges = [];
+    for (let index = 0; index < values.length; index += 1) {
+        const start = values[index];
+        let end = start;
+        while (values[index + 1] === end + 1) end = values[++index];
+        ranges.push(start === end ? String(start) : `${start}–${end}`);
+    }
+    return ranges.join(", ");
+}
+
+// Describe the serialized output, never the preview cursor or the open tab.
+// This is a source manifest, not a promise to process every available scene.
+export function checkpointOutputSummary(value) {
+    const invalid = "Cannot send a source: the saved output selection is invalid. Select a branch again.";
+    let saved;
+    try { saved = typeof value === "string" ? JSON.parse(value || "null") : value; }
+    catch { return invalid; }
+    if (!saved) {
+        return "No source selected for connected nodes. Choose a saved branch heading; clip and tab clicks only preview.";
+    }
+    if (!saved.run_name || !Array.isArray(saved.lineage) || !saved.lineage.length
+        || saved.lineage.some((item, index) => Number(item?.scene) !== index + 1 || !item?.revision)
+        || ![undefined, "project", "chapter"].includes(saved.output_scope)
+        || ![undefined, null, "workflow_local"].includes(saved.output_mode)) return invalid;
+    const chapterOnly = saved.output_scope === "chapter";
+    const first = chapterOnly ? Number(saved.scope_start_scene ?? 1) : 1;
+    if (!Number.isInteger(first) || first < 1) return invalid;
+    const clips = saved.lineage.filter(item => Number(item.scene) >= first);
+    const tip = clips.at(-1);
+    if (!tip) return "No saved clips in this output scope. Select a branch again.";
+    const processing = saved.processing_source;
+    if (processing != null && processing.stage !== "derope") return invalid;
+    let source = "Original checkpoints";
+    if (processing?.stage === "derope") {
+        const lineage = processing.branch?.lineage;
+        if (!processing.profile_path || !Array.isArray(lineage) || !lineage.length
+            || lineage.some(item => !Number.isInteger(Number(item?.scene))
+                || Number(item.scene) < 1 || !item?.revision)) return invalid;
+        const scenes = new Set(lineage.map(item => Number(item.scene)));
+        const processed = clips.filter(item => scenes.has(Number(item.scene))).map(item => Number(item.scene));
+        const fallback = clips.filter(item => !scenes.has(Number(item.scene))).map(item => Number(item.scene));
+        source = `DeRoPE checkpoints for scenes ${checkpointSceneRanges(processed) || "none"}`;
+        source += fallback.length ? `; Original fallback for scenes ${checkpointSceneRanges(fallback)}` : "; no Original fallback needed";
+        source += ` · DeRoPE branch ${String(lineage.at(-1)?.revision ?? "?").slice(0, 8)} (${processing.profile_path})`;
+    }
+    const scope = chapterOnly ? "selected chapter only" : "selected branch + earlier chapters";
+    const mode = saved.output_mode === "workflow_local" ? "pinned to this workflow" : "follows branch selection";
+    return `Will send to connected nodes: ${source} · ${saved.run_name} · original branch through scene ${tip.scene} / ${String(tip.revision).slice(0, 8)}`
+        + ` · scenes ${first}–${tip.scene} (${clips.length} ${clips.length === 1 ? "clip" : "clips"}; ${scope}) · ${mode}.`
+        + " Clip and tab previews do not change this output. Set the processing range downstream.";
+}
+
 export function checkpointLocalSelectionJson(payload, runName, selected, range = null, outputScope = "project") {
     const value = checkpointSelectionJson(payload, runName, selected, range, outputScope);
     if (!value) throw new Error("Select a complete saved checkpoint lineage first.");

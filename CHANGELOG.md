@@ -3,6 +3,21 @@
 Newest first. The [README](README.md#changelog) keeps a short highlight reel;
 this file records the detailed changes.
 
+## v0.6.5 — Explicit upscale anchor settings and source summaries
+
+- Added semantic-anchor size and presentation-mode overrides to latent, pixel,
+  and inherited VIDEO upscale conditioning. Choices match Tagged Scene Options,
+  with `inherit` preserving saved settings or the connected anchor bundle.
+- Overrides apply to cached, rebuilt, and connected references. Changed anchor
+  settings rebuild presentation and prompt labels from verified saved media in
+  a separate reusable cache without modifying the original checkpoint/cache.
+- Checkpoint Manager now names the output branch, available scenes, Original or
+  DeRoPE source, exact Original fallback scenes, and workflow pin state. Preview
+  browsing stays separate from the source; downstream range controls still
+  determine which scenes are processed.
+- Preserved existing positional pixel/VIDEO widget values. Added CPU recovery,
+  cache reuse, source-preservation, schema and frontend output-summary tests.
+
 ## v0.6.4 — Preserve reference sizing during recovery
 
 - Recover saved Match/Max sizing through static input links and modern Tagged
