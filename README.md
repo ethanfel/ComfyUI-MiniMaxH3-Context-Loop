@@ -33,6 +33,22 @@ scene can be reviewed, retried, checkpointed, resumed, and assembled later.
 
 Models are not included.
 
+### Context Loop execution and recovery
+
+- **Maintained workflow path.** The release docs now describe the proven
+  memory-safe top-level prompt lifecycle: keep the same Plan and creative
+  model stack, let Loop End finish, wait through the cleanup delay, then queue
+  the next heavyweight scene as a new top-level prompt.
+- **Reference propagation fix.** Valid prompt `@tags` again see the connected
+  Tagged registry during preflight without rewriting prompt text or storing
+  reference data in the Plan.
+- **Crash-safe review and resume.** Review snapshots stay visible after a
+  refresh or restart, and durable handoffs/manual resume keep the same Plan
+  semantics while avoiding duplicate queues.
+- **Release packaging.** The changelog, compatibility notes, and workflow docs
+  now call out the WSL2 pinned-memory caveat separately from the architectural
+  fix.
+
 ## Install
 
 From `ComfyUI/custom_nodes`:

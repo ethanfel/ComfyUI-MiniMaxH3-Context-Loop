@@ -31,6 +31,7 @@ import {projectMutationOptions} from "./h3_project_ownership.mjs?v=0.7.4";
 const NODE_NAME = "MiniMaxH3ChainReview";
 const PLAN_NAME = "MiniMaxH3ChainPlan";
 const PLAN_NAMES = new Set([PLAN_NAME, "MiniMaxH3ChainPlanModern"]);
+const PROJECT_ASSET_MANAGER_NODE = "MiniMaxH3ProjectAssetManager";
 const PROMPT_EDITOR_SETTING = "MiniMaxH3ContexLoop.ReviewGate.PromptEditor";
 const VIDEO_HEIGHT_PROPERTY = "h3_chain_review_video_height";
 const PROMPT_HEIGHT_PROPERTY = "h3_chain_review_prompt_height";
@@ -702,26 +703,30 @@ function fetchPending() {
     return pendingFetchPromise;
 }
 
-function planRunNameTrusted(planNode) {
-    // Project Assets replaces Plan.run_name server-side while the plan editor
-    // deliberately leaves that now-hidden widget unchanged. Psylent_Gamer
-    // (4090) identified this Review Gate routing split through Banodoco.
-    if (!planNode) return true;
-    const input = planNode.inputs?.find((item) => item.name === "project_assets");
-    return input?.link === null || input?.link === undefined;
+function reviewRunName(planNode) {
+    if (!planNode) return "";
+    const assets = planNode.inputs?.find((item) => item.name === "project_assets");
+    if (assets?.link != null) {
+        const link = planNode.graph?.links?.[assets.link];
+        const manager = link
+            ? planNode.graph?.getNodeById?.(link.origin_id) : null;
+        // Project Assets is authoritative: it replaces Plan.run_name
+        // server-side while the Plan editor deliberately keeps its hidden
+        // widget unchanged. Do not fall back to a reused Review node id.
+        if (nodeType(manager) === PROJECT_ASSET_MANAGER_NODE) {
+            const run = String(widgetByName(manager, "run_name")?.value ?? "").trim();
+            if (run) return run;
+        }
+    }
+    return String(widgetByName(planNode, "run_name")?.value ?? "").trim();
 }
 
 function deliverReview(node, data) {
     if (!node || nodeType(node) !== NODE_NAME) return false;
     const expectedRun = String(data?.run_name ?? "").trim();
     if (expectedRun) {
-        const planNode = findUpstreamNode(node, PLAN_NAMES);
-        if (planRunNameTrusted(planNode)) {
-            const actualRun = String(
-                widgetByName(planNode, "run_name")?.value ?? "",
-            ).trim();
-            if (actualRun && actualRun !== expectedRun) return false;
-        }
+        const actualRun = reviewRunName(findUpstreamNode(node, PLAN_NAMES));
+        if (actualRun && actualRun !== expectedRun) return false;
     }
     if (typeof node._h3ReviewHandler === "function") {
         node._h3ReviewHandler(data);
@@ -741,14 +746,14 @@ function reviewFallbackNode(data) {
     ])];
     const expectedRun = String(data?.run_name ?? "").trim();
     if (expectedRun) {
-        const matchingRun = gates.filter((item) => {
-            const planNode = findUpstreamNode(item, PLAN_NAMES);
-            if (!planRunNameTrusted(planNode)) return false;
-            return String(widgetByName(planNode, "run_name")?.value ?? "").trim() ===
-                expectedRun;
-        });
+        const matchingRun = gates.filter((item) =>
+            reviewRunName(findUpstreamNode(item, PLAN_NAMES)) === expectedRun);
+
         if (matchingRun.length === 1) return matchingRun[0];
     }
+    // Durable recovery inventory has no reliable display-node identity. It
+    // may only route through its authoritative run match above.
+    if (data?.durable === true) return null;
     // GraphBuilder execution ids use dots while subgraph-qualified display
     // ids use colons. The visible LiteGraph node is always the final leaf.
     const leaf = String(data?.node_id ?? "").split(/[.:]/).at(-1);
@@ -768,10 +773,12 @@ function routeReview(data) {
         );
         return true;
     }
-    console.warn(
-        `[H3 Chain Review] Pending token ${data?.token ?? "?"} could not be ` +
-        `routed to display node ${data?.node_id ?? "?"}.`,
-    );
+    if (data?.durable !== true) {
+        console.warn(
+            `[H3 Chain Review] Pending token ${data?.token ?? "?"} could not be ` +
+            `routed to display node ${data?.node_id ?? "?"}.`,
+        );
+    }
     return false;
 }
 
@@ -1430,6 +1437,11 @@ function mount(node) {
     let revisionChain = [];
     let planClipCount = 0;
     let resumeRefreshToken = 0;
+    let resumeRefreshPromise = null;
+    let queuedAutomaticResumeRefresh = false;
+    let queuedExplicitResumeRefresh = false;
+    let deferredAutomaticResumeRefresh = false;
+    const activeResumeExecutionIds = new Set();
     let activeCandidateRevision = "";
     let keptCandidateRevisions = new Set();
     let previewLoadRevision = 0;
@@ -1482,6 +1494,10 @@ function mount(node) {
     }
 
     function setActionsEnabled(enabled) {
+        // Recovered durable inventory has no live PromptExecutor future.
+        // It is intentionally read-only rather than offering decisions that
+        // are guaranteed to fail after a server restart.
+        if (current?.actionable === false) enabled = false;
         for (const button of actionButtons) button.disabled = !enabled;
         if (enabled && current?.candidate_batch_active) {
             retryButton.disabled = true;
@@ -1825,16 +1841,9 @@ function mount(node) {
         }
     }
 
-    async function refreshResumeOptions() {
+    async function performResumeRefresh() {
         const refreshToken = ++resumeRefreshToken;
         const previousResumeScene = Number(resumeSelect.value);
-        resumeSelect.replaceChildren();
-        resumeChoices = [];
-        checkpointRevisions = [];
-        revisionChain = [];
-        revisionsRows.replaceChildren();
-        revisionsPanel.hidden = true;
-        loadResume.disabled = true;
         try {
             const context = planResumeContext(node);
             planClipCount = context.clipCount;
@@ -1845,9 +1854,15 @@ function mount(node) {
             const body = await response.json();
             if (refreshToken !== resumeRefreshToken) return;
             if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
-            resumeChoices = checkpointResumeOptions(
+            const nextResumeChoices = checkpointResumeOptions(
                 body.checkpoints, context.clipCount);
-            checkpointRevisions = body.revisions ?? [];
+            const nextCheckpointRevisions = body.revisions ?? [];
+            resumeSelect.replaceChildren();
+            revisionsRows.replaceChildren();
+            revisionsPanel.hidden = true;
+            resumeChoices = nextResumeChoices;
+            checkpointRevisions = nextCheckpointRevisions;
+            revisionChain = [];
             for (const option of resumeChoices) {
                 const element = document.createElement("option");
                 element.value = String(option.resumeScene);
@@ -1872,9 +1887,35 @@ function mount(node) {
         }
     }
 
-    refreshResume.addEventListener("click", refreshResumeOptions);
+    function refreshResumeOptions({automatic = false} = {}) {
+        if (automatic && activeResumeExecutionIds.size > 0) {
+            deferredAutomaticResumeRefresh = true;
+            return Promise.resolve();
+        }
+        if (resumeRefreshPromise) {
+            if (automatic) queuedAutomaticResumeRefresh = true;
+            else queuedExplicitResumeRefresh = true;
+            return resumeRefreshPromise;
+        }
+        const request = performResumeRefresh();
+        resumeRefreshPromise = request;
+        void request.finally(() => {
+            if (resumeRefreshPromise !== request) return;
+            resumeRefreshPromise = null;
+            const explicit = queuedExplicitResumeRefresh;
+            const automaticFollowup = queuedAutomaticResumeRefresh;
+            queuedExplicitResumeRefresh = false;
+            queuedAutomaticResumeRefresh = false;
+            if (explicit || automaticFollowup) {
+                void refreshResumeOptions({automatic: !explicit});
+            }
+        });
+        return request;
+    }
+
+    refreshResume.addEventListener("click", () => void refreshResumeOptions());
     resumeSelect.addEventListener("change", renderRevisionChoices);
-    node._h3RefreshResume = refreshResumeOptions;
+    node._h3RefreshResume = () => refreshResumeOptions({automatic: true});
     loadResume.addEventListener("click", async () => {
         const resumeScene = Number(resumeSelect.value);
         if (!Number.isInteger(resumeScene)) return;
@@ -1989,7 +2030,9 @@ function mount(node) {
         const complete = Boolean(current.candidate_generation_complete) ||
             generated >= target;
         const batchCommand = current.candidate_batch_command_pending;
-        const message = current.deferred_review
+        const message = current.actionable === false
+            ? (current.recovery_instructions || "Recovered review inventory is read-only; resume manually from the saved checkpoint.")
+            : current.deferred_review
             ? "This complete candidate batch is stored on disk. Choose the active continuation, mark alternatives to keep, then prepare the next scene."
             : batchCommand
             ? batchCommand === "accept"
@@ -2251,7 +2294,7 @@ function mount(node) {
                     (selected ? ` ${body.kept_candidate_count} take${body.kept_candidate_count === 1 ? "" : "s"} kept.` : "") +
                     (saved ? " The Plan seed was updated." : "") +
                     (prepared ? ` Loop Start is ready at clip ${submittedReview.clip_index + 1}.` : "");
-                setTimeout(refreshResumeOptions, 0);
+                setTimeout(() => void refreshResumeOptions({automatic: true}), 0);
             }
         } catch (error) {
             root.classList.remove("h3r-busy");
@@ -2291,6 +2334,15 @@ function mount(node) {
             ...data,
             local_deadline: localDeadline,
         };
+        const candidateBatchComplete = Boolean(current?.candidate_generation_complete) ||
+            (Array.isArray(current?.candidates) && current.candidates.length >=
+                Number(current?.candidate_count));
+        if (sameToken && current?.actionable !== false &&
+                Number(current?.candidate_count) > 1 && candidateBatchComplete &&
+                !current?.candidate_batch_command_pending) {
+            root.classList.remove("h3r-busy");
+            setActionsEnabled(true);
+        }
         if (!sameToken) {
             root.classList.remove("h3r-busy");
             setActionsEnabled(true);
@@ -2313,7 +2365,7 @@ function mount(node) {
             // The scene is persisted before Review Gate receives its token.
             // Refresh here so the current (including final) checkpoint appears
             // in history without requiring the user to press Refresh.
-            setTimeout(refreshResumeOptions, 0);
+            setTimeout(() => void refreshResumeOptions({automatic: true}), 0);
             if (deferredReview) setTimeout(refreshDeferredReviews, 0);
         }
         if (!sameToken) {
@@ -2381,9 +2433,26 @@ function mount(node) {
         }
         if (data.action === "approve" || data.action === "stop" ||
                 data.action === "candidate_batch_approve") {
-            setTimeout(refreshResumeOptions, 0);
+            setTimeout(() => void refreshResumeOptions({automatic: true}), 0);
         }
     };
+
+    const onResumeExecutionStart = (event) => {
+        const promptId = String(event.detail?.prompt_id ?? "");
+        if (promptId) activeResumeExecutionIds.add(promptId);
+    };
+    const onResumeExecutionTerminal = (event) => {
+        const promptId = String(event.detail?.prompt_id ?? "");
+        if (!promptId || !activeResumeExecutionIds.delete(promptId) ||
+                activeResumeExecutionIds.size !== 0 ||
+                !deferredAutomaticResumeRefresh) return;
+        deferredAutomaticResumeRefresh = false;
+        void refreshResumeOptions({automatic: true});
+    };
+    api.addEventListener("execution_start", onResumeExecutionStart);
+    api.addEventListener("execution_success", onResumeExecutionTerminal);
+    api.addEventListener("execution_error", onResumeExecutionTerminal);
+    api.addEventListener("execution_interrupted", onResumeExecutionTerminal);
 
     const widget = node.addDOMWidget("h3_chain_review", "h3-chain-review", root, {
         serialize: false,
@@ -2397,6 +2466,10 @@ function mount(node) {
     node.onRemoved = function () {
         stopCountdown();
         delete this._h3PromptCompanionSetScenePrompt;
+        api.removeEventListener("execution_start", onResumeExecutionStart);
+        api.removeEventListener("execution_success", onResumeExecutionTerminal);
+        api.removeEventListener("execution_error", onResumeExecutionTerminal);
+        api.removeEventListener("execution_interrupted", onResumeExecutionTerminal);
         mountedReviewNodes.delete(this);
         updatePendingPolling();
         return removed?.apply(this, arguments);
@@ -2407,7 +2480,7 @@ function mount(node) {
     if (queuedReview) node._h3ReviewHandler(queuedReview);
     setTimeout(fetchPending, 0);
     setTimeout(refreshDeferredReviews, 0);
-    setTimeout(refreshResumeOptions, 0);
+    setTimeout(() => void refreshResumeOptions({automatic: true}), 0);
 }
 
 api.addEventListener("minimax_h3_context_loop_review", (event) => routeReview(event.detail));

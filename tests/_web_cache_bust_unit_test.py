@@ -20,7 +20,7 @@ MINIMUM_CACHE_VERSION = {
     "h3_socket_presentation_core.mjs": "0.7.9",
     "h3_chain_plan_core.mjs": "0.7.8",
     "h3_chain_review_core.mjs": "0.7.7",
-    "h3_chain_cancel_reroll_core.mjs": "0.7.7",
+    "h3_chain_cancel_reroll_core.mjs": "0.7.10",
     "h3_prompt_assistant_core.mjs": "0.7.7",
     "h3_prompt_completion_core.mjs": "0.7.5",
     "h3_prompt_schema_core.mjs": "0.7.5",
@@ -37,6 +37,9 @@ MINIMUM_CACHE_VERSION = {
     "h3_project_asset_sync_core.mjs": "0.7.2",
     "h3_project_ownership.mjs": "0.7.4",
     "h3_reference_preview_core.mjs": "0.7.3",
+    "h3_notification_stack_core.mjs": "0.7.10",
+    "h3_chain_top_level_requeue_core.mjs": "0.7.10",
+    "h3_chain_top_level_requeue_coordinator.mjs": "0.7.10",
 }
 
 

@@ -87,7 +87,10 @@ generation automatically.
 
 Normal workflows insert Chain Preflight before Loop Start. Studio workflows use
 the same backend through Plan Studio. It validates duration, source windows,
-references, compatibility, and resume eligibility without loading H3.
+references, compatibility, and resume eligibility without loading H3. Connect
+the same active Tagged registry (or legacy Scheduled registry) used by Ref2VA
+to both Chain Preflight and Loop Start. These optional sockets were appended;
+they do not change the Plan JSON or rewrite prompt `@tags`.
 
 Version 0.5 stores structured per-scene dependencies. A change to the next
 scene, its incoming transition, or assembly-only media does not invalidate an

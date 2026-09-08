@@ -193,7 +193,11 @@ value, and whether regeneration is required.
 
 ## Preflight contract
 
-The same pure preflight implementation serves Loop Start and Plan Studio. It
+The same pure preflight implementation serves Loop Start, Chain Preflight, and
+Plan Studio. Connect the active Tagged reference registry (or the legacy
+Scheduled registry, but never both) to every preflight entry point used by the
+graph. Loop Start receives the registry as run-local graph input; references
+are not copied into the Plan and prompt `@tags` are not rewritten. Preflight
 runs before model-dependent sampling and reports:
 
 - resolved scene frame counts, durations, source windows, and overlap trims;
@@ -213,6 +217,67 @@ comparison track. It does not decode the full reference into IMAGE tensors.
 The server seeks and transcodes only the selected scene window to a cached
 low-resolution MP4; the comparison player offsets Guide windows past the
 incoming context that is removed from the delivered scene.
+
+## Durable handoff state
+
+Top-level job boundaries between heavyweight H3 prompts are tracked in a
+separate durable handoff store (`handoff_state.py`), never in the JSON Plan.
+Records are stored under
+`output/h3_chains/<run_name>/orchestration/<handoff_id>.json` with format
+`h3_top_level_handoff_v1` and hold only lightweight identity values:
+run name, scene number, start clip, candidate batch/ordinal/count, seed,
+source prompt ID, source revision and checkpoint SHA-256, workflow
+fingerprint, status, attempt counters, and timestamps. Tensors, models,
+conditioning, VAEs, CLIP, samplers, and live object references are rejected
+on write and on read, and prompt text, shots, references, or model settings
+are never copied in; the Plan stays authoritative for generation semantics.
+
+Allowed actions are `next_scene`, `next_candidate`, `await_review`,
+`complete`, and `manual_resume`. Statuses follow the machine
+`pending -> claimed -> queued -> consumed`, with `cancelled` and `failed`
+as terminal stops and `claimed -> pending` reserved for the bounded
+`release` retry path (`attempt` increments per claim and an exhausted
+`max_attempts` budget fails the record instead of retrying forever).
+
+Every update is written temp-file + flush + fsync + atomic replace behind a
+per-run lock, so the claim primitive is exactly-once: the first pending to
+claimed wins and duplicate terminal events or concurrent listeners never
+re-claim. Corrupt or unknown-version records raise, are listed with a
+corruption reason, and are never auto-queued, auto-repaired, or reverted;
+they are left exactly as found for manual recovery.
+
+## Durable review gate
+
+A pending Review Gate also persists a lightweight identity snapshot
+(`review_inventory.py`, format `h3_review_snapshot_v1`) under
+`output/h3_chains/<run_name>/orchestration/review_<token>.json`: token, run
+name, scene, the public candidate list (number, revision, seed, created_at,
+has_audio, warning), and the deadline. No IMAGE tensors or media bytes are
+stored; previews always come from the saved segment/checkpoint inventory,
+which remains authoritative. Snapshots are written when a review becomes
+pending, marked `decided` (with the decision action) when it resolves, and
+re-surfaced by the review list route with `durable: true` after a browser
+refresh or a ComfyUI crash/restart, so saved candidates stay reviewable
+without a live PromptExecutor. If that executor is lost, a recovered
+snapshot is **read-only recovery inventory** (`actionable: false`): it
+identifies saved candidates/checkpoints for manual resume, but cannot
+approve/retry through a vanished future. Tensor-like values are rejected on
+write, and the Plan JSON is never touched.
+
+## Top-level scene requeue mode
+
+`MiniMax H3 Context Loop End` exposes an optional `execution_mode` widget
+(default `recursive_legacy`, unchanged behavior). In `top_level_requeue`
+mode the loop stops immediately after the scene checkpoint is persisted: it
+writes a durable `next_scene` handoff and a partial through-clip manifest
+instead of recursively expanding the next H3 scene inside the same prompt.
+The frontend coordinator waits for queue-safe state plus a configurable
+cleanup interval, validates the workflow identity and the predecessor
+checkpoint, claims the handoff exactly once, sets the existing Loop Start
+widgets, and queues the same workflow as a new top-level prompt. Errors and
+interruptions never auto-queue; a pending handoff can be resumed or
+cancelled manually. The mode lives on the node (workflow JSON), never in
+the Plan JSON.
 
 ## Socket presentation rules
 
@@ -239,8 +304,8 @@ change its backend index or serialized position.
 ## Release validation
 
 All ten delivery stages are implemented. The maintained workflow catalog uses
-one-wire Chain Policy, Source Timeline, and model-free
-preflight. The migration tool is idempotent, the frozen 0.4 positional contract
-is covered by regression tests, and backend/frontend release checks enforce a
-single package version. Archived 0.4 workflows remain unchanged examples of the
-supported compatibility route.
+one-wire Chain Policy, Source Timeline, model-free preflight, and the durable
+top-level prompt lifecycle described above. The migration tool is idempotent,
+the frozen 0.4 positional contract is covered by regression tests, and
+backend/frontend release checks enforce a single package version. Archived 0.4
+workflows remain unchanged examples of the supported compatibility route.

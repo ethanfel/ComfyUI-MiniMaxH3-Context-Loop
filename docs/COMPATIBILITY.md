@@ -130,3 +130,5 @@ Compatibility → Widget widths** if another frontend or extension handles it.
   remote filesystem path on the client machine.
 - Run Manager operates against the ComfyUI host's input/output folders and is
   therefore suitable for Docker and remote deployments.
+- On WSL2, `--disable-pinned-memory` can help host pinning behavior, but it is
+  separate from the top-level job-boundary fix documented in this release.

@@ -655,6 +655,7 @@ function mount(node) {
             node.properties[TIMELINE_ZOOM_PROPERTY]),
         checkpoints:new Map(), checkpointSignature:"", checkpointError:"", checkpointToken:0,
         checkpointPromise:null, checkpointRefreshQueued:false, disposed:false,
+        executionPromptIds:new Set(),
         sourcePreview:null, sourceWaveform:null, sourceWaveformToken:"",
         presentationToken:0,
         sourceWaveformPromise:null,
@@ -6210,6 +6211,20 @@ function mount(node) {
         }, 50);
     };
     api.addEventListener("executed", onPromptExecuted);
+    const onExecutionStart = (event) => {
+        const promptId = String(event.detail?.prompt_id ?? "");
+        if (promptId) state.executionPromptIds.add(promptId);
+    };
+    const onExecutionTerminal = (event) => {
+        const promptId = String(event.detail?.prompt_id ?? "");
+        if (!promptId || !state.executionPromptIds.delete(promptId) ||
+                state.executionPromptIds.size !== 0 || state.disposed) return;
+        void refreshCheckpoints();
+    };
+    api.addEventListener("execution_start", onExecutionStart);
+    api.addEventListener("execution_success", onExecutionTerminal);
+    api.addEventListener("execution_error", onExecutionTerminal);
+    api.addEventListener("execution_interrupted", onExecutionTerminal);
     const onLoRARoutesChanged = () => {
         if (!state.disposed && state.plan) {
             renderPanel();
@@ -6248,6 +6263,10 @@ function mount(node) {
         if (state.editorialTimer != null) clearTimeout(state.editorialTimer);
         state.timelineResizeObserver?.disconnect();
         api.removeEventListener("executed", onPromptExecuted);
+        api.removeEventListener("execution_start", onExecutionStart);
+        api.removeEventListener("execution_success", onExecutionTerminal);
+        api.removeEventListener("execution_error", onExecutionTerminal);
+        api.removeEventListener("execution_interrupted", onExecutionTerminal);
         document.removeEventListener(
             "h3-lora-routes-changed", onLoRARoutesChanged);
         document.removeEventListener("keydown", onPlayerKeydown, true);
@@ -6304,7 +6323,9 @@ function mount(node) {
         publishActiveScene();
     };
     state.pollTimer = setInterval(() => loadPlan(false), 500);
-    state.checkpointTimer = setInterval(() => void refreshCheckpoints(), 5000);
+    state.checkpointTimer = setInterval(() => {
+        if (state.executionPromptIds.size === 0) void refreshCheckpoints();
+    }, 5000);
     loadPlan(true);
 }
 

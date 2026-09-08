@@ -76,9 +76,11 @@ except ImportError:
 
 try:
     from aiohttp import web
-    from server import PromptServer
 except ImportError:
     web = None
+try:
+    from server import PromptServer
+except ImportError:
     PromptServer = None
 
 from .nodes import (
@@ -92,6 +94,18 @@ from .motion_context_upstream import apply_motion_context
 from .chapter_resolution import (
     normalize_resolution, scene_resolution, saved_resolution,
     apply_chapter_resolutions, common_saved_resolution,
+)
+from .handoff_state import (
+    HandoffClaimError as _HandoffClaimError,
+    HandoffError as _HandoffError,
+    HandoffNotFoundError as _HandoffNotFoundError,
+    HandoffStore as _HandoffStore,
+    IllegalHandoffTransitionError as _IllegalHandoffTransitionError,
+)
+from .review_inventory import (
+    load_review_snapshots as _load_review_snapshots,
+    mark_review_snapshot_decided as _mark_review_snapshot_decided,
+    write_review_snapshot as _write_review_snapshot,
 )
 from .prompt_history import PromptHistoryStore
 from .prompt_optimizer import optimize_prompt_payload
@@ -276,6 +290,14 @@ CONTINUATION_MODES = (
 SCENE_LORA_ROUTES = (
     "base", *(chr(ord("a") + offset) for offset in range(26)))
 LOOP_MEMORY_POLICIES = ("off", "unload_models", "fresh_scene")
+# Scene-boundary orchestration modes for Chain Loop End. recursive_legacy is
+# the pre-0.7 behavior (the next H3 scene expands recursively inside the same
+# top-level prompt). top_level_requeue stops after the scene N checkpoint and
+# leaves a durable next_scene handoff; the frontend later queues the SAME
+# workflow as a NEW top-level prompt and Loop Start resumes the same Plan at
+# scene N+1 from the accepted checkpoint lineage. The mode lives on the node
+# (workflow JSON), never in the Plan JSON (PLAN_SCHEMA_INVARIANT_SPEC).
+LOOP_EXECUTION_MODES = ("recursive_legacy", "top_level_requeue")
 GUIDE_CONTINUATION_MODES = frozenset((
     "guide", "tone_carry_guide", "latent_guide", "tapered_guide"))
 MASKED_CONTINUATION_MODES = frozenset((
@@ -19278,6 +19300,16 @@ class MiniMaxH3ChainLoopStart:
                                "or Run Manager. It replaces the repeated full "
                                "source_audio connection and stays lazy across "
                                "recursive scenes."}),
+                "tagged_references": (TAGGED_REFERENCE_TYPE, {
+                    "tooltip": "Optional active prompt-driven reference "
+                               "registry. Connect the same Tagged registry used "
+                               "by Ref2VA so Loop Start can validate prompt "
+                               "@tags before generation."}),
+                "reference_schedule": (REFERENCE_SCHEDULE_TYPE, {
+                    "tooltip": "Optional legacy scheduled reference registry. "
+                               "Connect the same schedule used by Scheduled "
+                               "Ref2VA; do not connect it together with "
+                               "tagged_references."}),
             },
             "hidden": {
                 "initial_state": (STATE_TYPE,),
@@ -19305,8 +19337,8 @@ class MiniMaxH3ChainLoopStart:
 
     def start(self, plan, start_clip, source_audio=None, scene_range="",
               verify_resume_history=True, external_context=None,
-              source_timeline=None,
-              initial_state=None):
+              source_timeline=None, tagged_references=None,
+              reference_schedule=None, initial_state=None):
         if initial_state is None:
             _require_plan_write(plan, "queue or resume generation")
             alternate = _alternate_take_descriptor(plan)
@@ -19326,7 +19358,9 @@ class MiniMaxH3ChainLoopStart:
                 prepared_plan, source_timeline=source_timeline,
                 source_audio=source_audio, start_clip=start_clip,
                 scene_range=scene_range,
-                verify_resume_history=verify_resume_history)
+                verify_resume_history=verify_resume_history,
+                tagged_references=tagged_references,
+                reference_schedule=reference_schedule)
             if not preflight["ok"]:
                 raise ValueError(_preflight_failure_text(preflight))
             for issue in preflight["warnings"]:
@@ -19648,6 +19682,7 @@ class MiniMaxH3ChainCurrent:
             "end_clip": int(state.get("end_clip", len(plan["shots"]))),
             "shot_id": str(shot["id"]),
             "seed": str(shot["seed"]),
+            "workflow_fingerprint": str(plan.get("plan_hash") or ""),
         }
         # Prompt history is supplementary recovery data and must never block a
         # generation. Mark the exact scene prompt immutable as soon as this
@@ -22228,6 +22263,22 @@ class MiniMaxH3ChainReview:
                 "current_length": int(shot["raw_frames"]),
                 "candidates": candidates,
             }
+            # M5 durable review: persist a lightweight (tensor-free) snapshot so
+            # the batch stays reviewable after a browser refresh or a ComfyUI
+            # crash/restart. The snapshot holds identity only (token, run,
+            # scene, candidate revision/seed, deadline); previews come from the
+            # saved segment/checkpoint inventory, never from live tensors. The
+            # Plan JSON is never touched (PLAN_SCHEMA_INVARIANT_SPEC).
+            try:
+                _write_review_snapshot(
+                    _run_dir(plan), token, str(plan.get("run_name") or ""),
+                    int(payload.get("clip_index") or index),
+                    _review_public_candidates(candidates),
+                    deadline, float(server_now))
+            except (OSError, TypeError, ValueError) as exc:
+                _LOG.warning(
+                    "H3 Chain durable review snapshot failed (review stays "
+                    "live only): %s", exc)
             PromptServer.instance.send_sync(
                 "minimax_h3_context_loop_review", dict(payload),
                 PromptServer.instance.client_id)
@@ -22337,6 +22388,24 @@ class MiniMaxH3ChainReview:
             _PENDING_REVIEWS.pop(token, None)
             if not future.done():
                 future.cancel()
+            # M5 durable review: mark the snapshot decided so a restart does
+            # not resurface a resolved gate. Interrupts are marked with
+            # action "interrupted": the durable candidate records remain
+            # reviewable, the live gate does not.
+            try:
+                decided_action = "interrupted"
+                if isinstance(locals().get("decision"), dict):
+                    decided_action = str(
+                        locals()["decision"].get("action") or "interrupted")
+                run_dir = _run_dir(plan)
+                _mark_review_snapshot_decided(
+                    run_dir, token, decided_action, time.time())
+                if decided_action in ("approve", "stop"):
+                    _retire_superseded_review_snapshots(
+                        run_dir, str(payload.get("run_name") or ""), index, token)
+            except (OSError, TypeError, ValueError) as exc:
+                _LOG.warning(
+                    "H3 Chain durable review snapshot update failed: %s", exc)
 
         # A Review Gate may remain open for hours. A forced ownership transfer
         # must invalidate its eventual decision before candidate activation,
@@ -23010,6 +23079,62 @@ def _saved_scene_prefix_length(plan: dict[str, Any]) -> int:
     return saved
 
 
+def _write_next_scene_handoff(plan: dict[str, Any], index: int,
+                              end_clip: int,
+                              next_segment: dict[str, Any]) -> dict[str, Any]:
+    """Write the lightweight durable next-scene handoff for requeue mode.
+
+    Called after the scene N checkpoint/segment transaction has completed
+    (Segment Save), immediately before Loop End stops instead of recursively
+    expanding scene N+1.  The record carries only identity values (run name,
+    scene numbers, seed, revision/checkpoint SHA, Plan fingerprint) so the
+    frontend can later claim it and queue the SAME workflow as a new
+    top-level prompt.  The Plan JSON is never touched.
+
+    Idempotent per committed transition, not merely per destination scene.
+    A rerender with a new predecessor revision/checkpoint/range gets a new
+    record; an exact Loop End retry gets the same record.  Terminal history
+    is never reset or reused as new work.
+    """
+    run_name = str(plan.get("run_name") or "")
+    next_scene = int(index) + 1
+    paths = _artifact_paths(plan, index)
+    checkpoint_sha = None
+    if os.path.isfile(paths["metadata"]):
+        try:
+            checkpoint_sha = _file_sha256(paths["metadata"])
+        except OSError:
+            checkpoint_sha = None
+
+    shot = plan["shots"][next_scene - 1]
+    revision = str(next_segment.get("revision")
+                   or checkpoint_revision_token(index, next_segment) or "")
+    # The digest is a durable transition identity.  It includes every value
+    # that can make a continuation semantically different while avoiding any
+    # Plan/tensor payload in the handoff itself.
+    transition_key = hashlib.sha256(json.dumps({
+        "predecessor": int(index), "next": next_scene,
+        "revision": revision, "checkpoint": checkpoint_sha,
+        "workflow": str(plan.get("plan_hash") or ""),
+        "end": int(end_clip),
+    }, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+    handoff_id = "next_scene_%04d_%s" % (next_scene, transition_key[:16])
+    store = _HandoffStore(_output_root())
+    try:
+        return store.load(run_name, handoff_id)
+    except _HandoffNotFoundError:
+        pass
+    return store.create(
+        run_name, action="next_scene",
+        scene=next_scene, start_clip=next_scene, end_clip=int(end_clip),
+        seed=int(shot["seed"]),
+        source_revision=revision,
+        source_checkpoint_sha256=checkpoint_sha,
+        workflow_fingerprint=str(plan.get("plan_hash") or ""),
+        predecessor_scene=int(index), transition_key=transition_key,
+        handoff_id=handoff_id)
+
+
 class MiniMaxH3ChainLoopEnd:
     @classmethod
     def INPUT_TYPES(cls):
@@ -23053,6 +23178,22 @@ class MiniMaxH3ChainLoopEnd:
                                "model-switching chains. ComfyUI has no safe "
                                "full executor reset inside a running recursive "
                                "prompt, so the small live loop carry remains."}),
+                "execution_mode": (list(LOOP_EXECUTION_MODES), {
+                    "default": "recursive_legacy",
+                    "tooltip": "How the next scene is scheduled. "
+                               "recursive_legacy keeps the classic behavior: "
+                               "the next H3 scene expands recursively inside "
+                               "the same top-level prompt. top_level_requeue "
+                               "(recommended for long runs) stops right after "
+                               "the scene checkpoint is persisted, writes a "
+                               "lightweight durable handoff, and lets the "
+                               "frontend queue this same workflow as a NEW "
+                               "top-level prompt; Loop Start resumes the same "
+                               "Plan at the next scene from the accepted "
+                               "checkpoint lineage. Errors and interruptions "
+                               "never auto-queue; a pending handoff can be "
+                               "resumed or cancelled manually. The mode is "
+                               "stored on this node, never in the Plan JSON."}),
             },
             "hidden": {
                 "dynprompt": "DYNPROMPT",
@@ -23181,7 +23322,8 @@ class MiniMaxH3ChainLoopEnd:
         }
 
     def end(self, flow, state, images, sampled_latent, segment,
-            between_scene_cleanup="off", dynprompt=None, unique_id=None):
+            between_scene_cleanup="off", execution_mode="recursive_legacy",
+            dynprompt=None, unique_id=None):
         plan = state["plan"]
         _require_plan_write(plan, "advance or finish the scene loop")
         index = int(state["index"])
@@ -23294,6 +23436,45 @@ class MiniMaxH3ChainLoopEnd:
             next_state["source_timeline"] = state["source_timeline"]
         end_clip = int(next_state["end_clip"])
         if index < end_clip:
+            if execution_mode == "top_level_requeue":
+                # Scene N is checkpointed; do NOT expand the next H3 scene
+                # inside this top-level prompt. Persist the lightweight
+                # durable handoff first (the checkpoint transaction already
+                # completed in Segment Save), then stop with a partial
+                # manifest so this prompt can reach terminal success. The
+                # frontend later queues the SAME workflow as a new top-level
+                # prompt and Loop Start resumes the same Plan at scene
+                # N+1 from the accepted checkpoint lineage.
+                handoff = _write_next_scene_handoff(
+                    plan, index, end_clip, next_segment)
+                del selected_frames, selected_latent
+                del images, sampled_latent, segment, state
+                _release_loop_boundary_resources(
+                    between_scene_cleanup, index)
+                manifest = _manifest_from_segments(
+                    plan, next_state["segments"], complete=False)
+                if os.path.isdir(_run_dir(plan)):
+                    manifest_path = os.path.join(
+                        _run_dir(plan), "partial",
+                        "through_clip_%04d.manifest.json" % index)
+                    _atomic_json(manifest_path, manifest)
+                manifest_json = json.dumps(
+                    manifest, ensure_ascii=False, indent=2, sort_keys=True)
+                _LOG.info(
+                    "H3 Chain %s scene %d checkpointed in top-level "
+                    "requeue mode; next scene deferred to handoff %s "
+                    "(new top-level prompt required).",
+                    plan["run_name"], index, handoff["handoff_id"])
+                result = (manifest, manifest_json,
+                          next_state["previous_frames"],
+                          next_state["previous_latent"])
+                completion = {key: handoff[key] for key in (
+                    "run_name", "predecessor_scene", "scene", "end_clip",
+                    "workflow_fingerprint", "handoff_id", "source_revision",
+                    "source_checkpoint_sha256", "transition_key")}
+                return {"result": result, "ui": {
+                    "h3_chain_top_level_requeue": [completion]}}
+
             expansion = self._recurse(
                 flow, next_state, dynprompt, unique_id)
             # The recursive state owns independent CPU clones. Release this
@@ -27947,8 +28128,13 @@ async def _submit_review_decision(request):
     token = str(body.get("token") or "")
     pending = _PENDING_REVIEWS.get(token)
     if pending is None:
-        return web.json_response(
-            {"error": "This H3 review is no longer pending."}, status=404)
+        # A snapshot may survive a process restart, but its executor future
+        # cannot.  Do not pretend an approve button can resume a dead prompt.
+        return web.json_response({
+            "error": "This review was recovered after its live prompt ended.",
+            "recovery": True,
+            "instructions": "Use the saved checkpoint/segment inventory to resume manually.",
+        }, status=409)
     run_name = str(pending.get("public", {}).get("run_name") or "")
     ownership_proof = _request_project_ownership(request)
     rejection = _project_write_rejection(
@@ -28054,11 +28240,13 @@ async def _submit_review_decision(request):
             return web.json_response({"error": str(exc)}, status=400)
     elif action in ("approve", "stop"):
         candidates = pending.get("candidates")
-        if (isinstance(candidates, list) and candidates
-                and (len(candidates) > 1 or body.get("candidate_revision"))):
-            requested_revision = str(
-                body.get("candidate_revision") or
-                candidates[-1].get("segment", {}).get("revision") or "")
+        if isinstance(candidates, list) and candidates:
+            requested_revision = str(body.get("candidate_revision") or "")
+            if not requested_revision:
+                requested_candidate = secrets.choice(candidates)
+                requested_revision = str(
+                    requested_candidate.get("segment", {}).get("revision")
+                    or requested_candidate.get("revision") or "")
             selected_number = 0
             for number, candidate in enumerate(candidates, start=1):
                 segment = candidate.get("segment") if isinstance(
@@ -28146,14 +28334,50 @@ async def _submit_review_decision(request):
     })
 
 
+def _retire_superseded_review_snapshots(
+        run_dir: str, run_name: str, scene: int, accepted_token: str) -> None:
+    """Retire obsolete recovery records after accepting this exact scene."""
+    for snapshot in _load_review_snapshots(run_dir):
+        if (snapshot.get("status") != "pending" or
+                str(snapshot.get("token") or "") == accepted_token or
+                str(snapshot.get("run_name") or "") != run_name):
+            continue
+        try:
+            snapshot_scene = int(snapshot.get("scene"))
+        except (TypeError, ValueError):
+            continue
+        if snapshot_scene == scene:
+            _mark_review_snapshot_decided(
+                run_dir, str(snapshot.get("token") or ""), "superseded", time.time())
+
+
 async def _list_pending_reviews(_request):
     reviews = []
+    live_tokens = set()
+    live_run_scenes = set()
+
+    def review_run_scene_key(payload: dict[str, Any],
+                             fallback_run_name: str = "") -> tuple[str, int] | None:
+        run_name = str(payload.get("run_name") or fallback_run_name).strip()
+        try:
+            scene = int(payload.get("clip_index", payload.get("scene")))
+        except (TypeError, ValueError):
+            return None
+        return (run_name, scene) if run_name and scene > 0 else None
+
     _review_candidate_batch_cleanup()
     for entry in list(_ACTIVE_CANDIDATE_BATCHES.values()):
         payload = entry.get("public")
         if not isinstance(payload, dict):
             continue
         payload = dict(payload)
+        token = str(payload.get("token") or "")
+        if token in live_tokens:
+            continue
+        live_tokens.add(token)
+        key = review_run_scene_key(payload)
+        if key is not None:
+            live_run_scenes.add(key)
         payload["server_now"] = time.time()
         reviews.append(payload)
     # HTTP and execution can run on different threads/loops. Snapshot first so
@@ -28163,8 +28387,57 @@ async def _list_pending_reviews(_request):
         if item["future"].done():
             continue
         payload = dict(item["public"])
+        token = str(payload.get("token") or "")
+        if token in live_tokens:
+            continue
+        live_tokens.add(token)
+        key = review_run_scene_key(payload)
+        if key is not None:
+            live_run_scenes.add(key)
         payload["server_now"] = time.time()
         reviews.append(payload)
+    # M5 durable review: after a browser refresh (or a ComfyUI crash/restart)
+    # the live pending-review object may be gone, but saved candidate batches
+    # remain reviewable from the durable orchestration snapshots. Surface
+    # pending snapshots that have no live entry; media previews come from the
+    # saved segment/checkpoint inventory, never from live tensors.
+    runs_dir = os.path.join(_output_root(), "h3_chains")
+    try:
+        run_names = sorted(os.listdir(runs_dir))
+    except OSError:
+        run_names = []
+    for run_name in run_names:
+        run_dir = os.path.join(runs_dir, run_name)
+        if not os.path.isdir(run_dir):
+            continue
+        for snapshot in _load_review_snapshots(run_dir):
+            if snapshot.get("status") != "pending":
+                continue
+            token = str(snapshot.get("token") or "")
+            if (not token or token in live_tokens or
+                    review_run_scene_key(snapshot, run_name) in live_run_scenes):
+                continue
+            live_tokens.add(token)
+            reviews.append({
+                "token": token,
+                "durable": True,
+                "actionable": False,
+                "recovery_instructions": (
+                    "This review's original prompt ended. Inspect saved "
+                    "candidates and resume manually from its checkpoint; "
+                    "approve/retry decisions are unavailable after restart."),
+                "run_name": str(snapshot.get("run_name") or run_name),
+                "clip_index": snapshot.get("scene"),
+                "candidates": snapshot.get("candidates") or [],
+                "deadline": snapshot.get("deadline"),
+                "server_now": time.time(),
+                "video": None,
+                "has_audio": False,
+                "warning": (
+                    "Durable review: saved candidates remain reviewable "
+                    "after a restart; previews load from the saved "
+                    "segment/checkpoint inventory."),
+            })
     return web.json_response({"reviews": reviews})
 
 
@@ -29365,6 +29638,10 @@ def _saved_checkpoint_listing(
                     "ready": ready,
                     "raw_frames": int(segment.get("raw_frames", 0)),
                     "delivered_frames": int(segment.get("delivered_frames", 0)),
+                    # This is the exact immutable identity used by the
+                    # top-level handoff, not merely "a checkpoint exists".
+                    "metadata_sha256": _file_sha256(os.path.join(
+                        checkpoint_dir, filename)),
                 }
                 if os.path.isfile(segment_path):
                     item["video"] = _video_output_item(segment_path)
@@ -31120,6 +31397,183 @@ async def _project_asset_media(request):
         return web.json_response({"error": str(exc)}, status=400)
 
 
+# ---------------------------------------------------------------------------
+# Durable top-level handoff routes (top-level scene requeue).
+#
+# These are the ONLY backend surface for the separate run-local handoff
+# state written by Chain Loop End in top_level_requeue mode. They read and
+# mutate records under output/h3_chains/<run>/orchestration/ via the
+# exactly-once HandoffStore primitives; they never accept filesystem paths
+# and never touch the Plan JSON. The frontend coordinator calls them in the
+# order: list -> claim -> (queue new top-level prompt) -> transition queued
+# -> transition consumed; failures release the claim for manual recovery.
+# ---------------------------------------------------------------------------
+
+
+_HANDOFF_TRANSITION_STATUSES = ("queued", "consumed", "cancelled", "failed", "uncertain")
+
+
+def _handoff_store() -> "_HandoffStore":
+    return _HandoffStore(_output_root())
+
+
+def _handoff_scene_count(run_name: str) -> int | None:
+    """Scene count of the run's saved Plan, or None when unreadable."""
+    plan_path = os.path.join(
+        _output_root(), "h3_chains", _safe_name(run_name, ""), "plan.json")
+    try:
+        with open(plan_path, "r", encoding="utf-8") as handle:
+            plan = json.load(handle)
+        shots = plan.get("shots")
+        if isinstance(shots, list) and shots:
+            return len(shots)
+    except (OSError, TypeError, json.JSONDecodeError):
+        pass
+    return None
+
+
+def _handoff_record_view(record: dict[str, Any]) -> dict[str, Any]:
+    """Record plus a safe manual-resume hint (widgets only, no paths)."""
+    view = dict(record)
+    if record.get("action") != "next_scene":
+        return view
+    start = record.get("start_clip")
+    end = record.get("end_clip")
+    total = _handoff_scene_count(record.get("run_name", ""))
+    if not isinstance(start, int) or isinstance(start, bool) or start < 1:
+        return view
+    if total is None:
+        total = max(start + 1, int(end) if isinstance(end, int) else start + 1)
+    resolved_end = end if isinstance(end, int) and not isinstance(end, bool) else total
+    if resolved_end < total:
+        scene_range = str(start) if start == resolved_end \
+            else "%d:%d" % (start, resolved_end)
+    else:
+        scene_range = ""
+    view["resume"] = {
+        "start_clip": start,
+        "scene_range": scene_range,
+        "end_clip": resolved_end,
+        "total_scenes": total,
+    }
+    return view
+
+
+async def _list_handoffs(request):
+    run_name = _safe_name(request.query.get("run_name", ""), "")
+    if not run_name:
+        return web.json_response(
+            {"error": "run_name is required."}, status=400)
+    try:
+        records = await asyncio.to_thread(
+            _handoff_store().list, run_name)
+        views = [_handoff_record_view(record) for record in records]
+    except _HandoffError as exc:
+        return web.json_response({"error": str(exc)}, status=400)
+    return web.json_response({"run_name": run_name, "handoffs": views})
+
+
+async def _claim_handoff(request):
+    try:
+        body = await request.json()
+    except (json.JSONDecodeError, TypeError):
+        return web.json_response(
+            {"error": "H3 handoff claim requires JSON."}, status=400)
+    run_name = _safe_name(str(body.get("run_name") or ""), "")
+    handoff_id = str(body.get("handoff_id") or "").strip()
+    source_prompt_id = str(body.get("source_prompt_id") or "").strip() or None
+    if not run_name or not handoff_id:
+        return web.json_response(
+            {"error": "run_name and handoff_id are required."}, status=400)
+    ownership_proof = _request_project_ownership(request)
+    rejection = _project_write_rejection(request, run_name, "claim a scene handoff")
+    if rejection is not None:
+        return rejection
+    try:
+        record = await asyncio.to_thread(
+            _owned_project_mutation, run_name, ownership_proof,
+            "claim a scene handoff", _handoff_store().claim, run_name, handoff_id,
+            "top_level_requeue", source_prompt_id)
+    except ProjectOwnershipError as exc:
+        return _project_asset_error_response(exc)
+    except _HandoffNotFoundError as exc:
+        return web.json_response({"error": str(exc)}, status=404)
+    except _HandoffClaimError as exc:
+        return web.json_response({"error": str(exc)}, status=409)
+    except _HandoffError as exc:
+        return web.json_response({"error": str(exc)}, status=400)
+    return web.json_response({"handoff": _handoff_record_view(record)})
+
+
+async def _transition_handoff(request):
+    try:
+        body = await request.json()
+    except (json.JSONDecodeError, TypeError):
+        return web.json_response(
+            {"error": "H3 handoff transition requires JSON."}, status=400)
+    run_name = _safe_name(str(body.get("run_name") or ""), "")
+    handoff_id = str(body.get("handoff_id") or "").strip()
+    status = str(body.get("status") or "").strip()
+    accepted_prompt_id = str(body.get("accepted_prompt_id") or "").strip() or None
+    if status not in _HANDOFF_TRANSITION_STATUSES:
+        return web.json_response({
+            "error": "status must be one of %s." %
+                     (", ".join(_HANDOFF_TRANSITION_STATUSES),),
+        }, status=400)
+    if not run_name or not handoff_id:
+        return web.json_response(
+            {"error": "run_name and handoff_id are required."}, status=400)
+    ownership_proof = _request_project_ownership(request)
+    rejection = _project_write_rejection(request, run_name, "transition a scene handoff")
+    if rejection is not None:
+        return rejection
+    try:
+        record = await asyncio.to_thread(
+            _owned_project_mutation, run_name, ownership_proof,
+            "transition a scene handoff", _handoff_store().transition, run_name, handoff_id, status,
+            accepted_prompt_id)
+    except ProjectOwnershipError as exc:
+        return _project_asset_error_response(exc)
+    except _HandoffNotFoundError as exc:
+        return web.json_response({"error": str(exc)}, status=404)
+    except _IllegalHandoffTransitionError as exc:
+        return web.json_response({"error": str(exc)}, status=409)
+    except _HandoffError as exc:
+        return web.json_response({"error": str(exc)}, status=400)
+    return web.json_response({"handoff": _handoff_record_view(record)})
+
+
+async def _release_handoff(request):
+    try:
+        body = await request.json()
+    except (json.JSONDecodeError, TypeError):
+        return web.json_response(
+            {"error": "H3 handoff release requires JSON."}, status=400)
+    run_name = _safe_name(str(body.get("run_name") or ""), "")
+    handoff_id = str(body.get("handoff_id") or "").strip()
+    reason = str(body.get("reason") or "").strip() or None
+    if not run_name or not handoff_id:
+        return web.json_response(
+            {"error": "run_name and handoff_id are required."}, status=400)
+    ownership_proof = _request_project_ownership(request)
+    rejection = _project_write_rejection(request, run_name, "release a scene handoff")
+    if rejection is not None:
+        return rejection
+    try:
+        record = await asyncio.to_thread(
+            _owned_project_mutation, run_name, ownership_proof,
+            "release a scene handoff", _handoff_store().release, run_name, handoff_id, reason)
+    except ProjectOwnershipError as exc:
+        return _project_asset_error_response(exc)
+    except _HandoffNotFoundError as exc:
+        return web.json_response({"error": str(exc)}, status=404)
+    except _IllegalHandoffTransitionError as exc:
+        return web.json_response({"error": str(exc)}, status=409)
+    except _HandoffError as exc:
+        return web.json_response({"error": str(exc)}, status=400)
+    return web.json_response({"handoff": _handoff_record_view(record)})
+
+
 if (PromptServer is not None and web is not None and
         getattr(PromptServer, "instance", None) is not None):
     PromptServer.instance.routes.post(
@@ -31140,6 +31594,14 @@ if (PromptServer is not None and web is not None and
             _submit_deferred_review)
     PromptServer.instance.routes.get(
         "/minimax_h3_context_loop/checkpoints")(_list_saved_checkpoints)
+    PromptServer.instance.routes.get(
+        "/minimax_h3_context_loop/handoffs")(_list_handoffs)
+    PromptServer.instance.routes.post(
+        "/minimax_h3_context_loop/handoffs/claim")(_claim_handoff)
+    PromptServer.instance.routes.post(
+        "/minimax_h3_context_loop/handoffs/transition")(_transition_handoff)
+    PromptServer.instance.routes.post(
+        "/minimax_h3_context_loop/handoffs/release")(_release_handoff)
     PromptServer.instance.routes.post(
         "/minimax_h3_context_loop/editorial")(_update_run_editorial)
     PromptServer.instance.routes.post(

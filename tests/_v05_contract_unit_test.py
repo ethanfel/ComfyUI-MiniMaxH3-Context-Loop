@@ -359,7 +359,8 @@ def main():
     loop_optional = method_input_order(
         module, "MiniMaxH3ChainLoopStart", "optional")
     assert loop_optional[:4] == FIXTURE["loop_start_optional_input_order"]
-    assert loop_optional[4:] == ["source_timeline"]
+    assert loop_optional[4:] == [
+        "source_timeline", "tagged_references", "reference_schedule"]
     appended_outputs = {
         "MiniMaxH3ChainCurrent": ["video_blend_frames"],
         "MiniMaxH3ChainContext": ["model"],

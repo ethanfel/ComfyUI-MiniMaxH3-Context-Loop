@@ -12,6 +12,7 @@ import hashlib
 import importlib.util
 import json
 import math
+import os
 import pathlib
 import subprocess
 import sys
@@ -23,7 +24,9 @@ from datetime import datetime
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-COMFY_CANDIDATES = [ROOT.parent / "Comfyui", ROOT.parent / "ComfyUI"]
+COMFY_CANDIDATES = ([pathlib.Path(os.environ["COMFYUI_PATH"])]
+                    if os.environ.get("COMFYUI_PATH") else [])
+COMFY_CANDIDATES += [ROOT.parent / "Comfyui", ROOT.parent / "ComfyUI"]
 COMFY = next((path for path in COMFY_CANDIDATES
               if (path / "comfy" / "options.py").is_file()), None)
 if COMFY is None:
@@ -555,6 +558,8 @@ def main():
     # every output should describe what it carries. This keeps newly added
     # controls from silently regressing to opaque ComfyUI labels.
     for node_name, node_class in package.NODE_CLASS_MAPPINGS.items():
+        if str(getattr(node_class, "CATEGORY", "")).startswith("_internal/"):
+            continue  # Recursion plumbing has no public socket/widget UI.
         schema = node_class.INPUT_TYPES()
         for section in ("required", "optional"):
             for input_name, input_spec in schema.get(section, {}).items():
@@ -1173,7 +1178,7 @@ def main():
             "generated_audio", 22, 1, 2, 1, 30,
         )
     except ValueError as exc:
-        assert "next clip requires 22 context frames" in str(exc)
+        assert "next clip requires 22 second-block context frames" in str(exc)
     else:
         raise AssertionError("plan accepted an undersized predecessor context")
 
@@ -1305,6 +1310,7 @@ def main():
                 "end_clip": 2,
                 "shot_id": prepared_plan["shots"][0]["id"],
                 "seed": str(prepared_plan["shots"][0]["seed"]),
+                "workflow_fingerprint": str(prepared_plan["plan_hash"]),
             }]
             current = current_payload["result"]
             assert current[1:3] == (1, 2)
@@ -1365,7 +1371,7 @@ def main():
                     plan, 1, short_non_silent)
             except ValueError as exc:
                 assert "source_audio_too_short" in str(exc)
-                assert "provide a longer track" in str(exc)
+                assert "Provide a source track" in str(exc)
             else:
                 raise AssertionError("Loop Start accepted a short non-silent song")
             conditioning = [["cond", {}]]
@@ -1999,6 +2005,17 @@ def main():
                     chain._history_hash(prepared_plan, 2))
             print("review: prompt/seed retry preserves accepted predecessor history")
 
+            requeue_return = chain.MiniMaxH3ChainLoopEnd().end(
+                ["1", 0], dict(state1), images1.clone(), av_latent(), dict(segment1),
+                execution_mode="top_level_requeue")
+            parsed_output, parsed_ui, parsed_subgraph = execution.get_output_from_returns(
+                [requeue_return], chain.MiniMaxH3ChainLoopEnd)
+            assert not parsed_subgraph and parsed_output and parsed_ui
+            completion = parsed_ui.get("h3_chain_top_level_requeue")
+            assert isinstance(completion, list) and len(completion) == 1
+            assert completion[0]["handoff_id"]
+            print("top-level requeue: real ComfyUI return parser emits completion UI")
+
             fake_prompt = {
                 "1": {"class_type": "MiniMaxH3ChainLoopStart", "inputs": {
                     "plan": plan, "start_clip": 1, "source_audio": source,
@@ -2236,6 +2253,11 @@ def main():
             short_silent_manifest = dict(manifest)
             short_silent_manifest["compatibility"] = dict(
                 short_started[1]["plan"]["compatibility"])
+            # Exercise legacy AUDIO padding, without the different source
+            # timeline recovered from the original full-length fixture.
+            short_silent_manifest.pop("source_timeline", None)
+            short_silent_manifest["plan"] = dict(manifest.get("plan") or {})
+            short_silent_manifest["plan"].pop("source_timeline", None)
             short_silent_result = assembler.assemble(
                 short_silent_manifest, "source", "short_silent_final", 96,
                 short_source)

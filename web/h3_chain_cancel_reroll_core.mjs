@@ -60,5 +60,6 @@ export function activeSceneFromOutput(output) {
         endClip,
         shotId: String(value.shot_id ?? `scene_${clipIndex}`),
         seed: String(value.seed ?? ""),
+        workflowFingerprint: String(value.workflow_fingerprint ?? ""),
     };
 }

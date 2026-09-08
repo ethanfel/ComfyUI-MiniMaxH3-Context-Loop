@@ -4,6 +4,12 @@ Newest first. This file keeps release history out of the onboarding README.
 
 ## Unreleased — Deferred checkpoint upscaling
 
+- Integrate PR #48's opt-in top-level scene requeue and durable review
+  inventory. Preserve nightly deferred-review controls and fence handoff
+  mutations with workflow ownership, including takeovers during a write.
+  Refresh the changed browser helper cache tokens so cached clients receive
+  the completion identity required by the coordinator.
+
 - Fix Windows processing saves rejecting their own backslash-separated
   artifact addresses. New chain addresses use portable separators; legacy
   addresses remain readable without rewriting metadata or changing hashes.
@@ -88,6 +94,41 @@ Newest first. This file keeps release history out of the onboarding README.
   references as invalid immutable revision IDs. Older Runs now use their
   existing root-archive fallback; newer per-revision snapshots retain strict
   revision, location, and file-existence validation.
+
+- Added a durable review-gate snapshot (`review_inventory.py`, format
+  `h3_review_snapshot_v1`) under the run-local orchestration directory so a
+  candidate batch stays reviewable after a browser refresh or a ComfyUI
+  crash/restart without a live PromptExecutor. The snapshot holds identity
+  only (token, run, scene, candidate revisions/seeds, deadline); previews
+  come from the saved segment/checkpoint inventory, tensors are rejected on
+  write, and the Plan JSON is unchanged. Approve & continue still promotes
+  the selected revision and creates the lightweight next-scene handoff;
+  Approve & stop never queues.
+- Added a top-level scene requeue mode (`execution_mode` on Chain Loop End,
+  default `recursive_legacy`). In `top_level_requeue` mode the loop stops
+  after the scene checkpoint, writes a durable `next_scene` handoff plus a
+  partial through-clip manifest instead of recursing, and the frontend
+  coordinator (new web extension) re-queues the same workflow as a new
+  top-level prompt after queue-safe state plus a configurable cleanup
+  interval, claiming the handoff exactly once. The mode lives on the node,
+  never in the Plan JSON; errors and interruptions never auto-queue.
+- Added a durable top-level handoff store (`handoff_state.py`, format
+  `h3_top_level_handoff_v1`) under
+  `output/h3_chains/<run_name>/orchestration/` for separate run-local
+  orchestration state. Records hold only lightweight identity values
+  (scene/clip, candidate ordinal/count, seed, revision/checkpoint SHA-256,
+  prompt ID, workflow fingerprint, status, attempt counters, timestamps);
+  tensors, models, and live object references are rejected, and nothing is
+  copied into the Plan. Writes are atomic (temp + fsync + replace) behind a
+  per-run lock, the claim primitive is exactly-once with bounded
+  release/retry, and corrupt or unknown records are preserved for manual
+  recovery instead of auto-queueing. Recursive execution behavior is
+  unchanged.
+- Fixed Loop Start's model-free preflight to receive the connected Tagged or
+  legacy Scheduled reference registry. Valid prompt `@tags` now resolve during
+  Loop Start validation without changing Plan JSON or rewriting prompts; the
+  original optional socket order remains intact and the new sockets are
+  appended.
 
 - Fixed Checkpoint Manager failing to list older Runs whose checkpoints refer
   to shared Run-level Plan, workflow, and API-prompt snapshots. These legacy

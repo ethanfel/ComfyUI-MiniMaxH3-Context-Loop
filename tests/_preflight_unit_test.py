@@ -153,6 +153,13 @@ with tempfile.TemporaryDirectory() as temporary:
     assert tuple(preflight_inputs["required"]) == ("plan",)
     assert "plan_json" not in preflight_inputs["optional"]
     assert len(chain.MiniMaxH3ChainPreflight.RETURN_TYPES) == 5
+    loop_start_inputs = chain.MiniMaxH3ChainLoopStart.INPUT_TYPES()
+    assert tuple(loop_start_inputs["optional"])[-3:] == (
+        "source_timeline", "tagged_references", "reference_schedule")
+    assert loop_start_inputs["optional"]["tagged_references"][0] == (
+        chain.TAGGED_REFERENCE_TYPE)
+    assert loop_start_inputs["optional"]["reference_schedule"][0] == (
+        chain.REFERENCE_SCHEDULE_TYPE)
 
     standalone_policy = chain._contract_compose_chain_policy(
         chain._contract_audio_policy("generated", "off", "on"),
@@ -391,6 +398,56 @@ with tempfile.TemporaryDirectory() as temporary:
     assert semantic_only_single_wire["references"]["route"] == "tagged"
     assert semantic_only_single_wire["references"][
         "registered_semantic_tags"] == ["semantic_only"]
+
+    # Loop Start owns its own model-free preflight invocation. Its reference
+    # sockets must therefore forward the same active registry used downstream;
+    # otherwise valid prompt @tags fail before Ref2VA can execute.
+    tagged_loop_plan = semantic_plan("Keep @replacement unchanged.")
+    tagged_prompt = tagged_loop_plan["shots"][0]["prompt"]
+    tagged_plan_json = json.dumps(tagged_loop_plan, sort_keys=True)
+    logged_warnings = []
+    original_warning = chain._LOG.warning
+    chain._LOG.warning = lambda message, *args: logged_warnings.append(
+        message % args if args else message)
+    try:
+        tagged_started = chain.MiniMaxH3ChainLoopStart().start(
+            tagged_loop_plan, 1, tagged_references=tagged_picture)
+        assert tagged_started[0] == "h3_chain"
+        assert not any("reference_registry_not_connected" in warning
+                       for warning in logged_warnings)
+        assert tagged_loop_plan["shots"][0]["prompt"] == tagged_prompt
+        assert json.dumps(tagged_loop_plan, sort_keys=True) == tagged_plan_json
+
+        _prepared, disconnected = chain._preflight_chain(tagged_loop_plan)
+        assert any(item["code"] == "reference_registry_not_connected"
+                   for item in disconnected["warnings"])
+        logged_warnings.clear()
+        disconnected_started = chain.MiniMaxH3ChainLoopStart().start(
+            tagged_loop_plan, 1)
+        assert disconnected_started[0] == "h3_chain"
+        assert any("reference_registry_not_connected" in warning
+                   for warning in logged_warnings)
+
+        scheduled = chain._append_scheduled_reference(
+            None, kind="picture", tag="replacement", scenes="",
+            value=torch.zeros((1, 32, 32, 3)),
+            content_hash="scheduled-v1")
+        logged_warnings.clear()
+        scheduled_started = chain.MiniMaxH3ChainLoopStart().start(
+            tagged_loop_plan, 1, reference_schedule=scheduled)
+        assert scheduled_started[0] == "h3_chain"
+        assert not any("reference_registry_not_connected" in warning
+                       for warning in logged_warnings)
+    finally:
+        chain._LOG.warning = original_warning
+    try:
+        chain.MiniMaxH3ChainLoopStart().start(
+            tagged_loop_plan, 1, tagged_references=tagged_picture,
+            reference_schedule=scheduled)
+    except ValueError as exc:
+        assert "multiple_reference_routes" in str(exc)
+    else:
+        raise AssertionError("Loop Start accepted both reference routes")
 
     _prepared, unknown_anchor = chain._preflight_chain(
         semantic_plan("Use #missing[1.00s]."),
