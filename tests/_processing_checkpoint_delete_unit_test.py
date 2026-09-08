@@ -89,6 +89,132 @@ class DeleteTests(unittest.TestCase):
         self.write(path.parent / ("clip_%04d.json" % segment["index"]), value)
         return segment
 
+    def png_owner(self, take, owner="1" * 64):
+        take["png_export_owner"] = owner
+        path = self.root / take["revision_metadata"]
+        metadata = self.manager._read(path)
+        metadata["segment"] = take
+        metadata["source_scene_contract"] = "e" * 64
+        self.write(path, metadata)
+        self.write(path.parent / ("clip_%04d.json" % take["index"]), metadata)
+        return owner
+
+    def png_sequence(self, scenes, folder="delivery/upscale"):
+        directory = self.root / folder
+        clips = []
+        for scene, owners in scenes:
+            name = "frame_%08d.png" % (100 + scene)
+            path = directory / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"PNG fixture, possibly hand edited")
+            clips.append({"index": scene, "source_contract": "e" * 64,
+                          "processing_owners": owners, "first_frame_number": 100 + scene,
+                          "last_frame_number": 100 + scene, "delivered_frames": 1,
+                          "files": [{"file": name}]})
+        record = {"format": "h3_video_png_sequence_v1", "settings": {"run_name": "demo"},
+                  "clips": clips, "complete": True, "frame_count": len(clips)}
+        self.write(directory / "export.json", record)
+        catalog = self.root / "h3_chains/demo/png_exports.json"
+        value = self.manager._read(catalog) if catalog.exists() else {
+            "format": "h3_png_export_catalog_v1", "run_name": "demo", "directories": []}
+        value["directories"].append(folder)
+        self.write(catalog, value)
+        return directory
+
+    def test_png_delete_removes_owned_scene_including_copies_and_keeps_other_scenes(self):
+        take = self.pixel_save(scene=6)
+        owner = self.png_owner(take)
+        directories = [self.png_sequence([(5, ["2" * 64]), (6, [owner]), (7, ["3" * 64])], name)
+                       for name in ("delivery/upscale", "delivery/upscale_2")]
+        for directory in directories:
+            (directory / "notes.txt").write_text("keep user notes")
+            self.write(directory / ".png_variant.json", {"prefix": {"old": "snapshot"}})
+        preview = self.preview(take)
+        self.assertEqual(sum(item["label"].startswith("PNG frame") for item in preview["files"]), 2)
+        self.delete(take)
+        for directory in directories:
+            self.assertFalse((directory / "frame_00000106.png").exists())
+            self.assertTrue((directory / "frame_00000105.png").exists())
+            self.assertTrue((directory / "frame_00000107.png").exists())
+            self.assertTrue((directory / "notes.txt").exists())
+            record = self.manager._read(directory / "export.json")
+            self.assertEqual([item["index"] for item in record["clips"]], [5, 7])
+            self.assertEqual(record["deleted_scenes"], [6])
+            self.assertFalse(record["complete"])
+            self.assertIsNone(self.manager._read(directory / ".png_variant.json")["prefix"])
+
+    def test_reused_png_survives_until_last_owner_is_deleted(self):
+        first = self.pixel_save()
+        second = self.pixel_save(revision="b" * 32)
+        a, b = self.png_owner(first), self.png_owner(second, "2" * 64)
+        directory = self.png_sequence([(1, [a, b])])
+        self.delete(first)
+        self.assertTrue((directory / "frame_00000101.png").exists())
+        self.assertEqual(self.manager._read(directory / "export.json")["clips"][0]["processing_owners"], [b])
+        self.delete(second)
+        self.assertFalse((directory / "frame_00000101.png").exists())
+        self.assertEqual(self.manager._read(directory / "export.json")["clips"], [])
+
+    def test_retry_takes_with_same_owner_keep_png_until_last_take(self):
+        first = self.pixel_save()
+        second = self.pixel_save(revision="b" * 32)
+        owner = self.png_owner(first)
+        self.png_owner(second, owner)
+        directory = self.png_sequence([(1, [owner])])
+        self.delete(first)
+        self.assertTrue((directory / "frame_00000101.png").exists())
+        self.delete(second)
+        self.assertFalse((directory / "frame_00000101.png").exists())
+
+    def test_png_cleanup_refuses_pending_publication_and_unsafe_addresses(self):
+        take = self.pixel_save()
+        directory = self.png_sequence([(1, [self.png_owner(take)])])
+        pending = directory / ".png_pending.json"
+        self.write(pending, {})
+        with self.assertRaisesRegex(ValueError, "pending"):
+            self.preview(take)
+        pending.unlink()
+        record = self.manager._read(directory / "export.json")
+        record["clips"][0]["files"][0]["file"] = "../other.png"
+        self.write(directory / "export.json", record)
+        with self.assertRaisesRegex(ValueError, "frame address"):
+            self.preview(take)
+        self.assertTrue(self.exists(take))
+
+    def test_png_snapshot_detects_edits_and_failed_index_update_restores_frames(self):
+        take = self.pixel_save()
+        directory = self.png_sequence([(1, [self.png_owner(take)])])
+        preview = self.preview(take)
+        frame = directory / "frame_00000101.png"
+        frame.write_bytes(b"edited after preview")
+        with self.assertRaises(module.CheckpointDeleteBlocked):
+            self.manager.delete("demo", take["revision_metadata"], preview["snapshot"])
+        persistence = importlib.import_module(package.__name__ + ".processing_persistence")
+        original = persistence.atomic_json
+        failed = False
+
+        def fail_once(path, value):
+            nonlocal failed
+            if Path(path).name == "export.json" and not failed:
+                failed = True
+                raise OSError("index failure")
+            return original(path, value)
+
+        before = (directory / "export.json").read_bytes()
+        with patch.object(persistence, "atomic_json", side_effect=fail_once):
+            with self.assertRaisesRegex(OSError, "index failure"):
+                self.delete(take)
+        self.assertTrue(self.exists(take))
+        self.assertEqual(frame.read_bytes(), b"edited after preview")
+        self.assertEqual(json.loads(before), self.manager._read(directory / "export.json"))
+
+    def test_legacy_png_without_exact_ownership_is_never_guessed(self):
+        take = self.pixel_save()
+        directory = self.png_sequence([(1, [])])
+        self.assertTrue(any("Legacy PNG" in line for line in self.preview(take)["not_deleted"]))
+        self.delete(take)
+        self.assertTrue((directory / "frame_00000101.png").exists())
+
     def test_independent_pixel_middle_deletion_keeps_later_clips_and_invalidates_manifests(self):
         for legacy in (True, False):
             for chapter in (None, "02_chapter_02"):

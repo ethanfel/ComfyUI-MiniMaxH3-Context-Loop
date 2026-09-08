@@ -228,6 +228,85 @@ class PNGVideoTests(unittest.TestCase):
         state["index"] = 4
         self.assertEqual(self.export(4, video=other, state=state, output_folder="prefix")["result"][1], 12)
 
+    def test_new_source_scenes_six_seven_keep_prefix_and_frame_numbers(self):
+        for scene in range(1, 8):
+            result = self.export(scene, output_folder="branch", first_frame_number=101)
+        original = Path(result["result"][0])
+        before = {p: p.read_bytes() for p in original.glob("frame_*.png")}
+        state = copy.deepcopy(self.state)
+        state["png_export_session"] = "new-source-branch"
+        for source in state["source_manifest"]["segments"][5:]:
+            source["revision"] = "b" * 32
+        other, _ = make_video(self.root / "other.mkv", seed=44)
+        for scene in (6, 7):
+            state["index"] = scene
+            result = self.export(video=other, state=state, output_folder="branch", first_frame_number=101)
+        variant = Path(result["result"][0])
+        self.assertEqual(variant.name, "branch_2")
+        record = json.loads((variant / "export.json").read_text())
+        self.assertEqual([c["index"] for c in record["clips"]], list(range(1, 8)))
+        self.assertEqual(record["clips"][5]["first_frame_number"], 116)
+        self.assertEqual(record["clips"][6]["last_frame_number"], 121)
+        self.assertEqual(record["source_manifest"], state["source_manifest"])
+        self.assertEqual(before, {p: p.read_bytes() for p in before})
+        for path in list(sorted(before))[:15]:
+            self.assertEqual(path.read_bytes(), (variant / path.name).read_bytes())
+            self.assertNotEqual(path.stat().st_ino, (variant / path.name).stat().st_ino)
+
+    def test_changed_earlier_source_is_not_copied_into_variant(self):
+        for scene in (1, 2, 3):
+            self.export(scene, output_folder="changed-prefix")
+        state = copy.deepcopy(self.state)
+        state.update(index=3, png_export_session="branch")
+        state["source_manifest"]["segments"][0]["revision"] = "b" * 32
+        result = self.export(state=state, output_folder="changed-prefix")
+        record = json.loads((Path(result["result"][0]) / "export.json").read_text())
+        self.assertEqual([c["index"] for c in record["clips"]], [3])
+
+    def test_deleted_scene_forks_with_surviving_prefix_and_never_replays_tombstone(self):
+        for scene in (1, 2, 3):
+            result = self.export(scene, output_folder="delete-resume")
+        original = Path(result["result"][0])
+        record = json.loads((original / "export.json").read_text())
+        # Install the same take identity persisted by Segment Save; no GPU or
+        # live checkpoint is needed to exercise the actual deletion manager.
+        revision = "a" * 32
+        relative = "h3_chains/demo/upscaled/pixel/checkpoints/clip_0002.%s.json" % revision
+        metadata = {"format": "h3_chain_upscale_segment_v1", "run_name": "demo", "profile": "pixel",
+                    "profile_config": self.state["profile_config"],
+                    "source_scene_contract": record["clips"][1]["source_contract"],
+                    "segment": {"index": 2, "revision": revision, "revision_metadata": relative,
+                                "context_steps": 0, "png_export_owner": record["clips"][1]["processing_owners"][0]}}
+        streaming.persistence.atomic_json(self.root / relative, metadata)
+        processing = importlib.import_module(package.__name__ + ".processing_checkpoint_delete")
+        manager = processing.ProcessingCheckpointManager(self.root)
+        preview = manager.deletion_preview("demo", relative)
+        manager.delete("demo", relative, preview["snapshot"])
+        self.assertFalse((original / "frame_00000004.png").exists())
+        self.assertTrue((original / "frame_00000007.png").exists())
+        state = dict(self.state, index=2, png_export_session="repair")
+        result = self.export(state=state, output_folder="delete-resume")
+        variant = Path(result["result"][0])
+        self.assertEqual(variant.name, "delete-resume_2")
+        self.assertEqual(result["result"][1], 6)
+        self.assertEqual((variant / "frame_00000001.png").read_bytes(),
+                         (original / "frame_00000001.png").read_bytes())
+        result = self.export(state=dict(state, index=3), output_folder="delete-resume")
+        self.assertEqual(Path(result["result"][0]), variant)
+        self.assertEqual(result["result"][1], 9)
+        self.assertNotIn("deleted_scenes", json.loads((variant / "export.json").read_text()))
+
+    def test_identical_pixel_reuse_registers_additional_owner_and_custom_folder(self):
+        result = self.export(output_folder="custom/export")
+        directory = Path(result["result"][0])
+        before = json.loads((directory / "export.json").read_text())["clips"][0]
+        self.export(state=dict(self.state, png_export_session="another-take"), output_folder="custom/export")
+        after = json.loads((directory / "export.json").read_text())["clips"][0]
+        self.assertEqual(len(after["processing_owners"]), 2)
+        self.assertEqual(after["processing_owners"][0], before["processing_owners"][0])
+        catalog = json.loads((self.root / "h3_chains/demo/png_exports.json").read_text())
+        self.assertEqual(catalog["directories"], ["custom/export"])
+
     def test_numbering_skips_occupied_siblings_and_old_run_binding_stays_put(self):
         self.export(output_folder="chosen")
         (self.root / "chosen_2").mkdir()

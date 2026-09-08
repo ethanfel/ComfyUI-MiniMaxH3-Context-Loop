@@ -2729,6 +2729,8 @@ class MiniMaxH3ChainUpscaleSegmentSave:
                 "profile_config": state["profile_config"],
                 "segment": segment,
             }
+            from .png_export_ownership import owner_key
+            segment["png_export_owner"] = owner_key(state, _upscale_source_contract(source))
             from .checkpoint_variants import processing_lineage
             metadata["processing_lineage"] = processing_lineage(
                 list(state.get("segments", [])) + [segment])

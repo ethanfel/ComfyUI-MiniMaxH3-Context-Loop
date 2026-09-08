@@ -980,7 +980,9 @@ function mount(node) {
         let drawScale = 1; let drawX = 0; let drawY = 0;
         let drag = null;
         let lockedRatio = 1;
+        let unlockedRatio = 1;
         let outputMultiple = 8;
+        let requestedMegapixels = 0.01;
         const cropInputs = {};
         function numberField(name, label, value, minimum = 0) {
             const wrapper = el("label", "", label);
@@ -1012,7 +1014,7 @@ function mount(node) {
             }, `Set the final image near ${value} megapixels while preserving the current output ratio`));
         }
         const snapOptions = el("div", "h3pa-snap-options");
-        snapOptions.title = "Snap both final dimensions to a model-friendly multiple. Aspect ratio has priority, so the actual megapixel count may move slightly.";
+        snapOptions.title = "Round both dimensions to the nearest model-friendly multiple. The requested megapixels stay unchanged; actual size and aspect ratio may vary slightly.";
         snapOptions.append(el("span", "h3pa-snap-label", "Output multiple"));
         const snapButtons = new Map();
         for (const [label, value] of [["Off", 1], ["8", 8], ["16", 16], ["32", 32], ["64", 64]]) {
@@ -1047,13 +1049,11 @@ function mount(node) {
         );
         const actions = el("div", "h3pa-crop-actions");
         const reset = button("Use full image", () => {
-            const targetMegapixels = imageMegapixels(
-                cropInputs.targetWidth.value, cropInputs.targetHeight.value);
             crop.x = 0; crop.y = 0; crop.width = sourceWidth; crop.height = sourceHeight;
             if (ratioLock.checked) {
                 lockedRatio = sourceWidth / sourceHeight;
                 setTargetSize(dimensionsForMegapixels(
-                    targetMegapixels, lockedRatio, outputMultiple));
+                    requestedMegapixels, lockedRatio, outputMultiple));
             }
             syncInputs(); draw();
         }, "Remove the crop while keeping the current megapixel target; with ratio lock enabled, the target follows the full image ratio");
@@ -1160,12 +1160,10 @@ function mount(node) {
             }
         }
         function applyOutputMultiple(value) {
-            const targetMegapixels = imageMegapixels(
-                cropInputs.targetWidth.value, cropInputs.targetHeight.value);
             outputMultiple = value;
             updateSnapButtons();
             setTargetSize(dimensionsForMegapixels(
-                targetMegapixels, outputRatio(), outputMultiple));
+                requestedMegapixels, outputRatio(), outputMultiple));
             cropStatus.textContent = "";
             syncInputs("position"); draw();
         }
@@ -1173,10 +1171,12 @@ function mount(node) {
             outputMultiple = 8; updateSnapButtons();
             ratioLock.checked = true;
             lockedRatio = sourceWidth / sourceHeight;
+            unlockedRatio = lockedRatio;
             crop.x = 0; crop.y = 0;
             crop.width = sourceWidth; crop.height = sourceHeight;
+            requestedMegapixels = imageMegapixels(sourceWidth, sourceHeight);
             setTargetSize(dimensionsForMegapixels(
-                imageMegapixels(sourceWidth, sourceHeight),
+                requestedMegapixels,
                 lockedRatio, outputMultiple));
             resample.value = "lanczos";
             variantTag.value = `${asset.tag}_variant`;
@@ -1185,8 +1185,7 @@ function mount(node) {
         }
         function outputRatio() {
             if (ratioLock.checked) return lockedRatio;
-            const target = currentTargetSize();
-            return target.width / target.height;
+            return unlockedRatio;
         }
         function isFullCrop() {
             return crop.x === 0 && crop.y === 0
@@ -1225,7 +1224,7 @@ function mount(node) {
             const inputMp = formatMegapixels(imageMegapixels(crop.width, crop.height));
             const targetMp = formatMegapixels(imageMegapixels(
                 target.width, target.height));
-            megapixelInput.value = targetMp;
+            megapixelInput.value = String(requestedMegapixels);
             const inputName = isFullCrop() ? "full image" : "selected crop";
             const snapText = outputMultiple > 1
                 ? ` Output dimensions are multiples of ${outputMultiple}.`
@@ -1268,6 +1267,8 @@ function mount(node) {
                     changed === "targetHeight" ? "height" : "width",
                     lockedRatio, ratioLock.checked, outputMultiple,
                 );
+                requestedMegapixels = imageMegapixels(target.width, target.height);
+                unlockedRatio = target.width / target.height;
             }
             if (ratioLock.checked && ["width", "height"].includes(changed)) {
                 if (changed === "height") crop.width = Math.round(crop.height * lockedRatio);
@@ -1287,6 +1288,7 @@ function mount(node) {
                 cropStatus.textContent = "Target megapixels must be positive.";
                 return;
             }
+            requestedMegapixels = value;
             setTargetSize(dimensionsForMegapixels(
                 value, outputRatio(), outputMultiple));
             cropStatus.textContent = "";
@@ -1294,10 +1296,12 @@ function mount(node) {
         }
         megapixelInput.addEventListener("change", applyMegapixelTarget);
         ratioLock.addEventListener("change", () => {
+            const target = currentTargetSize();
             if (ratioLock.checked) {
-                const target = currentTargetSize();
                 lockedRatio = target.width / target.height;
                 fitCropToLockedRatio();
+            } else {
+                unlockedRatio = target.width / target.height;
             }
             syncInputs("position"); draw();
         });

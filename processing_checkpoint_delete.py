@@ -138,7 +138,7 @@ class ProcessingCheckpointManager:
                     docs[path] = value
         return docs
 
-    def _preview(self, run, address):
+    def _preview(self, run, address, exports=None):
         address = artifact_address(address)
         target, profile = self._target(run, address)
         docs = self._documents(run)
@@ -245,6 +245,10 @@ class ProcessingCheckpointManager:
             for item in dependents}.values())
         for item in dependents:
             retained.pop(item["metadata_path"], None)
+        from . import png_export_cleanup
+        png_owned, png_updates, png_kept = png_export_cleanup.plan(
+            self, metadata, docs, exports or {})
+        owned.update(png_owned)
         files = []
         for path, label in sorted(owned.items()):
             self._path(self._address(path))
@@ -259,6 +263,8 @@ class ProcessingCheckpointManager:
         snapshot = hashlib.sha256(json.dumps({
             "run": run, "target": address, "files": files,
             "documents": {self._address(p): v for p, v in docs.items()},
+            "png_documents": {self._address(p): v for p, v in (exports or {}).items()},
+            "png_updates": {self._address(p): v for p, v in png_updates.items()},
         }, sort_keys=True).encode()).hexdigest()
         return {"ok": True, "run_name": run, "metadata_path": address,
                 "scene": scene, "revision": revision, "profile": profile.name,
@@ -270,23 +276,29 @@ class ProcessingCheckpointManager:
                 "files": [{k: v for k, v in f.items() if not k.startswith("_")} for f in files],
                 "owned_file_count": sum(f["exists"] for f in files),
                 "reclaimed_bytes": sum(f["size_bytes"] for f in files), "snapshot": snapshot,
+                "_png_updates": {self._address(p): v for p, v in png_updates.items()},
                 "not_deleted": ["Original generation clips and checkpoints", "Shared references and reference caches",
-                                "Other processed takes and profiles", "Assembled videos, run archives and prompt history"]}
+                                "Other processed takes and profiles", "Assembled videos, run archives and prompt history", *png_kept]}
 
     def deletion_preview(self, run_name, metadata_path):
+        from .png_export_cleanup import locked_exports
         run = _strict_run_name(run_name)
-        with checkpoint_run_lock(str(self.root), run):
-            return self._preview(run, metadata_path)
+        with checkpoint_run_lock(str(self.root), run), locked_exports(self, run) as exports:
+            return {k: v for k, v in self._preview(run, metadata_path, exports).items()
+                    if not k.startswith("_")}
 
     def delete(self, run_name, metadata_path, expected_snapshot=""):
+        from .png_export_cleanup import locked_exports
+        from .processing_persistence import atomic_json
         run = _strict_run_name(run_name)
-        with checkpoint_run_lock(str(self.root), run):
-            preview = self._preview(run, metadata_path)
+        with checkpoint_run_lock(str(self.root), run), locked_exports(self, run) as exports:
+            preview = self._preview(run, metadata_path, exports)
             if not preview["allowed"]:
                 raise CheckpointDeleteBlocked(" ".join(preview["blockers"]), preview)
             if not expected_snapshot or expected_snapshot != preview["snapshot"]:
                 raise CheckpointDeleteBlocked("Processed files or dependencies changed; preview deletion again.", preview)
             staged = []
+            rewritten = []
             transaction = uuid.uuid4().hex
             try:
                 for item in preview["files"]:
@@ -296,9 +308,26 @@ class ProcessingCheckpointManager:
                     temporary = path.with_name(path.name + ".delete." + transaction + ".tmp")
                     os.replace(path, temporary)
                     staged.append((path, temporary, item["size_bytes"]))
-            except Exception:
+                for address, record in preview["_png_updates"].items():
+                    path = self._path(address)
+                    original = self._read(path)
+                    rewritten.append((path, original))
+                    atomic_json(path, record)
+            except BaseException:
+                rollback_errors = []
+                for path, original in reversed(rewritten):
+                    try:
+                        atomic_json(path, original)
+                    except OSError as exc:
+                        rollback_errors.append(str(exc))
                 for path, temporary, _ in reversed(staged):
-                    os.replace(temporary, path)
+                    try:
+                        os.replace(temporary, path)
+                    except OSError as exc:
+                        rollback_errors.append(str(exc))
+                if rollback_errors:
+                    raise OSError("Deletion rollback could not finish; staged .delete.%s.tmp files "
+                                  "were retained for recovery: %s" % (transaction, "; ".join(rollback_errors)))
                 raise
             pending, reclaimed = [], 0
             for path, temporary, size in staged:

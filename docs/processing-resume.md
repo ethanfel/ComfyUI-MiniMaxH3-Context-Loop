@@ -51,6 +51,26 @@ preserving continuous numbering. Those copies are independent files, so edits
 to the older sequence cannot change them. Edited/missing prefix frames are
 not copied; that fresh variant begins with the scene being exported.
 
+This also applies when the **original source revisions** change: rerendering
+only scenes 6–7 copies the verified unchanged scenes 1–5 into `_2`, then writes
+the new 6–7 using continuous frame numbers (including `first_frame_number`).
+The earlier folder is untouched. If an earlier source scene, selected upscale
+take, or prefix PNG changed, that prefix is not silently reused. Changing frame
+counts naturally shifts subsequent frame numbers in the new sequence.
+
+New VIDEO exports and upscale saves record their shared per-scene/pass owner.
+Checkpoint Manager's deletion preview includes the take's owned PNG frames,
+including independent copies in numbered variants and registered custom output
+folders. Confirming deletion removes those frames, including hand-edited frames
+in that owned range. Other scenes keep their files and original frame numbers;
+the affected export index is marked incomplete. Later exports use a new variant
+instead of replaying deleted scenes from a saved prefix recipe. Identical PNGs
+shared with another owner/take remain until the last owner is removed.
+
+Legacy exports/takes without exact ownership are kept and reported rather than
+matched by scene number, filename, or source revision alone. Assembled videos
+and unrelated/untracked files are still kept. No folders are recursively deleted.
+
 PNG publication writes a `.png_pending.json` journal after staging a complete
 scene. Normal cancellation rolls back that attempt when it can safely do so.
 After a process exit or unreachable share, the next export recovers that
