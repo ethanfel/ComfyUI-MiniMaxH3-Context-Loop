@@ -213,6 +213,7 @@ function injectStyles() {
         .h3pa-button{padding:6px 9px;border:1px solid var(--h3pa-border);border-radius:6px;
           background:var(--h3pa-panel);color:var(--h3pa-text);cursor:pointer}.h3pa-button:hover{border-color:var(--h3pa-accent)}
         .h3pa-status{min-height:18px;color:var(--h3pa-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+        .h3pa-help{display:block;color:var(--h3pa-muted);white-space:normal;line-height:1.35}
         .h3pa-tabs{display:flex;gap:5px;overflow-x:auto;align-items:center;flex:0 0 auto}.h3pa-tab.active{background:var(--h3pa-selected);border-color:var(--h3pa-accent)}
         .h3pa-folder-tools{display:flex;gap:5px;align-items:center;margin-left:auto;padding-left:7px;border-left:1px solid var(--h3pa-border);flex:0 0 auto}.h3pa-folder-tools select{max-width:190px;min-width:110px;padding:6px 8px;border:1px solid var(--h3pa-border);border-radius:6px;background:var(--h3pa-panel);color:var(--h3pa-text)}
         .h3pa-stage{flex:1 1 auto;min-height:230px;display:grid;grid-template-columns:minmax(0,1fr) 260px;gap:10px;overflow:hidden}
@@ -1490,7 +1491,7 @@ function mount(node) {
             });
             roleLabel.append(role); editor.append(roleLabel);
             if (asset.kind === "video" && VIDEO_ROLE_HELP[asset.role]) {
-                editor.append(el("small", "h3pa-status", VIDEO_ROLE_HELP[asset.role]));
+                editor.append(el("small", "h3pa-help", VIDEO_ROLE_HELP[asset.role]));
             }
         }
         if (isAudio && isSourceTrack) {
@@ -1604,7 +1605,7 @@ function mount(node) {
                 option.value = value; option.selected = value === (asset.options?.timeline_mode ?? "restart_each_scene");
                 timeline.append(option);
             }
-            const timelineHelp = el("small", "h3pa-status",
+            const timelineHelp = el("small", "h3pa-help",
                 TIMELINE_MODE_HELP[asset.options?.timeline_mode ?? "restart_each_scene"]);
             timeline.title = TIMELINE_MODE_HELP[asset.options?.timeline_mode ?? "restart_each_scene"];
             timeline.addEventListener("change", () => {
