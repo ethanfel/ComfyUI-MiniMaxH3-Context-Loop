@@ -23,7 +23,7 @@ https://github.com/matlowai/ComfyUI-MAINodes
 
 This is the combined spatial-upscale + De-Rope option. For motion repair at source resolution, use Deferred De-Rope Only instead. A later gentle pixel upscale may preserve repaired motion, but high-denoise resampling can reintroduce artifacts; compare playback on your footage.
 
-Defaults: balanced oracle q=0.75 / d_max=4 / ramp ON / bridge=8; 1.5 MP LBH 3D; res_multistep / simple, 20 total schedule steps and custom injection 0.50 = 10 actual sampling steps. Non-custom presets override numeric widgets. Recipe metadata describes these defaults; the visible graph controls execution.
+Defaults: balanced oracle q=0.75 / d_max=4 / ramp ON / bridge=8; 2x spatial scale with LBH 3D; res_multistep / simple, 20 total schedule steps and custom injection 0.50 = 10 actual sampling steps. Non-custom presets override numeric widgets. Recipe metadata describes these defaults; the visible graph controls execution.
 
 Manual Hold Map gates the oracle before Chain De-Rope Guard. Blank ranges preserve automatic planning. Non-empty ranges use zero-based RAW scene frames or seconds at 24 fps, including the carried prefix (e.g. 36-60, 3s-4s). They apply to every selected scene: narrow Adapter start/end to one scene for a targeted edit. Token snapping and ramp shoulders can extend beyond a typed endpoint. Guard still protects chain boundaries.
 

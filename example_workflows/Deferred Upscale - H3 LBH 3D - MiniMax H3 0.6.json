@@ -96,7 +96,7 @@
       "widgets_values": [
         "h3_lbh_3d",
         "h3_latent",
-        "{\"upscaler\":\"LBH 3D\",\"target_megapixels\":1.5,\"pass2_steps\":2,\"denoise\":0.24,\"conditioning\":\"latent_sync\",\"audio_denoise\":0}",
+        "{\"upscaler\":\"LBH 3D\",\"scale_multiplier\":2.0,\"pass2_steps\":2,\"denoise\":0.24,\"conditioning\":\"latent_sync\",\"audio_denoise\":0}",
         1,
         0,
         false,
@@ -674,8 +674,8 @@
       },
       "widgets_values": [
         "minimax_h3_latent_upscaler_3d_fp16.safetensors",
-        "megapixels",
-        1.5,
+        "scale by multiplier",
+        2.0,
         32,
         true,
         true,

@@ -96,7 +96,7 @@
       "widgets_values": [
         "h3_lbh_3d_derope",
         "h3_latent",
-        "{\"upscaler\":\"LBH 3D\",\"target_megapixels\":1.5,\"derope\":\"MAINodes adaptive pixel smear\",\"oracle\":\"balanced q0.75 dmax4\",\"pass2_steps\":10,\"inject\":0.5,\"audio_init\":0.5,\"audio_output\":\"original performance\",\"total_steps\":20,\"scheduler\":\"simple\",\"sampler\":\"res_multistep\"}",
+        "{\"upscaler\":\"LBH 3D\",\"scale_multiplier\":2.0,\"derope\":\"MAINodes adaptive pixel smear\",\"oracle\":\"balanced q0.75 dmax4\",\"pass2_steps\":10,\"inject\":0.5,\"audio_init\":0.5,\"audio_output\":\"original performance\",\"total_steps\":20,\"scheduler\":\"simple\",\"sampler\":\"res_multistep\"}",
         1,
         0,
         true,
@@ -587,8 +587,8 @@
       },
       "widgets_values": [
         "minimax_h3_latent_upscaler_3d_fp16.safetensors",
-        "megapixels",
-        1.5,
+        "scale by multiplier",
+        2.0,
         32,
         true,
         true,
