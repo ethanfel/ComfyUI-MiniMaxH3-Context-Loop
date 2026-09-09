@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import vm from "node:vm";
 import * as core from "../web/h3_chain_plan_core.mjs";
+import * as studioCore from "../web/h3_chain_plan_studio_core.mjs";
 
 const carousel = fs.readFileSync(new URL("../web/h3_project_asset_manager.js", import.meta.url), "utf8");
 const studio = fs.readFileSync(new URL("../web/h3_chain_plan_studio.js", import.meta.url), "utf8");
@@ -84,13 +85,15 @@ for (const returnToA of [false, true]) {
 function studioContext() {
     const timers = new Map(); const writes = []; let id = 0;
     const context = vm.createContext({
-        ...core, console, structuredClone,
+        ...core, ...studioCore, console, structuredClone,
         branches:{ready:true, conflict:"", draftRecovery:null},
         state:{plan:{shots:[{id:"scene_a", prompt:["A"], length:345}], chapters:[]},
             editorial:{}, checkpoints:new Map()},
         node:{properties:{}}, alternateTakeWidget:{value:"stale"},
         runName:() => "run_b", cacheStudioPresentation(){}, dirty(){}, renderStatus(){},
         currentBranch:() => "main", scopedPath:path => path,
+        timing:() => ({shots:[{id:"scene_b", rawFrames:124, deliveredFrames:124}]}),
+        renderShell(){}, flushHistoryDraft:async () => {},
         setTimeout:fn => { timers.set(++id, fn); return id; }, clearTimeout:key => timers.delete(key),
         projectMutationOptions:async (_node, _run, options) => options,
         api:{fetchApi:async (_route, options) => {
@@ -98,7 +101,8 @@ function studioContext() {
             return {ok:true, json:async () => ({editorial:{revision:"c".repeat(32)}})};
         }},
     });
-    const names = ["normalizedEditorial", "editorialPayload", "applyEditorialPayload", "syncAlternateTakeWidget", "scheduleEditorialSave"];
+    const names = ["normalizedEditorial", "editorialPayload", "applyEditorialPayload", "syncAlternateTakeWidget", "scheduleEditorialSave",
+        "sceneLocked", "setSceneTrim", "flushProjectWrites"];
     if (studio.includes("function editorialSignature(")) names.push("editorialSignature", "persistEditorial");
     vm.runInContext(names.map(name => handler(studio, name)).join("\n"), context);
     return {context, writes, async flush() {
@@ -143,6 +147,68 @@ const incoming = {
     fixture.context.applyEditorialPayload(incoming, 0);
     assert.equal(fixture.context.state.editorial.trims[0].out_frame, 81,
         "a GET started before the edit must not clobber it after POST completes");
+}
+// A branch guard must not silently drop an explicit trim and let the next
+// checkpoint poll restore the untrimmed clip. It must retain the local edit,
+// explain why it is unsaved, and prevent switching/queueing past that error.
+for (const blocked of [
+    {ready:false},
+    {conflict:"Reload saved branch, or keep these edits as a new empty branch."},
+    {draftRecovery:{authoring:{}}},
+]) {
+    const fixture = studioContext();
+    const {context} = fixture;
+    context.state.plan.shots[0].id = "scene_b";
+    const full = {...incoming, trims:[], locked_scene_ids:[]};
+    context.applyEditorialPayload(full);
+    Object.assign(context.branches, blocked);
+    context.setSceneTrim(0, 81);
+    context.applyEditorialPayload(full);
+    assert.equal(context.state.editorial.trims[0]?.out_frame, 81,
+        "a blocked save must keep the requested 81/124 trim through refresh");
+    assert.ok(context.state.editorialSaveError, "blocked saving must be visible");
+    await fixture.flush();
+    assert.equal(fixture.writes.length, 0, "do not bypass branch protection");
+    await assert.rejects(context.flushProjectWrites(), /.+/,
+        "queue/switch must not silently abandon an unsaved trim");
+    Object.assign(context.branches, {ready:true, conflict:"", draftRecovery:null});
+    context.scheduleEditorialSave(); await fixture.flush();
+    assert.equal(fixture.writes.length, 1, "explicit retry after resolving the guard saves the trim");
+    assert.equal(fixture.writes[0].trims[0].out_frame, 81);
+    assert.equal(context.state.editorialSaveError, "");
+}
+{
+    const fixture = studioContext();
+    const {context} = fixture;
+    context.state.plan.shots[0].id = "scene_b";
+    const full = {...incoming, trims:[], locked_scene_ids:[]};
+    context.applyEditorialPayload(full);
+    context.setSceneTrim(0, 81); await fixture.flush();
+    const saved = {...full, revision:"c".repeat(32), trims:fixture.writes[0].trims};
+    context.applyEditorialPayload(saved);
+    assert.equal(context.state.editorial.trims[0].out_frame, 81,
+        "successful saving and a fresh GET keep the requested trim");
+    context.setSceneTrim(0, 124); await fixture.flush();
+    assert.deepEqual(fixture.writes[1].trims, [], "restoring full length remains supported");
+}
+{
+    const fixture = studioContext();
+    const {context} = fixture;
+    context.state.plan.shots[0].id = "scene_b";
+    context.applyEditorialPayload({...incoming, trims:[], locked_scene_ids:[]});
+    let complete;
+    context.api.fetchApi = () => new Promise(resolve => { complete = resolve; });
+    context.setSceneTrim(0, 81);
+    const inFlight = fixture.flush(); await tick();
+    context.branches.conflict = "Reload saved branch";
+    context.setSceneTrim(0, 102);
+    complete({ok:true, json:async () => ({editorial:{revision:"c".repeat(32)}})});
+    await inFlight;
+    assert.equal(context.state.editorial.trims[0].out_frame, 102);
+    assert.ok(context.state.editorialSaveError,
+        "finishing an older save cannot mark a newer blocked edit as saved");
+    context.applyEditorialPayload({...incoming, trims:[], locked_scene_ids:[]});
+    assert.equal(context.state.editorial.trims[0].out_frame, 102);
 }
 assert.doesNotMatch(handler(studio, "loadPlan"), /scheduleEditorialSave\(/);
 

@@ -36,12 +36,14 @@ const state = {
 };
 let response = {checkpoints:[oldRecords[0], {...oldRecords[1], revision:"new-1"}]};
 let panelRenders = 0;
+const cached = [];
 const context = vm.createContext({
     state, Map, URLSearchParams, studioCheckpointSignature, matchingStudioCheckpoint,
     runName:() => "run", timing:() => ({shots:rows}),
     currentBranch:() => "main",
     api:{fetchApi:async () => ({ok:true, json:async () => response})},
-    applyEditorialPayload:() => false, cacheStudioPresentation(){},
+    applyEditorialPayload:() => false,
+    cacheStudioPresentation(records, editorial) { cached.push({records, editorial}); },
     renderStatus(){}, renderTimeline(){},
     renderPanel() { panelRenders += 1; },
     checkpointThumbnailUrl:(_index, record) => record?.video ?? "",
@@ -64,4 +66,23 @@ response = {checkpoints:[]};
 await context.refreshCheckpointsNow();
 assert.equal(state.checkpoints.size, 0);
 assert.ok(cards.every(card => card.thumbnail == null));
+const cacheCount = cached.length;
+for (const pending of [
+    {editorialSaveError:"Branch saving is paused"},
+    {editorialTimer:1},
+    {editorialSavePromise:Promise.resolve()},
+]) {
+    Object.assign(state, {editorialSaveError:"", editorialTimer:null, editorialSavePromise:null}, pending);
+    await context.refreshCheckpointsNow();
+    assert.equal(cached.length, cacheCount,
+        "a poll must not cache old full-length editorial data over a pending local trim");
+}
+Object.assign(state, {editorialSaveError:"", editorialTimer:null, editorialSavePromise:null});
+context.api.fetchApi = async () => {
+    // A save completes while this checkpoint GET is in flight.
+    state.editorialEditEpoch += 1;
+    return {ok:true, json:async () => response};
+};
+await context.refreshCheckpointsNow();
+assert.equal(cached.length, cacheCount, "pre-commit GETs cannot replace the recovery cache either");
 console.log("Studio branch switch: inactive thumbnails, playing media, shared-media revisions and Plan preservation pass");

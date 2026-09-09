@@ -1448,7 +1448,9 @@ function mount(node) {
                 state.editorial.revision = String(saved.revision ?? "");
                 // Invalidate checkpoint GETs that started before this commit.
                 state.editorialEditEpoch = (state.editorialEditEpoch ?? 0) + 1;
-                state.editorialSaveError = "";
+                // A newer edit may have been blocked while this POST was in
+                // flight. Only this request's edits have now been saved.
+                if (state.lastEditorialSignature === signature) state.editorialSaveError = "";
                 if (!state.disposed) renderStatus();
             }
             return {binding, run_name:payload.run_name, revision:String(saved?.revision ?? readRevision)};
@@ -1491,11 +1493,7 @@ function mount(node) {
     function scheduleEditorialSave(delay = 250) {
         syncAlternateTakeWidget();
         if (!state.plan) return;
-        // A stale workflow is a recoverable local draft, not authority to
-        // update this branch's saved editorial document.
-        if (branches && (!branches.ready || branches.conflict || branches.draftRecovery)) return;
         if (!state.editorialReady || state.editorialRun !== runName()) return;
-        if (state.editorialBindingError) { renderStatus(); return; }
         const local = editorialPayload();
         const payload = {...state.editorialStored};
         // Only explicitly changed fields may replace saved project data.
@@ -1514,6 +1512,22 @@ function mount(node) {
         const signature = editorialSignature(payload);
         if (signature === state.lastEditorialSignature) return;
         state.editorialEditEpoch = (state.editorialEditEpoch ?? 0) + 1;
+        // Register the edit before checking write authority. Silently returning
+        // here used to let the next checkpoint GET replace a local trim with
+        // the saved full length. Keep the edit and report the pause instead.
+        const blocked = state.editorialBindingError || (branches && (
+            !branches.ready ? "Wait for working branches to load, then retry saving the cut."
+            : branches.conflict ? branches.conflict
+            : branches.draftRecovery ? "Resolve the local recovery draft before saving the cut."
+            : ""));
+        if (blocked) {
+            if (state.editorialTimer != null) clearTimeout(state.editorialTimer);
+            state.editorialTimer = null; state.editorialPending = null;
+            state.lastEditorialSignature = "";
+            state.editorialSaveError = blocked;
+            renderStatus();
+            return;
+        }
         state.lastEditorialSignature = signature;
         payload.branch_id = currentBranch();
         if (state.editorialTimer != null) clearTimeout(state.editorialTimer);
@@ -1543,6 +1557,7 @@ function mount(node) {
                 } else if (state.editorialSavePromise) {
                     await state.editorialSavePromise;
                 }
+                if (state.editorialSaveError) throw new Error(state.editorialSaveError);
             }
         } catch (error) {
             editorialError = error;
@@ -1736,7 +1751,12 @@ function mount(node) {
                 payload.editorial, editorialEpoch, payload.editorial_unused_scene_ids,
             );
             const records = payload.checkpoints ?? [];
-            cacheStudioPresentation(records, payload.editorial);
+            // Do not put a rejected, pre-edit GET back into workflow recovery.
+            if (editorialEpoch === (state.editorialEditEpoch ?? 0)
+                    && state.editorialTimer == null && !state.editorialSavePromise
+                    && !state.editorialSaveError) {
+                cacheStudioPresentation(records, payload.editorial);
+            }
             const signature = studioCheckpointSignature(currentRun, records);
             const recoveredFromError = Boolean(state.checkpointError);
             state.checkpointError = "";
