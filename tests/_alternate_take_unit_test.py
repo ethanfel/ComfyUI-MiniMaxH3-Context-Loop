@@ -232,6 +232,9 @@ async def check():
         assert "presentation_revision" not in stale_scene_one
         assert stale_scene_one["alternates"][0]["used_in_final_cut"] is False
         assert stale_listing["editorial"]["replacements"] == []
+        assert stale_listing["editorial_notices"] == ["scene 1 final-cut alternate"]
+        assert chain._load_run_editorial("alternate_test")["replacements"] == selected["replacements"], (
+            "Read-only listing must keep the saved ALT choice for its original base")
         stale_graph = chain.CheckpointGraphManager(temporary).graph(
             "alternate_test")
         stale_base_record = next(

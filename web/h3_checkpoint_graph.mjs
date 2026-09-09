@@ -47,6 +47,7 @@ export function checkpointSaveOrder(records, stage = "original") {
 
 export function checkpointForkGraph(rows, stage = "original") {
     const nodes = new Map(), edges = new Map(), paths = [];
+    const nodeCells = new Set();
     let nextLane = 0;
     for (const row of rows) {
         const entries = stage === "original" ? row.revisions : row.entries;
@@ -54,12 +55,20 @@ export function checkpointForkGraph(rows, stage = "original") {
         const keys = entries.map(entry => checkpointGraphKey(stage, entry, row.profile_path));
         const path = {row, keys, index:paths.length};
         paths.push(path);
-        const lane = nextLane;
+        // An assignment ending at S1 is a bookmark, not a fork. If its saved
+        // continuation arrives later in the rows, keep it on the same line
+        // unless that line already contains a different take in those scenes.
+        const firstNew = keys.findIndex(key => !nodes.has(key));
+        const parentLane = firstNew > 0 ? nodes.get(keys[firstNew - 1]).lane : null;
+        const laneAvailable = parentLane != null && entries.slice(firstNew).every((entry, offset) =>
+            nodes.has(keys[firstNew + offset]) || !nodeCells.has(`${Number(entry.scene)}:${parentLane}`));
+        const lane = laneAvailable ? parentLane : nextLane;
         let added = false;
         entries.forEach((entry, index) => {
             const key = keys[index];
             if (!nodes.has(key)) {
                 nodes.set(key, {key, scene:Number(entry.scene), entry, lane, paths:[], ends:[]});
+                nodeCells.add(`${Number(entry.scene)}:${lane}`);
                 added = true;
             }
             const node = nodes.get(key);
@@ -73,7 +82,7 @@ export function checkpointForkGraph(rows, stage = "original") {
                 edges.get(edgeKey).paths.push(path.index);
             }
         });
-        if (added) nextLane++;
+        if (added) nextLane = Math.max(nextLane, lane + 1);
     }
     // Reuse is a proposed next-scene attachment, never a saved lineage edge.
     // A shared tip can already have a continuation in its lane: allocate a free
@@ -83,7 +92,9 @@ export function checkpointForkGraph(rows, stage = "original") {
     if (stage === "original") for (const path of paths) {
         const slot = path.row.attribution_slot, parent = nodes.get(path.keys.at(-1));
         const scene = Number(slot?.scene);
-        if (!slot || !(slot.candidates?.length || slot.blocked_candidates?.length)
+        // Blocked candidates are diagnostic metadata, not an available action
+        // or an empty saved scene. Do not draw a phantom branch for them.
+        if (!slot || !slot.candidates?.length
                 || !Number.isInteger(scene) || scene !== parent.scene + 1
                 || (slot.parent_scene != null && Number(slot.parent_scene) !== parent.scene)
                 || (slot.parent_revision && String(slot.parent_revision).toLowerCase() !== String(parent.entry.revision).toLowerCase())) continue;

@@ -18,6 +18,13 @@ assert.deepEqual(new Set(graph.edges.map(item => item.key)), new Set([edge(a,b),
 assert.equal(graph.nodes.find(item => item.key === key(d)).column, 1);
 assert.equal(graph.nodes.find(item => item.key === key(d)).lane, 1);
 assert.equal(JSON.stringify(rows), before);
+const assignedPrefix = checkpointForkGraph([{revisions:[a]}, {revisions:[a,b,c]}, {revisions:[a,d,e]}]);
+assert.deepEqual(assignedPrefix.nodes.map(item=>[item.entry.revision,item.lane]),
+    [[a.revision,0],[b.revision,0],[c.revision,0],[d.revision,1],[e.revision,1]],
+    "A partial assignment is a bookmark on a saved path, not a separate fork lane");
+assert.equal(assignedPrefix.lanes,2);
+assert.deepEqual(new Set(assignedPrefix.edges.map(item=>item.key)),new Set(graph.edges.map(item=>item.key)),
+    "Reusing a lane must preserve every exact lineage edge");
 
 const reuse = (parent, candidates = [e]) => ({scene:parent.scene + 1,
     parent_scene:parent.scene, parent_revision:parent.revision, candidates});
@@ -37,7 +44,12 @@ assert.equal(JSON.stringify(reuseRows),reuseBefore);
 const extended = checkpointForkGraph([{revisions:[a,b,c], attribution_slot:reuse(c)}]);
 assert.equal(extended.columns,4,"The next-scene column exists even without a saved take there");
 assert.equal(extended.slots[0].column,3);
-assert.equal(checkpointForkGraph([{revisions:[a,b], attribution_slot:{...reuse(b,[]),blocked_candidates:[e]}}]).slots.length,1);
+const blockedOnly = [{revisions:[a,b], attribution_slot:{...reuse(b,[]),blocked_candidates:[e]}}];
+const blockedBefore = JSON.stringify(blockedOnly);
+const blockedGraph = checkpointForkGraph(blockedOnly);
+assert.equal(blockedGraph.slots.length,0,"Blocked-only choices must not appear as an empty saved scene");
+assert.equal(blockedGraph.edges.filter(item => item.kind === "reuse").length,0);
+assert.equal(JSON.stringify(blockedOnly),blockedBefore,"Diagnostic candidates and saved paths remain intact");
 for (const slot of [null, reuse(b,[]), {...reuse(b),scene:4}, {...reuse(b),parent_revision:d.revision},
     {...reuse(b),parent_scene:1}]) {
     assert.equal(checkpointForkGraph([{revisions:[a,b],attribution_slot:slot}]).slots.length,0);

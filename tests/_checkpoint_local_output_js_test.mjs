@@ -208,7 +208,7 @@ assert.equal(JSON.parse(value(first)).lineage.at(-1).revision, d, "legacy defaul
 const wholeActive = value(first);
 const wholeActiveSummary = byClass(first, "h3cm-output-summary").textContent;
 assert.match(wholeActiveSummary, /Will send to connected nodes: Original checkpoints/);
-assert.match(wholeActiveSummary, /demo · original branch through scene 3 \/ dddddddd/);
+assert.match(wholeActiveSummary, /demo · saved path through scene 3 \/ dddddddd/);
 assert.match(wholeActiveSummary, /scenes 1–3 \(3 clips;/);
 assert.match(wholeActiveSummary, /follows branch selection/);
 select(first, 2, b); await settle();
@@ -373,9 +373,9 @@ const parentCell = elements(attaching).find(item => item.dataset.graphKey === `2
 assert.equal(Number(reuseCell.style.gridColumn),Number(parentCell.style.gridColumn)+1);
 assert.equal(reuseCell.style.gridRow,parentCell.style.gridRow);
 assert.ok(!elements(attaching).filter(item=>item.className.split(" ").includes("h3cm-branch"))
-    .some(item=>item.children.some(child=>child.textContent === "S3 · reuse saved clip")),"Reuse is not nested beneath the previous scene's branch heading");
+    .some(item=>item.children.some(child=>child.textContent === "Reuse for S3")),"Reuse is not nested beneath the previous scene's branch heading");
 const beforeReuse = value(attaching), writesBeforeReuse = mutations;
-byText(attaching, "S3 · reuse saved clip").click();
+byText(attaching, "Reuse for S3").click();
 assert.equal(value(attaching),beforeReuse,"Opening reuse choices does not change output");
 assert.equal(mutations,writesBeforeReuse,"Only confirmed reuse can mutate saved branch data");
 assert.equal(byClass(attaching, "h3cm-output-scope").value, "chapter");
@@ -426,7 +426,7 @@ assert.ok(elements(variants).some(item => /Continuation tail only/.test(item.tex
 byText(variants, "Use DeRoPE branch locally").click();
 assert.equal(value(variants), originalOutput, "an unusable processing branch never changes output");
 assert.match(byClass(variants, "h3cm-status").textContent, /unambiguous saved branch/);
-assert.ok(byText(variants, "Assign to working branch").disabled);
+assert.ok(byText(variants, "Assign path to Original").disabled);
 assert.ok(byText(variants, "Delete processed version").disabled);
 select(variants, 2, "2".repeat(32));
 assert.equal(value(variants), originalOutput);
@@ -612,7 +612,7 @@ await settle();
 assert.equal(value(repair), partialPin, "never guess which descendant of an old shared pin was intended");
 assert.match(byClass(repair, "h3cm-output-summary").textContent, /old partial selection/);
 const activeHeading = elements(repair).find(item => item.className.includes("h3cm-branch-head")
-    && item.children.some(child => child.textContent === "Saved path · Original"));
+    && item.children.some(child => child.textContent === "Select path · S8–S10 · dddddddd"));
 activeHeading.click(); await settle();
 select(repair, 8, a); await settle();
 byText(repair, "Use branch locally").click();
@@ -631,7 +631,7 @@ assert.equal(core.checkpointOutputBranchTip(currentGraph, currentGraph.revisions
 // Selecting a branch header explicitly also chooses full output in follow mode.
 const following = makeNode(); await settle();
 const alternateHeading = elements(following).find(item => item.className.includes("h3cm-branch-head")
-    && item.children.some(child => child.textContent === "Branch cccccccc"));
+    && item.children.some(child => child.textContent === "Select path · S8–S9 · cccccccc"));
 alternateHeading.click(); await settle();
 assert.equal(JSON.parse(value(following)).lineage.at(-1).revision, c);
 select(following, 8, a); await settle();
@@ -686,7 +686,7 @@ processingRows()[0].children[0].listeners.keydown({key:"Enter", preventDefault()
 await settle();
 assert.equal(byClass(branchView, "h3cm-preview").dataset.source, "/view?filename=3.mp4&subfolder=&type=output");
 assert.equal(value(branchView), outputBeforePreview, "Keyboard heading selection is preview only");
-assert.ok(byText(branchView, "Assign to working branch").disabled);
+assert.ok(byText(branchView, "Assign path to Original").disabled);
 byText(branchView, "Chapter 2").click();
 assert.equal(processingRows().length, 1);
 assert.deepEqual(cardNames(), ["S3 · 44444444"]);
@@ -715,7 +715,7 @@ workingDropdown.value = namedWorkingBranch;
 await workingDropdown.listeners.change(); await settle();
 assert.equal(JSON.parse(value(workingManager))._branch_id, namedWorkingBranch);
 select(workingManager, 2, c);
-byText(workingManager, "Assign to working branch").click(); await settle();
+byText(workingManager, "Assign path to New working branch").click(); await settle();
 const assignment = requests.findLast(item => item.path.includes("/checkpoint-revisions/restore"));
 assert.ok(assignment.path.endsWith(`?branch_id=${namedWorkingBranch}`));
 assert.deepEqual(JSON.parse(assignment.options.body).revisions, [{scene:1,revision:a}, {scene:2,revision:c}]);
@@ -758,7 +758,7 @@ studio.widgets[2].value=namedWorkingBranch;
 const pinnedFork=value(forkView), beforeSwitchRequests=requests.length;
 forkView._h3CheckpointManagerPlanMarkerRefresh();
 assert.equal(byClass(forkView,"h3cm-plan-marker"),undefined);
-assert.match(byClass(forkView,"h3cm-plan-context").textContent,/different from the branch shown/);
+assert.match(byClass(forkView,"h3cm-plan-context").textContent,/different from the assignments shown/);
 assert.ok(elements(forkView).some(item=>item.tag==='option' && item.value===namedWorkingBranch && item.textContent.includes('In Plan Studio')));
 assert.equal(value(forkView),pinnedFork);assert.equal(requests.length,beforeSwitchRequests);
 studio.widgets[0].value='other';forkView._h3CheckpointManagerPlanMarkerRefresh();
@@ -766,3 +766,54 @@ assert.equal(byClass(forkView,"h3cm-plan-marker"),undefined);
 assert.match(byClass(forkView,"h3cm-plan-context").textContent,/other/);
 forkView.onRemoved();assert.equal(forkView._h3CheckpointManagerPlanMarkerRefresh,undefined);
 console.log("Fork presentation: one shared prefix, independent output/preview/Plan markers, named branches and read-only live refresh pass");
+
+// Reported confusion: Original only assigns S1, while the saved 960x544
+// continuation through S7 is selectable and assignable without moving media.
+const seven = Array.from({length:7}, (_, i) => ({scene:i + 1, revision:String(i + 1).repeat(32),
+    active:i === 0, ready:true, compatibility:{width:960,height:544},
+    ...(i ? {parent:{scene:i,revision:String(i).repeat(32)}} : {})}));
+currentGraph = {revisions:seven, scenes:seven.map(item => ({scene:item.scene})),
+    branches:[{active:true, path:[seven[0]], attribution_slot:{scene:2, candidates:[], blocked_candidates:[{scene:2, revision:b}]}},
+        {active:false, path:seven}], summary:{scene_count:7,revision_count:7,branch_count:2,bytes:0},
+    editorial_notices:["scene 1 final-cut alternate"]};
+allowWorkingAssignment = true;
+const recovery = makeNode(); await settle();
+const recoveryPin = value(recovery);
+assert.equal(JSON.parse(recoveryPin).lineage.length,1);
+assert.equal(byClass(recovery,"h3cm-fork-slot"),undefined,"No blocked-only phantom S2");
+assert.equal(byClass(recovery,"h3cm-assignment-badge").textContent,"Assigned to Original through S1");
+assert.match(byClass(recovery,"h3cm-stage-note").textContent,/ALT files are kept/);
+assert.ok(elements(recovery).some(item=>item.textContent.startsWith("Saved continuations exist")));
+select(recovery,7,seven[6].revision); await settle();
+assert.equal(value(recovery),recoveryPin,"Selecting S7 previews without silently expanding output");
+assert.match(byClass(recovery,"h3cm-assignment-context").textContent,/scenes 1–7 \(7 clips\)/);
+assert.ok(byClass(recovery,"h3cm-assignment-actions").children.includes(byText(recovery,"Assign path to Original")),
+    "Assignment belongs to its own visible toolbar, not the deletion file list");
+assert.ok(byClass(recovery,"h3cm-delete").children[0].children.includes(byText(recovery,"Delete selected revision")),
+    "Delete stays ahead of the scrollable file inventory");
+confirms = false;
+const beforeAssignment = mutations;
+byText(recovery,"Assign path to Original").click(); await settle();
+assert.equal(mutations,beforeAssignment,"Cancelled assignment cannot mutate a branch");
+confirms = true;
+byText(recovery,"Assign path to Original").click(); await settle();
+const originalAssignment = requests.findLast(item=>item.path.includes("/checkpoint-revisions/restore"));
+const originalBody = JSON.parse(originalAssignment.options.body);
+assert.equal(originalBody.branch_id,"main");
+assert.equal(originalBody.activate_only,true);
+assert.equal(originalBody.revisions.length,7);
+assert.ok(confirmations.at(-1).includes('to "Original" (main)'));
+assert.equal(value(recovery),recoveryPin,"Assigning to Original does not replace an existing output selection");
+assert.ok(byText(recovery,"Already assigned to Original").disabled);
+assert.match(byClass(recovery,"h3cm-status").textContent,/Output selection unchanged/);
+// Changing the connected Plan branch refreshes action labels/visibility too,
+// without having to select a different take or refresh from the server.
+recovery.inputs = [{link:11}]; recovery.graph.links = {11:{origin_id:12}};
+studio.widgets[0].value = "demo"; studio.widgets[2].value = namedWorkingBranch;
+recovery.graph.getNodeById = () => studio;
+recovery._h3CheckpointManagerPlanMarkerRefresh();
+assert.equal(byText(recovery,"Assign path to New working branch (Plan)").hidden,false);
+studio.widgets[2].value = "main";
+recovery._h3CheckpointManagerPlanMarkerRefresh();
+assert.equal(byText(recovery,"Assign path to Original (Plan)").hidden,true,"Same-target duplicate action is hidden");
+console.log("Original assignment recovery: full 960x544 path, no phantom slot, named targets, visible controls, cancel and output isolation pass");

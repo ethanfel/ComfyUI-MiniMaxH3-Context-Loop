@@ -6,7 +6,7 @@ const lineage = Array.from({length:10}, (_, index) => ({
 }));
 const selected = {run_name:"demo", lineage, scope_start_scene:8, scope_end_scene:13};
 const project = checkpointOutputSummary(JSON.stringify(selected));
-assert.match(project, /Original checkpoints · demo · original branch through scene 10 \/ 99999999/);
+assert.match(project, /Original checkpoints · demo · saved path through scene 10 \/ 99999999/);
 assert.match(project, /scenes 1–10 \(10 clips; selected branch \+ earlier chapters\)/);
 assert.doesNotMatch(project, /13/, "the planned chapter end is not an available output scene");
 assert.match(project, /Clip and tab previews do not change this output/);

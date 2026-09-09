@@ -29,10 +29,11 @@ import shutil
 import subprocess
 import struct
 import sys
+import threading
 import time
 import uuid
 import wave
-from collections import deque
+from collections import OrderedDict, deque
 from contextlib import contextmanager, nullcontext
 from datetime import datetime, timezone
 from fractions import Fraction
@@ -29670,6 +29671,33 @@ async def _delete_checkpoint_revision(request):
     return web.json_response(payload)
 
 
+_CHECKPOINT_EDITORIAL_NOTICES = OrderedDict()
+_CHECKPOINT_EDITORIAL_NOTICE_LOCK = threading.Lock()
+
+
+def _log_checkpoint_editorial_notices(run_name, notices):
+    """Report a changed notice once per working branch, not once per UI poll.
+
+    This bounded process-local cache never edits the saved editorial document:
+    its alternate selection may become valid again when its base is assigned.
+    """
+    key = (os.path.realpath(_output_root()), run_name, current_branch(run_name))
+    signature = tuple(notices)
+    with _CHECKPOINT_EDITORIAL_NOTICE_LOCK:
+        previous = _CHECKPOINT_EDITORIAL_NOTICES.pop(key, None)
+        if not signature:
+            return
+        _CHECKPOINT_EDITORIAL_NOTICES[key] = signature
+        while len(_CHECKPOINT_EDITORIAL_NOTICES) > 256:
+            _CHECKPOINT_EDITORIAL_NOTICES.popitem(last=False)
+    if signature != previous:
+        _LOG.warning(
+            "H3 Checkpoint Manager: %s (branch %s) is not applying saved "
+            "editorial selection(s) to this base path: %s. "
+            "Saved selections and alternate files are kept for their original base clips.",
+            run_name, key[2], "; ".join(signature))
+
+
 def _saved_checkpoint_listing(
         run_name: str, include_graph: bool = True) -> dict[str, Any]:
     """Read checkpoint metadata without blocking ComfyUI's event loop."""
@@ -29816,11 +29844,7 @@ def _saved_checkpoint_listing(
     editorial = _load_run_editorial(run_name)
     editorial, cleared_editorial = _editorial_for_base_segments(
         editorial, list(active_segments.values()))
-    if cleared_editorial:
-        _LOG.warning(
-            "H3 Checkpoint Manager ignored stale editorial selection(s): "
-            "%s. Alternate artifacts remain available.",
-            "; ".join(cleared_editorial))
+    _log_checkpoint_editorial_notices(run_name, cleared_editorial)
     replacements = {
         int(item["scene"]): item
         for item in editorial.get("replacements", [])
@@ -29884,6 +29908,7 @@ def _saved_checkpoint_listing(
         "checkpoints": checkpoints,
         "inactive_checkpoints": inactive_checkpoints,
         "editorial": editorial,
+        "editorial_notices": cleared_editorial,
         # Read-only evidence; never persisted in editorial.json. Frontend
         # also checks chapters, placements, trims, locks and alternate edits.
         "editorial_unused_scene_ids": [

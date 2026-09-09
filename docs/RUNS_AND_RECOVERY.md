@@ -215,11 +215,13 @@ The output row flags this. Choose the intended branch heading and click
 can lead to multiple branches, so reopening a workflow never guesses which
 descendant you intended or silently switches an existing snapshot.
 
-**Assign to working branch**, **Roll working branch back** and
-**Load selected branch** write the working branch being browsed in the manager.
-That can differ from the branch being edited in Plan Studio. To assign a saved
+**Assign path to <name>** and **Load path + settings into Plan (<name>)** write
+the named working branch shown in **Assignments shown for**. Assignment uses
+the full chapter path through the selected take; choosing an earlier take can
+roll back that chapter's later assignments while keeping the saved clips.
+The target can differ from the branch being edited in Plan Studio. To assign a saved
 path to the connected Plan's branch instead, select its final scene and use
-**Assign to Plan: <branch name>**. This also works when the path is already
+**Assign path to <name> (Plan)**. This also works when the path is already
 active in another working branch. Only the selected chapter's pointers change;
 saved clips, other working branches and the manager's output pin are kept.
 
@@ -319,13 +321,13 @@ Rerendering an earlier scene can leave old pointer files on disk. Checkpoint
 Manager, Plan Studio and recovery exclude those disconnected descendants from
 the active chapter branch. They remain available as saved inactive takes; no
 media, checkpoint, prompt, scene slot or chapter export is deleted. Use
-**Make branch active / Roll active branch back** to explicitly reconcile those
+**Assign path to <name>** to explicitly reconcile those
 old pointers. Recovery stops at the coherent saved prefix, and resuming through
 an inactive tail requires selecting or attributing a matching lineage first,
 even with history verification disabled.
 
 If deleting the active branch tip rolls the run back while alternate leaf
-revisions remain, select the surviving branch and click **Make branch active**.
+revisions remain, select the surviving path's final take and click **Assign path to <name>**.
 The manager validates and promotes that revision's chapter lineage directly,
 including when no Plan is connected. With an editable Plan connected, it also
 restores the lineage's saved scene prompts, seeds, lengths, steps, context,

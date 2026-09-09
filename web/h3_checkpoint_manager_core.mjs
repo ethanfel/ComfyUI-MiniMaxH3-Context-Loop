@@ -361,7 +361,7 @@ export function checkpointOutputSummary(value) {
     }
     const scope = chapterOnly ? "selected chapter only" : "selected branch + earlier chapters";
     const mode = saved.output_mode === "workflow_local" ? "pinned to this workflow" : "follows branch selection";
-    return `Will send to connected nodes: ${source} · ${saved.run_name} · original branch through scene ${tip.scene} / ${String(tip.revision).slice(0, 8)}`
+    return `Will send to connected nodes: ${source} · ${saved.run_name} · saved path through scene ${tip.scene} / ${String(tip.revision).slice(0, 8)}`
         + ` · scenes ${first}–${tip.scene} (${clips.length} ${clips.length === 1 ? "clip" : "clips"}; ${scope}) · ${mode}.`
         + " Clip and tab previews do not change this output. Set the processing range downstream.";
 }

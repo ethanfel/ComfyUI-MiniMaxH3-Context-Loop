@@ -14,7 +14,7 @@ IMPORT = re.compile(
     r'''["'](\./[^"']+\.mjs)(?:\?v=([^"']+))?["']''')
 SEMVER = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
 MINIMUM_CACHE_VERSION = {
-    "h3_checkpoint_graph.mjs": "0.7.16",
+    "h3_checkpoint_graph.mjs": "0.7.19",
     "h3_working_branches.mjs": "0.7.11",
     "h3_policy_core.mjs": "0.7.9",
     "h3_project_asset_editor_core.mjs": "0.7.9",
@@ -34,7 +34,7 @@ MINIMUM_CACHE_VERSION = {
     # These helpers changed during 0.7 nightly development. Reusing their
     # original 0.7.0 URL can load an incompatible browser-cached module and
     # leave an entire DOM node blank before it can render an error message.
-    "h3_checkpoint_manager_core.mjs": "0.7.2",
+    "h3_checkpoint_manager_core.mjs": "0.7.19",
     "h3_prompt_companion_sync.mjs": "0.7.2",
     "h3_project_asset_sync_core.mjs": "0.7.2",
     "h3_project_ownership.mjs": "0.7.4",

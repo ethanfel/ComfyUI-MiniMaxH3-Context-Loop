@@ -55,20 +55,38 @@ switching does not replace their connections.
 
 ## Checkpoint Manager: assignment is retained
 
-Choose a working branch in the manager's new dropdown. The existing saved take
-inventory, independent-clip **assign/reuse** controls and predecessor/context
-checks remain available. **Assign to working branch** changes only that branch's
-selection. It does not promote it to project default or change another branch.
+The **Assignments shown for** dropdown selects the working branch being inspected.
+**Original** is the legacy working branch's name; names such as **960x544** are
+also labels, not resolution restrictions or exclusive owners of saved clips.
+Every working branch can use the same compatible saved path.
+
+To make Original use an existing seven-scene path, choose **Original** in that
+dropdown, click the desired **scene 7** take, then **Assign path to Original**
+above the graph. The toolbar shows the full scene range being assigned. This
+changes that chapter's assignments, clearing any later assignments in the same
+chapter, without deleting saved clips or changing other branches, other chapters,
+the project default, or the manager's output selection. If the connected Plan
+uses another branch, a separate **Assign path to <name> (Plan)** button targets it.
+**Load path + settings into Plan** additionally loads saved settings and can
+switch the connected Plan's branch; it is not needed just to assign clips.
 **Use branch locally** remains an output-only pin.
 
 The revision display is a fork graph: shared clips appear once and arrows follow
 the saved paths, including processing histories. The bright **Output path** is
 the manager's serialized output selection; a clip preview does not move it.
-Branch headings still select a whole original path (or preview a processed
-path), and **reuse saved clip** remains available at eligible branch tips.
+**Select path** headings choose a whole original path (unless output is pinned),
+while processed path headings only preview. **Assigned to <name> through S<n>**
+is a separate badge showing where that working branch's assignment ends; it
+does not own or block any continuation below it. Click the continuation's final
+take and assign it to extend that branch.
+Independent-clip **Reuse for S<n>** controls and predecessor/context checks remain
+available at eligible branch tips.
 Reuse controls sit in the next scene's column with a dashed proposed connector
 from their exact parent. They are not saved clips or part of the output path;
 opening one only shows candidates, and attachment still requires confirmation.
+No control is drawn when there are only blocked candidates: that is not an empty
+saved scene or a branch to delete. Delete controls stay separate from assignment,
+above their scrollable file inventory; dependency/shared-clip protections remain.
 Cards show **Save #**, the saved date and **Latest** per scene among the available
 revisions in the tab (across profiles for processed takes). These labels do not
 change the fork layout or output selection. Equal timestamps are tied, missing
@@ -80,6 +98,10 @@ The separate **In Plan Studio** / **In connected Plan** badge marks the saved
 path of the connected Plan's working branch. If the Plan is on a different
 branch or project, the note above the graph says so rather than marking the
 manager's output as active in the Plan. No connection means no guessed marker.
+
+If an editorial ALT belongs to a different base take, a notice explains why it
+is not applied to the current path. Polling does not repeatedly log the same
+notice. Its saved selection and files are retained for the original base take.
 
 Old revision histories are still available in Checkpoint Manager. They are not
 automatically converted into named working branches. To continue one separately,
