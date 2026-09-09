@@ -457,6 +457,20 @@ const fallbackStart = reviewSource.indexOf("function reviewFallbackNode");
 const fallbackSource = reviewSource.slice(fallbackStart, reviewSource.indexOf("function routeReview", fallbackStart));
 assert.match(fallbackSource, /matchingRun\.length === 1\) return matchingRun\[0\];[\s\S]*data\?\.durable === true\) return null;[\s\S]*matchingLeaf[\s\S]*gates\.length === 1/,
     "durable recovery may use only an authoritative run match, not leaf or singleton fallback");
+assert.match(reviewSource, /function appRootGraph\(\)/);
+assert.match(reviewSource, /app\.graph\?\.rootGraph \?\? app\.graph/);
+for (const fn of [
+    "findNodeByQualifiedId", "upstreamPlanNode", "prepareResume",
+    "reviewFallbackNode",
+]) {
+    const start = reviewSource.indexOf(`function ${fn}(`);
+    const body = reviewSource.slice(start, reviewSource.indexOf("\n}", start));
+    assert.doesNotMatch(body, /allNodes\(app\.graph\)|= app\.graph;/,
+        `${fn} must traverse from appRootGraph(), not app.graph directly - ` +
+        "app.graph can be a subgraph's own graph rather than the true root, " +
+        "which breaks node_id-based review routing (found in production as " +
+        "\"could not be routed to display node\")");
+}
 const routeStart = reviewSource.indexOf("function routeReview(data)");
 const routeSource = reviewSource.slice(routeStart, reviewSource.indexOf("function routeReviewResolved", routeStart));
 assert.match(routeSource, /data\?\.durable !== true[\s\S]*Pending token/,

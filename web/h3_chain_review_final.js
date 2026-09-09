@@ -331,10 +331,20 @@ function nodeType(node) {
     return node?.comfyClass ?? node?.type ?? null;
 }
 
+// app.graph can be a subgraph's own graph object rather than the true root
+// (e.g. while a subgraph is open, or under newer nested-subgraph frontends);
+// getNodeById and node enumeration must start from the actual root or a
+// top-level node id like a review token's node_id will never resolve.
+// Mirrors h3_prompt_companion_sync.mjs's graphRoot().
+function appRootGraph() {
+    return app.graph?.rootGraph ?? app.graph;
+}
+
 function findNodeByQualifiedId(qid) {
-    if (!app.graph || qid == null) return null;
+    const root = appRootGraph();
+    if (!root || qid == null) return null;
     const parts = String(qid).split(":");
-    let graph = app.graph;
+    let graph = root;
     for (let i = 0; i < parts.length - 1; i += 1) {
         const id = Number(parts[i]);
         const parent = Number.isFinite(id) ? graph?.getNodeById?.(id) : null;
@@ -384,7 +394,7 @@ function videoUrl(item) {
 
 function upstreamPlanNode(reviewNode) {
     return findUpstreamNode(reviewNode, PLAN_NAMES) ??
-        allNodes(app.graph).find((item) => PLAN_NAMES.has(nodeType(item)));
+        allNodes(appRootGraph()).find((item) => PLAN_NAMES.has(nodeType(item)));
 }
 
 function widgetByName(node, name) {
@@ -539,7 +549,7 @@ function checkpointRevisionLabel(revision) {
 
 function prepareResume(reviewNode, nextIndex, endIndex = null, clipCount = null) {
     const startNode = findUpstreamNode(reviewNode, "MiniMaxH3ChainLoopStart") ??
-        allNodes(app.graph).find((item) => nodeType(item) === "MiniMaxH3ChainLoopStart");
+        allNodes(appRootGraph()).find((item) => nodeType(item) === "MiniMaxH3ChainLoopStart");
     const widget = startNode?.widgets?.find((item) => item.name === "start_clip");
     if (!widget) return false;
     widget.value = nextIndex;
@@ -749,7 +759,7 @@ function deliverReview(node, data) {
 
 function reviewFallbackNode(data) {
     const gates = [...new Set([
-        ...allNodes(app.graph).filter((item) => nodeType(item) === NODE_NAME),
+        ...allNodes(appRootGraph()).filter((item) => nodeType(item) === NODE_NAME),
         ...[...mountedReviewNodes].filter((item) => nodeType(item) === NODE_NAME),
     ])];
     const expectedRun = String(data?.run_name ?? "").trim();
@@ -2400,7 +2410,7 @@ app.registerExtension({
     },
     async afterConfigureGraph() {
         await fetchPending();
-        for (const node of allNodes(app.graph)) {
+        for (const node of allNodes(appRootGraph())) {
             if (nodeType(node) === NODE_NAME) node._h3RefreshResume?.();
             if (nodeType(node) === NODE_NAME) node._h3ReviewApplyLayout?.();
         }
