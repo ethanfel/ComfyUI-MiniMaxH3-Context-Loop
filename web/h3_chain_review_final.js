@@ -740,11 +740,27 @@ function reviewRunName(planNode) {
 }
 
 function deliverReview(node, data) {
-    if (!node || nodeType(node) !== NODE_NAME) return false;
+    if (!node) return false;
+    if (nodeType(node) !== NODE_NAME) {
+        console.warn(
+            `[H3 Chain Review] Node ${node?.id} did not match the expected type ` +
+            `(got ${JSON.stringify(nodeType(node))}, wanted ${JSON.stringify(NODE_NAME)}); ` +
+            "not delivering the pending review to it.",
+        );
+        return false;
+    }
     const expectedRun = String(data?.run_name ?? "").trim();
     if (expectedRun) {
-        const actualRun = reviewRunName(findUpstreamNode(node, PLAN_NAMES));
-        if (actualRun && actualRun !== expectedRun) return false;
+        const planNode = findUpstreamNode(node, PLAN_NAMES);
+        const actualRun = reviewRunName(planNode);
+        if (actualRun && actualRun !== expectedRun) {
+            console.warn(
+                `[H3 Chain Review] Node ${node.id} run_name mismatch: ` +
+                `expected ${JSON.stringify(expectedRun)}, found ${JSON.stringify(actualRun)} ` +
+                `on upstream ${JSON.stringify(nodeType(planNode))}; not delivering this review.`,
+            );
+            return false;
+        }
     }
     if (typeof node._h3ReviewHandler === "function") {
         node._h3ReviewHandler(data);
@@ -792,9 +808,16 @@ function routeReview(data) {
         return true;
     }
     if (data?.durable !== true) {
+        const gates = [...new Set([
+            ...allNodes(appRootGraph()).filter((item) => nodeType(item) === NODE_NAME),
+            ...[...mountedReviewNodes].filter((item) => nodeType(item) === NODE_NAME),
+        ])];
         console.warn(
             `[H3 Chain Review] Pending token ${data?.token ?? "?"} could not be ` +
-            `routed to display node ${data?.node_id ?? "?"}.`,
+            `routed to display node ${data?.node_id ?? "?"} ` +
+            `(expected run_name ${JSON.stringify(String(data?.run_name ?? ""))}; ` +
+            `found ${gates.length} MiniMaxH3ChainReview node(s) with run_name(s) ` +
+            `${JSON.stringify(gates.map((item) => reviewRunName(findUpstreamNode(item, PLAN_NAMES))))}).`,
         );
     }
     return false;
