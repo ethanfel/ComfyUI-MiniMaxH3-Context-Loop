@@ -368,7 +368,16 @@ currentGraph.branches[1].path.push({scene:3, revision:d});
 const attaching = makeNode(core.checkpointSelectionJson(
     currentGraph, "demo", currentGraph.revisions[1], {start:2, end:3}, "chapter"));
 await settle();
+const reuseCell = byClass(attaching, "h3cm-fork-slot");
+const parentCell = elements(attaching).find(item => item.dataset.graphKey === `2:${b}`);
+assert.equal(Number(reuseCell.style.gridColumn),Number(parentCell.style.gridColumn)+1);
+assert.equal(reuseCell.style.gridRow,parentCell.style.gridRow);
+assert.ok(!elements(attaching).filter(item=>item.className.split(" ").includes("h3cm-branch"))
+    .some(item=>item.children.some(child=>child.textContent === "S3 · reuse saved clip")),"Reuse is not nested beneath the previous scene's branch heading");
+const beforeReuse = value(attaching), writesBeforeReuse = mutations;
 byText(attaching, "S3 · reuse saved clip").click();
+assert.equal(value(attaching),beforeReuse,"Opening reuse choices does not change output");
+assert.equal(mutations,writesBeforeReuse,"Only confirmed reuse can mutate saved branch data");
 assert.equal(byClass(attaching, "h3cm-output-scope").value, "chapter");
 attachResponse = {scene:3, revision:"e".repeat(32), message:"Attached"};
 byText(attaching, "Attach selected candidate").click();
@@ -666,7 +675,9 @@ assert.deepEqual(cardNames(), ["S1 · 11111111", "S2 · 33333333", "S2 · 222222
 assert.equal(elements(branchView).filter(item => item.textContent === "shared ×2").length, 1, "Shared prefix is rendered once");
 assert.ok(displayed[0].children[0].children.some(item => item.textContent === "Latest save"));
 assert.ok(!displayed[1].children[0].children.some(item => item.textContent === "Latest save"));
-assert.ok(elements(branchView).some(item => item.textContent.startsWith("Created: ")));
+assert.ok(elements(branchView).some(item => item.textContent.startsWith("Saved: ")));
+assert.ok(byText(branchView,"S2 · 33333333").children.some(item => item.textContent === "Save #2 of 2 · Latest"));
+assert.ok(byText(branchView,"S2 · 22222222").children.some(item => item.textContent === "Save #1 of 2"));
 assert.ok(!elements(branchView).some(item => item.className.includes("h3cm-variant-group")));
 displayed[1].children[0].click(); await settle();
 assert.equal(byClass(branchView, "h3cm-preview").dataset.source, "/view?filename=2.mp4&subfolder=&type=output");
@@ -715,8 +726,14 @@ console.log("Named working branch UI: selector, output identity and retained ass
 // The used path follows the execution widget, not preview clicks. Plan/Studio
 // gets a separate marker and may point to a different named working branch.
 currentGraph = structuredClone(payload);
+currentGraph.revisions[1].created_at = "2026-09-08T10:00:00Z";
+currentGraph.revisions[2].created_at = "2026-09-08T11:00:00Z";
+currentGraph.revisions[2].adopted_from_revision = b;
 allowWorkingAssignment = false;
 const forkView = makeNode(); await settle();
+assert.ok(byText(forkView,"S2 · bbbbbbbb").children.some(item=>item.textContent === "Save #1 of 2"));
+assert.ok(byText(forkView,"S2 · cccccccc").children.some(item=>item.textContent === "Reused clip · Save #2 of 2 · Latest"));
+assert.ok(byText(forkView,"S1 · aaaaaaaa").children.some(item=>item.textContent === "Save order unknown"));
 const studio = {type:"MiniMaxH3ChainPlanStudio", inputs:[], outputs:[], widgets:[
     {name:"run_name",value:"demo"}, {name:"plan_json",value:'{"shots":[{"id":"one"}]}'},
     {name:"working_branch_id",value:"main"},

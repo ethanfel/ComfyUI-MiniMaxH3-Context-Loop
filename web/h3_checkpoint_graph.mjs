@@ -7,6 +7,44 @@ export function checkpointGraphKey(stage, entry, profile = "") {
 
 export const checkpointGraphEdgeKey = (from, to) => JSON.stringify([from, to]);
 
+// Saved timestamps describe save order, not lineage or necessarily generation:
+// assigning an existing clip creates a new saved revision without a new render.
+export function checkpointSaveOrder(records, stage = "original") {
+    const scenes = new Map(), result = new Map();
+    for (const record of records) {
+        const scene = Number(record.scene);
+        if (!scenes.has(scene)) scenes.set(scene, new Map());
+        const key = checkpointGraphKey(stage, record, record.profile_path);
+        scenes.get(scene).set(key, record);
+    }
+    for (const recordsByKey of scenes.values()) {
+        const dated = [...recordsByKey].map(([key, record]) => ({key,
+            time:record.created_at ? Date.parse(record.created_at) : NaN}));
+        const known = dated.filter(item => Number.isFinite(item.time)).sort((a, b) => a.time - b.time);
+        const complete = known.length === dated.length;
+        const ranks = new Map();
+        known.forEach((item, index) => {
+            if (!ranks.has(item.time)) ranks.set(item.time, {first:index + 1, last:index + 1});
+            ranks.get(item.time).last = index + 1;
+        });
+        for (const item of dated) {
+            if (!Number.isFinite(item.time)) {
+                result.set(item.key, {label:"Save order unknown", latest:false});
+                continue;
+            }
+            const {first, last} = ranks.get(item.time);
+            const latest = last === known.length;
+            result.set(item.key, {
+                label:`${complete ? "Save" : "Dated save"} #${first === last ? first : `${first}–${last}`} of ${known.length}`
+                    + (first !== last ? " · same time" : "")
+                    + (latest ? complete ? " · Latest" : " · Latest dated" : ""),
+                latest,
+            });
+        }
+    }
+    return result;
+}
+
 export function checkpointForkGraph(rows, stage = "original") {
     const nodes = new Map(), edges = new Map(), paths = [];
     let nextLane = 0;
@@ -37,9 +75,30 @@ export function checkpointForkGraph(rows, stage = "original") {
         });
         if (added) nextLane++;
     }
-    const scenes = [...new Set([...nodes.values()].map(item => item.scene))].sort((a, b) => a - b);
+    // Reuse is a proposed next-scene attachment, never a saved lineage edge.
+    // A shared tip can already have a continuation in its lane: allocate a free
+    // lane in that case instead of placing two cards in the same grid cell.
+    const slots = new Map();
+    const occupied = new Set([...nodes.values()].map(item => `${item.scene}:${item.lane}`));
+    if (stage === "original") for (const path of paths) {
+        const slot = path.row.attribution_slot, parent = nodes.get(path.keys.at(-1));
+        const scene = Number(slot?.scene);
+        if (!slot || !(slot.candidates?.length || slot.blocked_candidates?.length)
+                || !Number.isInteger(scene) || scene !== parent.scene + 1
+                || (slot.parent_scene != null && Number(slot.parent_scene) !== parent.scene)
+                || (slot.parent_revision && String(slot.parent_revision).toLowerCase() !== String(parent.entry.revision).toLowerCase())) continue;
+        const key = JSON.stringify(["reuse", parent.key, scene]);
+        if (slots.has(key)) continue;
+        const lane = occupied.has(`${scene}:${parent.lane}`) ? nextLane++ : parent.lane;
+        occupied.add(`${scene}:${lane}`);
+        slots.set(key, {key, scene, lane, parent:parent.entry, slot});
+        const edgeKey = checkpointGraphEdgeKey(parent.key, key);
+        edges.set(edgeKey, {key:edgeKey, from:parent.key, to:key, kind:"reuse", paths:[]});
+    }
+    const scenes = [...new Set([...nodes.values(), ...slots.values()].map(item => item.scene))].sort((a, b) => a - b);
     const columns = new Map(scenes.map((scene, index) => [scene, index]));
     return {nodes:[...nodes.values()].map(item => ({...item, column:columns.get(item.scene)})),
+        slots:[...slots.values()].map(item => ({...item, column:columns.get(item.scene)})),
         edges:[...edges.values()], paths, columns:scenes.length, lanes:nextLane};
 }
 
@@ -96,7 +155,8 @@ export function mountCheckpointGraphEdges(host, model, cards, output, doc = docu
             const x2 = (to.left - base.left) / sx, y2 = (to.top + to.height / 2 - base.top) / sy;
             const bend = Math.max(12, (x2 - x1) / 2);
             const path = doc.createElementNS("http://www.w3.org/2000/svg", "path");
-            path.setAttribute("class", output.edges.has(edge.key) ? "h3cm-fork-edge h3cm-fork-edge-output" : "h3cm-fork-edge");
+            path.setAttribute("class", "h3cm-fork-edge" + (edge.kind === "reuse" ? " h3cm-fork-edge-reuse"
+                : output.edges.has(edge.key) ? " h3cm-fork-edge-output" : ""));
             path.setAttribute("d", `M ${x1} ${y1} C ${x1 + bend} ${y1}, ${x2 - bend} ${y2}, ${x2 - 5} ${y2} M ${x2 - 9} ${y2 - 4} L ${x2 - 3} ${y2} L ${x2 - 9} ${y2 + 4}`);
             path.dataset.from = edge.from; path.dataset.to = edge.to;
             svg.append(path);

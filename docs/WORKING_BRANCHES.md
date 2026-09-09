@@ -66,6 +66,16 @@ the saved paths, including processing histories. The bright **Output path** is
 the manager's serialized output selection; a clip preview does not move it.
 Branch headings still select a whole original path (or preview a processed
 path), and **reuse saved clip** remains available at eligible branch tips.
+Reuse controls sit in the next scene's column with a dashed proposed connector
+from their exact parent. They are not saved clips or part of the output path;
+opening one only shows candidates, and attachment still requires confirmation.
+Cards show **Save #**, the saved date and **Latest** per scene among the available
+revisions in the tab (across profiles for processed takes). These labels do not
+change the fork layout or output selection. Equal timestamps are tied, missing
+dates remain unknown, and reused clips are labelled rather than presented as
+new renders. Save numbers are relative to the available inventory, not permanent
+generation IDs; deleting a take can change them. Legacy dates may come from the
+metadata file timestamp when no creation date was saved.
 The separate **In Plan Studio** / **In connected Plan** badge marks the saved
 path of the connected Plan's working branch. If the Plan is on a different
 branch or project, the note above the graph says so rather than marking the

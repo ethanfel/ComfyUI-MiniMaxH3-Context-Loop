@@ -1,7 +1,7 @@
 import {app} from "/scripts/app.js";
 import {api} from "/scripts/api.js";
 import {branchRequestPath, branchSelectionJson} from "./h3_working_branches.mjs?v=0.7.11";
-import {checkpointForkGraph, checkpointGraphOutput, mountCheckpointGraphEdges} from "./h3_checkpoint_graph.mjs?v=0.7.15";
+import {checkpointForkGraph, checkpointGraphKey, checkpointSaveOrder, checkpointGraphOutput, mountCheckpointGraphEdges} from "./h3_checkpoint_graph.mjs?v=0.7.16";
 import {
     CHECKPOINT_STAGES,
     checkpointStageVariants,
@@ -150,6 +150,7 @@ function videoUrl(item) {
 }
 
 function localTime(value) {
+    if (!value) return "unknown";
     const date = new Date(value);
     return Number.isNaN(date.getTime()) ? String(value || "unknown") : date.toLocaleString();
 }
@@ -255,8 +256,8 @@ function injectStyles() {
         color:var(--h3cm-accent) !important; }
       .h3cm-fork-scroll { overflow:auto; padding:5px 3px 10px; }
       .h3cm-fork-graph { display:grid; position:relative; width:max-content; gap:28px 48px; align-items:start; }
-      .h3cm-fork-node { width:180px; min-width:0; position:relative; z-index:1; }
-      .h3cm-fork-node > .h3cm-revision { width:100%; min-height:74px; white-space:normal; overflow-wrap:anywhere; }
+      .h3cm-fork-node,.h3cm-fork-slot { width:180px; min-width:0; position:relative; z-index:1; }
+      .h3cm-fork-node > .h3cm-revision,.h3cm-fork-slot > .h3cm-revision { width:100%; min-height:74px; white-space:normal; overflow-wrap:anywhere; }
       .h3cm-fork-node .h3cm-revision small { margin-top:2px; }
       .h3cm-fork-node .h3cm-alternates { margin-top:5px; }
       .h3cm-fork-node .h3cm-alternate small { display:block; }
@@ -267,6 +268,8 @@ function injectStyles() {
       .h3cm-fork-edges { position:absolute; inset:0; overflow:visible; pointer-events:none; z-index:0; }
       .h3cm-fork-edge { fill:none; stroke:var(--h3cm-muted); stroke-width:1.5; stroke-linecap:round; stroke-linejoin:round; }
       .h3cm-fork-edge-output { stroke:var(--h3cm-accent); stroke-width:3.5; }
+      .h3cm-fork-edge-reuse { stroke-dasharray:5 4; }
+      .h3cm-revision .h3cm-latest-label { color:var(--h3cm-chapter); }
       .h3cm-output-path { border-color:var(--h3cm-accent) !important;
         box-shadow:0 0 0 2px color-mix(in srgb,var(--h3cm-accent) 55%,transparent) !important; }
       .h3cm-output-path-label { color:var(--h3cm-accent) !important; font-weight:700; }
@@ -817,13 +820,14 @@ function mount(node) {
             tab.disabled = state.busy;
             stageTabs.append(tab);
         }
-        stageNote.textContent = state.stage === "original" ? "Shared clips appear once; forks follow saved revisions. Clip clicks preview only. Use a branch heading to choose the output path."
+        stageNote.textContent = state.stage === "original" ? "Shared clips appear once; forks follow saved revisions. Clip clicks preview only. Use a branch heading to choose the output path. Save # orders this scene's available revisions by saved time; Latest is not necessarily the output."
             : `${stageLabel()} saved branches, newest save first. Forks follow recorded processing history; shared clips appear once. Browsing does not change output.`
+                + " Save # orders this scene's available versions in this tab across profiles."
                 + (state.stage === "derope" ? " Select a saved take, then Use DeRoPE branch locally for deferred upscaling. Unsaved scenes use their original take." : "");
         const warnings = state.payload?.processing_variant_warnings ?? [];
         if (warnings.length) stageNote.textContent += ` ${warnings.length} processing metadata warning(s): ${warnings[0]}`;
         stageNote.hidden = !stageNote.textContent;
-        branchLegend.textContent = "shared clips shown once · bright line = output path · dashed badge = Plan";
+        branchLegend.textContent = "bright line = output path · dashed arrow = reuse candidate · dashed badge = Plan";
     }
 
     function selectAttribution(parent, slot) {
@@ -980,9 +984,20 @@ function mount(node) {
         }
     }
 
-    function renderBranchRows(container, rows) {
+    function appendSaveOrder(card, record, order) {
+        const saved = order.get(checkpointGraphKey(state.stage, record, record.profile_path));
+        const reused = record.adopted_from_revision ? "Reused clip · " : "";
+        card.append(element("small", `h3cm-save-order${saved?.latest ? " h3cm-latest-label" : ""}`,
+            reused + (saved?.label ?? "Save order unknown")));
+        card.append(element("small", "h3cm-save-time", `Saved: ${localTime(record.created_at)}`));
+        card.title += `\n${reused}${saved?.label ?? "Save order unknown"}\nSaved: ${localTime(record.created_at)}`
+            + "\nOrder is per scene among available saved takes, not branch order; equal timestamps are tied.";
+    }
+
+    function renderBranchRows(container, rows, order) {
         const original = state.stage === "original";
-        const model = checkpointForkGraph(rows, state.stage);
+        const model = checkpointForkGraph(rows.map(row => row.attribution_slot && !sceneVisible(row.attribution_slot.scene)
+            ? {...row, attribution_slot:null} : row), state.stage);
         const output = checkpointGraphOutput(outputSelectionForScope(selectionWidget?.value),
             state.runName, selectedWorkingBranch(), state.stage);
         const marker = currentPlanMarker();
@@ -1008,10 +1023,11 @@ function mount(node) {
                 );
                 const selected = state.selected?.scene === revision.scene &&
                     state.selected?.revision === revision.revision;
+                appendSaveOrder(card, revision, order);
                 card.append(element("small", "", `${selected ? "selected · " : ""}${revision.active ? "saved active" : "saved inactive"}${revision.ready ? "" : " · broken"}`));
                 if (localKeys.has(item.key)) card.append(element("small", "h3cm-local-label", "local output"));
                 if (selected) card.classList.add("h3cm-revision-selected");
-            } else if (revision) card = variantCard(revision);
+            } else if (revision) card = variantCard(revision, order);
             else {
                 card = element("div", "h3cm-revision h3cm-revision-empty",
                     `S${item.scene} · ${String(item.entry.revision).slice(0, 8)}`);
@@ -1040,6 +1056,7 @@ function mount(node) {
                             () => selectRevision(alternate),
                             "h3cm-alternate",
                         );
+                        appendSaveOrder(alt, alternate, order);
                         if (alternate.used_in_final_cut) {
                             alt.classList.add("h3cm-alternate-used");
                             alt.append(element("small", "", "used in final cut"));
@@ -1087,29 +1104,34 @@ function mount(node) {
                         : "Branch history unavailable — standalone saved take";
                     end.append(element("small", "h3cm-muted", `${branch.profile} · ${description}`));
                 }
-                const slot = branch.attribution_slot;
-                if (original && (slot?.candidates?.length || slot?.blocked_candidates?.length) && sceneVisible(slot.scene)) {
-                    const count = slot.candidates.length;
-                    const empty = button(`S${slot.scene} · reuse saved clip`,
-                        `${count} independent saved candidate${count === 1 ? "" : "s"} can be attributed here`,
-                        () => selectAttribution(tip, slot), "h3cm-revision h3cm-revision-empty");
-                    empty.append(element("small", "", count ? `${count} available candidate${count === 1 ? "" : "s"}` : "Check saved context requirements"));
-                    if (state.attribution?.parent.revision === tip.revision) empty.classList.add("h3cm-revision-empty-selected");
-                    end.append(empty);
-                }
                 cell.append(end);
             }
             graph.append(cell);
+        }
+        for (const item of model.slots) {
+            const cell = element("div", "h3cm-fork-slot");
+            cell.style.gridColumn = String(item.column + 1);
+            cell.style.gridRow = String(item.lane + 1);
+            cell.dataset.graphKey = item.key;
+            const count = item.slot.candidates?.length ?? 0;
+            const empty = button(`S${item.scene} · reuse saved clip`,
+                `Inspect saved candidates for scene ${item.scene} after S${item.parent.scene} · ${item.parent.revision.slice(0, 8)}; nothing is attached until confirmed`,
+                () => selectAttribution(item.parent, item.slot), "h3cm-revision h3cm-revision-empty");
+            empty.append(element("small", "", count ? `${count} available candidate${count === 1 ? "" : "s"}` : "Check saved context requirements"));
+            empty.append(element("small", "", `After S${item.parent.scene} · ${item.parent.revision.slice(0, 8)}`));
+            if (state.attribution?.parent.scene === item.parent.scene && state.attribution?.parent.revision === item.parent.revision)
+                empty.classList.add("h3cm-revision-empty-selected");
+            cell.append(empty); graph.append(cell); cards.set(item.key, empty);
         }
         scroll.append(graph); container.append(scroll);
         state.graphCleanups.push(mountCheckpointGraphEdges(graph, model, cards, output, document, window));
     }
 
-    function variantCard(record) {
+    function variantCard(record, order) {
         const card = button(`S${record.scene} · ${record.revision.slice(0, 8)}`,
             `${record.profile_path}\nCreated: ${localTime(record.created_at)}\n${checkpointVariantLatentStatus(record)}`,
             () => selectVariant(record), "h3cm-revision h3cm-processing-variant");
-        card.append(element("small", "", `Created: ${localTime(record.created_at)}`));
+        appendSaveOrder(card, record, order);
         card.append(element("small", "", record.profile));
         card.append(element("small", "", `${record.width || "?"}×${record.height || "?"} · ${record.ready ? "saved" : "missing artifacts"}`));
         card.append(element("small", "", record.latent_saved ? "full latent saved" : "full latent not saved"));
@@ -1125,11 +1147,15 @@ function mount(node) {
         state.graphCleanups = [];
         renderPlanContext();
         branches.replaceChildren();
+        const originals = state.payload?.revisions ?? [];
+        const order = checkpointSaveOrder(state.stage === "original"
+            ? [...originals, ...originals.flatMap(record => record.alternates ?? [])]
+            : checkpointStageVariants(state.payload, state.stage), state.stage);
         const ranges = chapterRanges();
         if (!ranges.length) {
             const rows = state.stage === "original" ? checkpointBranchRows(state.payload)
                 : checkpointProcessingBranchRows(state.payload, state.stage);
-            if (rows.length) renderBranchRows(branches, rows);
+            if (rows.length) renderBranchRows(branches, rows, order);
             else branches.append(element(
                 "div", "h3cm-muted", "No versioned checkpoints were found.",
             ));
@@ -1162,10 +1188,10 @@ function mount(node) {
                 );
                 const body = element("div", "h3cm-branch-chapter-body");
                 body.hidden = collapsed;
-                if (!collapsed) renderBranchRows(body, rows);
+                if (!collapsed) renderBranchRows(body, rows, order);
                 section.append(heading, body);
                 branches.append(section);
-            } else renderBranchRows(branches, rows);
+            } else renderBranchRows(branches, rows, order);
             rendered += rows.length;
         }
         if (!rendered) {
