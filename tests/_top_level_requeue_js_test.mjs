@@ -10,6 +10,8 @@ import {
     EXECUTION_MODES,
     HANDOFF_API_BASE,
     LEGACY_MODE,
+    RECURSIVE_MODE,
+    migrateRecursiveExecutionMode,
     REQUEUE_MODE,
     checkpointPredecessorReady,
     cleanupDelayMs,
@@ -66,16 +68,29 @@ assert.deepEqual(transitions, [["run", "handoff", "consumed"]]);
 // --- mode contract ---------------------------------------------------------
 
 assert.deepEqual(EXECUTION_MODES, [LEGACY_MODE, REQUEUE_MODE]);
-assert.equal(EXECUTION_MODES[0], "recursive_legacy");
+assert.equal(EXECUTION_MODES[0], "recursive");
 assert.equal(EXECUTION_MODES[1], "top_level_requeue");
 assert.equal(executionModeFromValue("top_level_requeue"), REQUEUE_MODE);
 assert.equal(executionModeFromValue(" top_level_requeue "), REQUEUE_MODE);
 assert.equal(executionModeFromValue("recursive_legacy"), LEGACY_MODE);
+assert.equal(executionModeFromValue("recursive"), RECURSIVE_MODE);
 assert.equal(executionModeFromValue(""), LEGACY_MODE);
 assert.equal(executionModeFromValue(null), LEGACY_MODE);
 assert.equal(executionModeFromValue("banana"), LEGACY_MODE);
 assert.equal(isRequeueMode("top_level_requeue"), true);
 assert.equal(isRequeueMode("recursive_legacy"), false);
+assert.equal(isRequeueMode("recursive"), false);
+const oldEnd = {type:"MiniMaxH3ChainLoopEnd",widgets:[{name:"execution_mode",value:"recursive_legacy"}]};
+migrateRecursiveExecutionMode(oldEnd);
+assert.equal(oldEnd.widgets[0].value,"recursive");
+for (const value of ["recursive", "top_level_requeue", "unknown"]) {
+    oldEnd.widgets[0].value=value;
+    migrateRecursiveExecutionMode(oldEnd);
+    assert.equal(oldEnd.widgets[0].value,value);
+}
+oldEnd.type="AnotherNode";oldEnd.widgets[0].value="recursive_legacy";
+migrateRecursiveExecutionMode(oldEnd);
+assert.equal(oldEnd.widgets[0].value,"recursive_legacy");
 assert.equal(HANDOFF_API_BASE, "/minimax_h3_context_loop");
 assert.equal(DEFAULT_CLEANUP_DELAY_MS, 10750);
 
@@ -256,7 +271,7 @@ async function exerciseProcessRequeue({submission, transitionOk = true, cancelAf
     let moduleSource=source.replace('import {app} from "/scripts/app.js";', 'const app=globalThis.__h3App;')
         .replace('import {api} from "/scripts/api.js";', 'const api=globalThis.__h3Api;')
         .replace(/import \{activeSceneFromOutput\} from ".*?";/, 'const activeSceneFromOutput=()=>null;')
-        .replace(/import \{[\s\S]*?\} from "\.\/h3_chain_top_level_requeue_core\.mjs\?v=.*?";/, 'const {DEFAULT_CLEANUP_DELAY_MS,HANDOFF_API_BASE,checkpointPredecessorReady,cleanupDelayMs,isQueueSafe,matchingNextSceneHandoff,pendingNextSceneHandoffs,predecessorScene,resumeHint,handleTopLevelRequeueSuccessScheduling,loopEndMatchesObservedCurrent,topLevelRequeueCompletionMatches}=globalThis.__h3Core;')
+        .replace(/import \{[\s\S]*?\} from "\.\/h3_chain_top_level_requeue_core\.mjs\?v=.*?";/, 'const {DEFAULT_CLEANUP_DELAY_MS,HANDOFF_API_BASE,RECURSIVE_MODE,migrateRecursiveExecutionMode,checkpointPredecessorReady,cleanupDelayMs,isQueueSafe,matchingNextSceneHandoff,pendingNextSceneHandoffs,predecessorScene,resumeHint,handleTopLevelRequeueSuccessScheduling,loopEndMatchesObservedCurrent,topLevelRequeueCompletionMatches}=globalThis.__h3Core;')
         .replace(/import \{createNotificationStack\} from ".*?";/, 'const {createNotificationStack}=globalThis.__h3Notification;')
         .replace(/import \{projectMutationOptions\} from ".*?";/, 'const projectMutationOptions=globalThis.__h3MutationOptions;')
         .replace(/import \{submitWithPromptIdentity,[\s\S]*?\} from "\.\/h3_chain_top_level_requeue_coordinator\.mjs\?v=.*?";/, 'const {submitWithPromptIdentity,submissionFailure,createContinuationTracker,runRequeueLifecycle,authoritativeRunName,finalizeAcceptedSubmission,handleConfirmedSubmissionRejection,handleUncertainSubmission,classifySubmissionOutcome,releaseHandoffChecked}=globalThis.__h3Coordinator;')
@@ -264,6 +279,16 @@ async function exerciseProcessRequeue({submission, transitionOk = true, cancelAf
     await import(`data:text/javascript,${encodeURIComponent(moduleSource)}#${Math.random()}`);
     const setting=registeredExtension?.settings?.filter(item=>item.id === "MiniMaxH3ContextLoop.topLevelRequeue");
     assert.equal(registeredExtension?.name,"minimax_h3_context_loop.top_level_requeue"); assert.equal(setting?.length,1); assert.equal(typeof setting[0].onChange,"function");
+    class LoopEnd {
+        constructor() {this.type="MiniMaxH3ChainLoopEnd";this.widgets=[{name:"execution_mode",value:"recursive_legacy"}];}
+        onConfigure(value) {this.widgets[0].value=value;return "configured";}
+    }
+    registeredExtension.beforeRegisterNodeDef(LoopEnd,{name:"MiniMaxH3ChainLoopEnd"});
+    const loopEnd=new LoopEnd();registeredExtension.nodeCreated(loopEnd);
+    assert.equal(loopEnd.widgets[0].value,"recursive");
+    assert.equal(loopEnd.onConfigure("recursive_legacy"),"configured");
+    assert.equal(loopEnd.widgets[0].value,"recursive","Opening an old workflow updates the label without changing execution");
+    loopEnd.onConfigure("top_level_requeue");assert.equal(loopEnd.widgets[0].value,"top_level_requeue");
     const work=globalThis.__h3ProcessRequeue({promptId:"source",runName:"run-a",clipIndex:1,endClip:2,workflowFingerprint:"fp-a",displayNode:"3"},0);
     await onReady?.({calls,setting:setting[0],setEnabled:value=>{enabled=value;},serializeStarted,queueStarted});
     await work;

@@ -40,7 +40,7 @@ MINIMUM_CACHE_VERSION = {
     "h3_project_ownership.mjs": "0.7.4",
     "h3_reference_preview_core.mjs": "0.7.3",
     "h3_notification_stack_core.mjs": "0.7.10",
-    "h3_chain_top_level_requeue_core.mjs": "0.7.10",
+    "h3_chain_top_level_requeue_core.mjs": "0.7.11",
     "h3_chain_top_level_requeue_coordinator.mjs": "0.7.10",
 }
 

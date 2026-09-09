@@ -267,7 +267,7 @@ write, and the Plan JSON is never touched.
 ## Top-level scene requeue mode
 
 `MiniMax H3 Context Loop End` exposes an optional `execution_mode` widget
-(default `recursive_legacy`, unchanged behavior). In `top_level_requeue`
+(default `recursive`, unchanged behavior). In `top_level_requeue`
 mode the loop stops immediately after the scene checkpoint is persisted: it
 writes a durable `next_scene` handoff and a partial through-clip manifest
 instead of recursively expanding the next H3 scene inside the same prompt.

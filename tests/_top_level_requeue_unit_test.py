@@ -4,7 +4,7 @@
 Covers Milestone 3 acceptance for the deterministic (model-free) surface:
 
 - Loop End's new opt-in ``execution_mode`` socket/param contract (default
-  ``recursive_legacy`` keeps the old behavior; outputs and required inputs
+  ``recursive`` keeps the same behavior; outputs and required inputs
   are unchanged).
 - In ``top_level_requeue`` mode, a completed scene N writes a lightweight
   durable ``next_scene`` handoff and returns the existing manifest tuple in a
@@ -110,9 +110,9 @@ def handoff_path(root, run_name, handoff_id):
 
 
 def contract():
-    """Public node contract: additive only, default is legacy."""
+    """Neutral mode labels, with backward-compatible saved/API values."""
     modes = chain.LOOP_EXECUTION_MODES
-    assert modes == ("recursive_legacy", "top_level_requeue")
+    assert modes == ("recursive", "top_level_requeue")
     spec_doc = chain.MiniMaxH3ChainLoopEnd.INPUT_TYPES()
     required = list(spec_doc["required"])
     assert required == ["flow", "state", "images", "sampled_latent",
@@ -123,13 +123,21 @@ def contract():
         "execution_mode must be appended after between_scene_cleanup"
     modes_tuple, widget = spec_doc["optional"]["execution_mode"]
     assert modes_tuple == list(modes)
-    assert widget["default"] == "recursive_legacy", \
-        "default mode must keep the recursive legacy behavior"
+    assert widget["default"] == "recursive", \
+        "default mode must keep the recursive behavior"
+    assert "recommended" not in widget["tooltip"].lower()
+    assert "legacy" not in widget["tooltip"].lower()
+    assert "classic" not in widget["tooltip"].lower()
+    for mode in (*modes, "recursive_legacy"):
+        assert chain.MiniMaxH3ChainLoopEnd.VALIDATE_INPUTS(mode) is True
+    assert chain.MiniMaxH3ChainLoopEnd.VALIDATE_INPUTS("unknown") is not True
+    assert list(inspect.signature(chain.MiniMaxH3ChainLoopEnd.VALIDATE_INPUTS).parameters) == ["execution_mode"], \
+        "only execution_mode should bypass ComfyUI's default input validation"
     assert chain.MiniMaxH3ChainLoopEnd.RETURN_TYPES == \
         (chain.MANIFEST_TYPE, "STRING", "IMAGE", "LATENT")
     assert chain.MiniMaxH3ChainLoopEnd.FUNCTION == "end"
     params = inspect.signature(chain.MiniMaxH3ChainLoopEnd.end).parameters
-    assert params["execution_mode"].default == "recursive_legacy"
+    assert params["execution_mode"].default == "recursive"
 
 
 def requeue_mode(root):
@@ -299,11 +307,14 @@ def legacy_mode(root):
 
     chain.MiniMaxH3ChainLoopEnd._recurse = recorder
     try:
-        result = chain.MiniMaxH3ChainLoopEnd().end(
-            None, state, images, latent, segment)
+        for kwargs in ({}, {"execution_mode": "recursive"},
+                       {"execution_mode": "recursive_legacy"}):
+            result = chain.MiniMaxH3ChainLoopEnd().end(
+                None, state, images, latent, segment, **kwargs)
+            assert result == {"result": "expansion", "expand": None}
     finally:
         chain.MiniMaxH3ChainLoopEnd._recurse = original_recurse
-    assert len(calls) == 1, "legacy mode must recurse into the next scene"
+    assert len(calls) == 3, "default, recursive and old saved values must recurse"
     assert result == {"result": "expansion", "expand": None}
     orchestration = (pathlib.Path(root) / "h3_chains" / "legacy_run"
                      / "orchestration")

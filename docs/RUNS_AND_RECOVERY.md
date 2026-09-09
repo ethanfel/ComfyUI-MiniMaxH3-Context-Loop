@@ -60,7 +60,9 @@ Interface → Cancel & reroll** without affecting Review Gate.
 
 ## Top-level prompt lifecycle
 
-`top_level_requeue` is opt-in; `recursive_legacy` remains the default. In the
+`top_level_requeue` is opt-in; `recursive` remains the default and continues
+scenes within the same top-level prompt. Existing workflows using the old
+`recursive_legacy` value retain the same behavior. In the
 opt-in mode Loop End finishes an **accepted scene**, writes a lightweight,
 identity-bound durable handoff, and the frontend may queue the next scene as a
 brand-new top-level prompt after a safe-queue/cleanup check. Disabling the

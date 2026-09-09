@@ -4,6 +4,8 @@ import {activeSceneFromOutput} from "./h3_chain_cancel_reroll_core.mjs?v=0.7.10"
 import {
     DEFAULT_CLEANUP_DELAY_MS,
     HANDOFF_API_BASE,
+    RECURSIVE_MODE,
+    migrateRecursiveExecutionMode,
     checkpointPredecessorReady,
     cleanupDelayMs,
     isQueueSafe,
@@ -14,7 +16,7 @@ import {
     handleTopLevelRequeueSuccessScheduling,
     loopEndMatchesObservedCurrent,
     topLevelRequeueCompletionMatches,
-} from "./h3_chain_top_level_requeue_core.mjs?v=0.7.10";
+} from "./h3_chain_top_level_requeue_core.mjs?v=0.7.11";
 import {createNotificationStack} from "./h3_notification_stack_core.mjs?v=0.7.10";
 import {projectMutationOptions} from "./h3_project_ownership.mjs?v=0.7.4";
 import {submitWithPromptIdentity, submissionFailure, createContinuationTracker, runRequeueLifecycle, authoritativeRunName, finalizeAcceptedSubmission, handleConfirmedSubmissionRejection, handleUncertainSubmission, classifySubmissionOutcome, releaseHandoffChecked} from "./h3_chain_top_level_requeue_coordinator.mjs?v=0.7.10";
@@ -213,7 +215,7 @@ function onExecuted(detail) {
             endClip: 0,
             shotId: "",
             workflowFingerprint: "",
-            executionMode: "recursive_legacy",
+            executionMode: RECURSIVE_MODE,
             loopEndExecuted: false,
             displayNode: null,
             workflowIdentity: activeWorkflowIdentity(),
@@ -525,6 +527,18 @@ app.registerExtension({
             defaultValue: DEFAULT_CLEANUP_DELAY_MS,
         },
     ],
+    beforeRegisterNodeDef(nodeType, nodeData) {
+        if (nodeData.name !== END_TYPE) return;
+        const configure = nodeType.prototype.onConfigure;
+        nodeType.prototype.onConfigure = function (...args) {
+            const result = configure?.apply(this, args);
+            migrateRecursiveExecutionMode(this);
+            return result;
+        };
+    },
+    nodeCreated(node) {
+        migrateRecursiveExecutionMode(node);
+    },
     setup() {
         api.addEventListener("executed", (event) => onExecuted(event.detail));
         api.addEventListener("execution_start", (event) => onContinuationStart(event.detail));

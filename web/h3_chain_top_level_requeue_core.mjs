@@ -9,8 +9,15 @@
 // output/h3_chains/<run>/orchestration/); these helpers only interpret the
 // JSON those routes return.
 
-export const LEGACY_MODE = "recursive_legacy";
+export const RECURSIVE_MODE = "recursive";
+export const LEGACY_MODE = RECURSIVE_MODE; // Preserve existing helper imports.
 export const REQUEUE_MODE = "top_level_requeue";
+
+export function migrateRecursiveExecutionMode(node) {
+    if ((node?.comfyClass ?? node?.type) !== "MiniMaxH3ChainLoopEnd") return;
+    const widget = node.widgets?.find(item => item.name === "execution_mode");
+    if (widget?.value === "recursive_legacy") widget.value = RECURSIVE_MODE;
+}
 
 export function shouldScheduleTopLevelRequeueSuccess(record) {
     return Boolean(record?.runName && record?.loopEndExecuted
@@ -38,7 +45,7 @@ export function handleTopLevelRequeueSuccessScheduling({record, scheduleRequeue}
     scheduleRequeue(record);
     return true;
 }
-export const EXECUTION_MODES = [LEGACY_MODE, REQUEUE_MODE];
+export const EXECUTION_MODES = [RECURSIVE_MODE, REQUEUE_MODE];
 
 export const HANDOFF_API_BASE = "/minimax_h3_context_loop";
 
@@ -48,7 +55,7 @@ export const DEFAULT_CLEANUP_DELAY_MS = 10750;
 export function executionModeFromValue(value) {
     return String(value ?? "").trim() === REQUEUE_MODE
         ? REQUEUE_MODE
-        : LEGACY_MODE;
+        : RECURSIVE_MODE;
 }
 
 export function isRequeueMode(value) {

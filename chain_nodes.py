@@ -295,14 +295,14 @@ CONTINUATION_MODES = (
 SCENE_LORA_ROUTES = (
     "base", *(chr(ord("a") + offset) for offset in range(26)))
 LOOP_MEMORY_POLICIES = ("off", "unload_models", "fresh_scene")
-# Scene-boundary orchestration modes for Chain Loop End. recursive_legacy is
-# the pre-0.7 behavior (the next H3 scene expands recursively inside the same
-# top-level prompt). top_level_requeue stops after the scene N checkpoint and
+# Scene-boundary orchestration modes for Chain Loop End. recursive expands
+# the next H3 scene inside the same top-level prompt.
+# top_level_requeue stops after the scene N checkpoint and
 # leaves a durable next_scene handoff; the frontend later queues the SAME
 # workflow as a NEW top-level prompt and Loop Start resumes the same Plan at
 # scene N+1 from the accepted checkpoint lineage. The mode lives on the node
 # (workflow JSON), never in the Plan JSON (PLAN_SCHEMA_INVARIANT_SPEC).
-LOOP_EXECUTION_MODES = ("recursive_legacy", "top_level_requeue")
+LOOP_EXECUTION_MODES = ("recursive", "top_level_requeue")
 GUIDE_CONTINUATION_MODES = frozenset((
     "guide", "tone_carry_guide", "latent_guide", "tapered_guide"))
 MASKED_CONTINUATION_MODES = frozenset((
@@ -23243,27 +23243,33 @@ class MiniMaxH3ChainLoopEnd:
                                "full executor reset inside a running recursive "
                                "prompt, so the small live loop carry remains."}),
                 "execution_mode": (list(LOOP_EXECUTION_MODES), {
-                    "default": "recursive_legacy",
+                    "default": "recursive",
                     "tooltip": "How the next scene is scheduled. "
-                               "recursive_legacy keeps the classic behavior: "
-                               "the next H3 scene expands recursively inside "
+                               "recursive expands the next scene inside "
                                "the same top-level prompt. top_level_requeue "
-                               "(recommended for long runs) stops right after "
-                               "the scene checkpoint is persisted, writes a "
-                               "lightweight durable handoff, and lets the "
-                               "frontend queue this same workflow as a NEW "
-                               "top-level prompt; Loop Start resumes the same "
-                               "Plan at the next scene from the accepted "
-                               "checkpoint lineage. Errors and interruptions "
-                               "never auto-queue; a pending handoff can be "
-                               "resumed or cancelled manually. The mode is "
-                               "stored on this node, never in the Plan JSON."}),
+                               "ends the loop iteration after the accepted "
+                               "scene is checkpointed and writes a durable "
+                               "handoff. With frontend auto-requeue enabled, "
+                               "the next scene starts in a new top-level "
+                               "prompt after the current prompt succeeds and "
+                               "the queue/cleanup checks pass. Loop Start "
+                               "resumes from the accepted checkpoint lineage. "
+                               "Errors and interruptions do not auto-queue; "
+                               "pending handoffs can be resumed or cancelled "
+                               "manually. Stored on this node, not in Plan JSON."}),
             },
             "hidden": {
                 "dynprompt": "DYNPROMPT",
                 "unique_id": "UNIQUE_ID",
             },
         }
+
+    @classmethod
+    def VALIDATE_INPUTS(cls, execution_mode="recursive"):
+        # Accept old API/workflow values without listing the old label in the UI.
+        if execution_mode not in (*LOOP_EXECUTION_MODES, "recursive_legacy"):
+            return "execution_mode must be recursive or top_level_requeue."
+        return True
 
     RETURN_TYPES = (MANIFEST_TYPE, "STRING", "IMAGE", "LATENT")
     RETURN_NAMES = ("manifest", "manifest_json", "last_context_frames",
@@ -23279,7 +23285,8 @@ class MiniMaxH3ChainLoopEnd:
     FUNCTION = "end"
     CATEGORY = "conditioning/minimax/context_loop"
     DESCRIPTION = ("Finish one persisted clip, carry only its context tail and "
-                   "AV latent, then recursively execute the next shot.")
+                   "AV latent, then continue within the same prompt or write "
+                   "a handoff for the next top-level prompt.")
 
     def _explore_dependencies(self, node_id: str, dynprompt: Any,
                               upstream: dict[str, list[str]],
@@ -23386,8 +23393,13 @@ class MiniMaxH3ChainLoopEnd:
         }
 
     def end(self, flow, state, images, sampled_latent, segment,
-            between_scene_cleanup="off", execution_mode="recursive_legacy",
+            between_scene_cleanup="off", execution_mode="recursive",
             dynprompt=None, unique_id=None):
+        validation = self.VALIDATE_INPUTS(execution_mode)
+        if validation is not True:
+            raise ValueError(validation)
+        if execution_mode == "recursive_legacy":
+            execution_mode = "recursive"
         plan = state["plan"]
         _require_plan_write(plan, "advance or finish the scene loop")
         index = int(state["index"])
