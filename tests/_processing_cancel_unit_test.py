@@ -28,6 +28,7 @@ class ProcessingCancelTests(unittest.TestCase):
             "cancel_audit", "unit-test", 32, 32, 1, "video", "head", "disabled",
             "generated_audio", 1, 5 / 24, 2, 7, 18, 0, "guide")[0]
         plan = chain._plan_with_source_audio(chain._plan_with_external_context(plan, None), None)
+        self.plan = plan
         self.frames = torch.zeros(5, 32, 32, 3)
         self.originals = []
         for index in range(1, 4):
@@ -44,6 +45,25 @@ class ProcessingCancelTests(unittest.TestCase):
             self.manifest, stage, "pixel" if stage == "pixel" else "h3_latent",
             '{"derope":true}' if stage == "derope" else "{}",
             start, 0, stage != "pixel", 18)[1]
+
+    def test_named_branch_processing_save_resume_and_inventory(self):
+        store = chain.WorkingBranches(str(self.root), "cancel_audit")
+        named = store.create("main", "Fork", {"plan_json":json.dumps(chain._effective_editor_plan(self.plan))}, 3)
+        original_pointers = {path:path.read_bytes() for path in (self.root / "h3_chains/cancel_audit/checkpoints").glob("clip_????.json")}
+        self.manifest = dict(self.manifest, _branch_id=named["id"])
+        saved = self.save(self.adapt())["result"][0]
+        self.assertIn("/branches/%s/upscaled/" % named["id"], saved["revision_metadata"])
+        resumed = self.adapt(start=2)
+        self.assertEqual(resumed["segments"][0]["revision"], saved["revision"])
+        self.assertEqual(original_pointers, {path:path.read_bytes() for path in original_pointers})
+        catalogue = importlib.import_module(package.__name__ + ".checkpoint_variants")
+        self.assertEqual(catalogue.saved_checkpoint_variants(self.root, "cancel_audit", [])["variants"], [])
+        with chain.branch_scope("cancel_audit", named["id"]):
+            variants = catalogue.saved_checkpoint_variants(self.root, "cancel_audit", [])["variants"]
+            self.assertTrue(any(item["revision"] == saved["revision"] for item in variants))
+        deletion = importlib.import_module(package.__name__ + ".processing_checkpoint_delete")
+        preview = deletion.ProcessingCheckpointManager(self.root).deletion_preview("cancel_audit", saved["revision_metadata"])
+        self.assertTrue(preview["allowed"], preview)
 
     def save(self, state):
         return upscale.MiniMaxH3ChainUpscaleSegmentSave().save(

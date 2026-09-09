@@ -197,7 +197,7 @@ assert.match(source, /prepareResume\(resumeScene\)/);
 assert.match(source, /snapshot:plan\.snapshot/);
 assert.match(source, /window\.confirm/);
 assert.match(source, /Permanent deletion is blocked by dependent revisions/);
-assert.match(source, /Roll active branch back/);
+assert.match(source, /Roll working branch back/);
 assert.match(source, /clears later active pointers but keeps every saved take/);
 assert.match(source, /shared, kept/);
 assert.match(source, /checkpointRevisionKey\(revision\.scene, revision\.revision\)/);

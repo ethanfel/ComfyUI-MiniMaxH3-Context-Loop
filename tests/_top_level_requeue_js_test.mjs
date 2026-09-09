@@ -155,7 +155,7 @@ assert.equal(matchingNextSceneHandoff({handoffs: [
 ]}, committed), null);
 for (const change of [
     {source_revision: "wrong"}, {source_checkpoint_sha256: "wrong"},
-    {workflow_fingerprint: "wrong"}, {end_clip: 4},
+    {workflow_fingerprint: "wrong"}, {end_clip: 4}, {working_branch_id: "a".repeat(32)},
 ]) {
     assert.equal(matchingNextSceneHandoff({handoffs: [{
         handoff_id: "wrong", action: "next_scene", status: "pending",
@@ -359,7 +359,9 @@ assert.match(source, /prepareResume: async/);
 assert.match(source, /widgetByName\(context\.startNode, "start_clip"\)/);
 assert.match(source, /widgetByName\(context\.startNode, "scene_range"\)/);
 assert.match(source, /startWidget\.callback\?\.\(resume\.startClip\)/);
-assert.doesNotMatch(source, /plan_json/);
+// Reading branch identity is required; requeue must still never rewrite Plan JSON.
+assert.match(source, /JSON\.parse\(String\(widgetByName\(planNode, "plan_json"\)/);
+assert.doesNotMatch(source, /widgetByName\([^\n]*"plan_json"[^\n]*\.value\s*=/);
 // Same workflow queued as a NEW top-level prompt.
 // queued/consumed lifecycle via the durable routes.
 assert.match(source, /handoffs\/transition/);

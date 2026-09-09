@@ -304,6 +304,23 @@ def main():
         assert independent["resolved_audio_context_length"] == 0
         assert independent["generated_continuity"] == "on"
 
+        # Named branch generation retains shared immutable files, while its
+        # successful commit must never move Original's active pointer.
+        before_pointer = pathlib.Path(chain._artifact_paths(plan, 1)["metadata"]).read_bytes()
+        store = chain.WorkingBranches(tempdir, plan["run_name"])
+        named = store.create("main", "New set", {"plan_json":json.dumps({"shots":plan["shots"]})})
+        named_plan = dict(plan, _branch_id=named["id"])
+        saved = saver.save({"plan":named_plan, "index":1}, FakeImages(), object(),
+                           generated_audio, FakeBlendImages())["result"][0]
+        assert pathlib.Path(chain._artifact_paths(plan, 1)["metadata"]).read_bytes() == before_pointer
+        named_pointer = pathlib.Path(chain._artifact_paths(named_plan, 1)["metadata"])
+        assert json.loads(named_pointer.read_text())["segment"]["revision"] == saved["revision"]
+        assert "/branches/" not in saved["revision_metadata"]
+        assert pathlib.Path(chain._absolute_output_path(saved["revision_metadata"])).is_file()
+        with chain.branch_scope(plan["run_name"], named["id"]):
+            active, _ = chain.CheckpointGraphManager(tempdir).active_selection(plan["run_name"])
+            assert active == {1:saved["revision"]}
+
     print("H3 segment revisions: regeneration advances the active pointer and "
           "retains the previous take's video, checkpoint, prompt, and WAV")
 

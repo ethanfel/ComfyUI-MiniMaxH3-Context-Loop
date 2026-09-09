@@ -230,6 +230,7 @@ function onExecuted(detail) {
             record.endClip = scene.endClip;
             record.shotId = scene.shotId;
             record.workflowFingerprint = String(scene.workflowFingerprint || "");
+            record.workingBranchId = String(detail?.output?.h3_chain_active_scene?.at(-1)?._branch_id ?? "main");
             record.displayNode = String(detail.display_node);
         }
     } else if (type === END_TYPE && loopEndMatchesObservedCurrent({
@@ -320,6 +321,10 @@ function requireVisibleWorkflow(record) {
         || !record.runName || runName !== record.runName) {
         throw new Error("Return to the running H3 workflow before requeueing.");
     }
+    const authoredBranch = JSON.parse(String(widgetByName(planNode, "plan_json")?.value || "{}"))?._branch_id ?? "main";
+    if (authoredBranch !== (record.workingBranchId ?? "main")) {
+        throw new Error("The working branch changed. Return to the completed scene's branch to resume it.");
+    }
     return {startNode, planNode, runName};
 }
 
@@ -346,10 +351,10 @@ async function waitForSafeQueue(epoch) {
     }
 }
 
-async function verifyPredecessorCheckpoint(runName, predecessor) {
+async function verifyPredecessorCheckpoint(runName, predecessor, branchId = "main") {
     if (predecessor < 1) return null;
     const response = await api.fetchApi(
-        `${HANDOFF_API_BASE}/checkpoints?run_name=${encodeURIComponent(runName)}`);
+        `${HANDOFF_API_BASE}/checkpoints?run_name=${encodeURIComponent(runName)}&branch_id=${encodeURIComponent(branchId)}`);
     const body = await safeJson(response);
     if (!response.ok) {
         throw new Error(
@@ -407,7 +412,7 @@ async function processRequeue(record, epoch) {
         }
         showTransient("Waiting for a safe queue state…");
         const lifecycle = await runRequeueLifecycle({
-            current: () => requireCurrentOperation(epoch),
+            current: () => { requireCurrentOperation(epoch); requireVisibleWorkflow(record); },
             waitSafe: () => waitForSafeQueue(epoch),
             cleanup: async () => {
                 const delay = cleanupDelayMs(app.extensionManager?.setting?.get?.(DELAY_SETTING_ID));
@@ -415,12 +420,12 @@ async function processRequeue(record, epoch) {
                 if (remaining > 0) await sleep(remaining);
             },
             resolveRun: async () => ({...record, runtimeRunName:record.runName, ...requireVisibleWorkflow(record)}),
-            loadCheckpoint: (runName, context) => verifyPredecessorCheckpoint(runName, Number(context.clipIndex)),
+            loadCheckpoint: (runName, context) => verifyPredecessorCheckpoint(runName, Number(context.clipIndex), record.workingBranchId),
             listHandoffs: async runName => { const response = await api.fetchApi(`${HANDOFF_API_BASE}/handoffs?run_name=${encodeURIComponent(runName)}`); if (!response.ok) throw new Error(`The handoff list is unavailable (HTTP ${response.status}).`); return response.json(); },
             matchHandoff: matchingNextSceneHandoff,
             claimHandoff: async (runName, handoff) => { const response = await handoffApi.fetchApi(`${HANDOFF_API_BASE}/handoffs/claim`, {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({run_name:runName,handoff_id:handoff.handoff_id,source_prompt_id:record.promptId})}); if (response.status === 409) throw new Error("The handoff was already claimed; nothing was queued."); if (!response.ok) throw new Error(`Claiming the handoff failed (HTTP ${response.status}).`); },
             prepareResume: async (_runName, handoff, context) => { const resume = resumeHint(handoff); const startWidget = widgetByName(context.startNode, "start_clip"); const rangeWidget = widgetByName(context.startNode, "scene_range"); if (!resume || !startWidget) throw new Error("The handoff has no resume hint or Loop Start widget."); startWidget.value = resume.startClip; startWidget.callback?.(resume.startClip); if (rangeWidget) { rangeWidget.value = resume.sceneRange; rangeWidget.callback?.(resume.sceneRange); } context.startNode.graph?.setDirtyCanvas?.(true, true); showTransient(`Queueing scene ${resume.startClip} as a new top-level prompt…`); },
-            submit: () => queuePromptWithIdentity(() => requireCurrentOperation(epoch)),
+            submit: () => queuePromptWithIdentity(() => { requireCurrentOperation(epoch); requireVisibleWorkflow(record); }),
             release: (handoff, releasedRun) => releaseHandoffChecked({api:handoffApi, apiBase:HANDOFF_API_BASE, runName:releasedRun, handoffId:handoff.handoff_id, reason:"Automatic requeue was cancelled."}),
         });
         if (!lifecycle) { clearNotifications(); return; }

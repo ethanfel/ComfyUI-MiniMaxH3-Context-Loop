@@ -39,6 +39,7 @@ let panelRenders = 0;
 const context = vm.createContext({
     state, Map, URLSearchParams, studioCheckpointSignature, matchingStudioCheckpoint,
     runName:() => "run", timing:() => ({shots:rows}),
+    currentBranch:() => "main",
     api:{fetchApi:async () => ({ok:true, json:async () => response})},
     applyEditorialPayload:() => false, cacheStudioPresentation(){},
     renderStatus(){}, renderTimeline(){},

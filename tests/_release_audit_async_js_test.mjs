@@ -90,6 +90,7 @@ function editorialFixture() {
     const context = vm.createContext({
         ...planCore, state, structuredClone, node:{properties:{}}, alternateTakeWidget:null,
         currentRun:"run_a", runName:() => context.currentRun,
+        currentBranch:() => "main", scopedPath:path => path,
         dirty() {}, renderStatus() {}, cacheStudioPresentation() {}, flushHistoryDraft:async () => {},
         console:{warn() {}}, projectMutationOptions:async (_node, _run, options) => options,
         setTimeout:fn => { timers.set(++timerId, fn); return timerId; }, clearTimeout:id => timers.delete(id),

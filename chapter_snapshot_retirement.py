@@ -33,6 +33,8 @@ class ChapterSnapshotManager:
         address = artifact_address(address)
         path = self._path(address)
         parts = PurePosixPath(address).parts
+        if len(parts) > 4 and parts[2] == "branches" and re.fullmatch(r"[0-9a-f]{32}", parts[3]):
+            parts = parts[:2] + parts[4:]
         if not (len(parts) == 6 and parts[:3] == ("h3_chains", run, "chapters")
                 and parts[4] == "manifests"
                 and re.fullmatch(r"[0-9a-f]{32}\.json", parts[5])):

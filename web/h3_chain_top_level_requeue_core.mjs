@@ -78,6 +78,8 @@ export function pendingNextSceneHandoffs(body) {
 // backwards merely because they sort first on disk.
 export function matchingNextSceneHandoff(body, completed) {
     return pendingNextSceneHandoffs(body).find((item) =>
+        String(item.working_branch_id ?? "main") === String(completed?.workingBranchId ?? "main")
+        &&
         Number(item.predecessor_scene) === Number(completed?.clipIndex)
         && Number(item.start_clip) === Number(completed?.clipIndex) + 1
         && Number(item.end_clip) === Number(completed?.endClip)

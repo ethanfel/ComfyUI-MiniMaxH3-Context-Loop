@@ -101,8 +101,12 @@ class PromptHistoryStore:
     def _scene_dir(self, run_name: Any, scene_id: Any) -> tuple[str, str, str]:
         run = _strict_run_name(run_name)
         scene = _safe_component(scene_id, "scene ID")
-        path = os.path.abspath(os.path.join(
-            self.output_root, "h3_chains", run, "prompt_history", scene))
+        if __package__:
+            from .branch_scope import working_directory
+        else:
+            from branch_scope import working_directory
+        path = os.path.abspath(os.path.join(working_directory(os.path.join(
+            self.output_root, "h3_chains", run), run), "prompt_history", scene))
         if os.path.commonpath([self.output_root, path]) != self.output_root:
             raise ValueError("Prompt history path escapes the output directory.")
         return path, run, scene

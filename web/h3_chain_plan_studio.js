@@ -1,5 +1,6 @@
 import {app} from "/scripts/app.js";
 import {api} from "/scripts/api.js";
+import {StudioBranches, branchRequestPath, workingBranchId} from "./h3_working_branches.mjs?v=0.7.0";
 import {
     CONTINUATION_MODES,
     FPS,
@@ -635,6 +636,11 @@ function mount(node) {
         alternateTakeWidget.computeSize = () => [0, -4];
         alternateTakeWidget.draw = () => {};
     }
+    const branchWidget = widget(node, "working_branch_id");
+    if (branchWidget) {
+        branchWidget.hidden = true; branchWidget.type = "hidden";
+        branchWidget.computeSize = () => [0, -4]; branchWidget.draw = () => {};
+    }
 
     const root = element("div", "h3studio");
     root.title = "Timeline Plan editor: use it standalone or synchronize it with a connected H3 Chain Plan.";
@@ -701,6 +707,105 @@ function mount(node) {
         referenceSyntax:new Map(),
     };
     node._h3PlanStudioState = state;
+    let branches = null;
+    function currentBranch() { return workingBranchId(branchWidget?.value); }
+    function scopedPath(path, selected = currentBranch()) { return branchRequestPath(path, selected); }
+    function captureBranchAuthoring() {
+        preserveDelegatedPrompts();
+        const owner = state.planOwner ?? node;
+        const result = {};
+        for (const name of PLAN_SETTING_WIDGETS) {
+            if (name !== "run_name" && widget(owner, name)) result[name] = widget(owner, name).value;
+        }
+        result.plan_json = planToJson(state.plan);
+        return result;
+    }
+    async function applyWorkingBranch(record) {
+        if (!branchWidget) throw new Error("Restart ComfyUI to load the working-branch input.");
+        // Validate before replacing widgets or clearing media.
+        parsePlanJson(record.authoring.plan_json);
+        disposePlayer();
+        state.checkpointToken += 1; state.presentationToken += 1;
+        state.history.loadToken += 1;
+        state.history.data = null; state.history.sceneKey = "";
+        state.checkpoints = new Map(); state.checkpointSignature = "";
+        node.properties[CHECKPOINT_CACHE_PROPERTY] = null;
+        branchWidget.value = record.id;
+        for (const [name, value] of Object.entries(record.authoring)) {
+            if (PLAN_SETTING_WIDGETS.includes(name) && name !== "run_name") {
+                writePlanSetting(name, value, false);
+            }
+        }
+        const savedPlan = parsePlanJson(record.authoring.plan_json);
+        if (record.id === "main") delete savedPlan._branch_id;
+        else savedPlan._branch_id = record.id;
+        writePlanSetting("plan_json", planToJson(savedPlan), false);
+        if (state.planNode) for (let index = 0; index < savedPlan.shots.length; index++) {
+            publishCompanionPrompt(node, state.planNode, index,
+                promptValueToText(savedPlan.shots[index].prompt));
+        }
+        const alternate = widget(node, "alternate_take_json");
+        if (alternate) alternate.value = "";
+        state.lastRunName = ""; // Reset all per-branch editorial/preview caches.
+        state.lastBranchId = record.id;
+        loadPlan(true);
+        branchWidget.callback?.(record.id);
+        dirty();
+    }
+    branches = new StudioBranches({
+        selected:currentBranch(), capture:captureBranchAuthoring,
+        apply:applyWorkingBranch, flush:() => flushProjectWrites(),
+        changed:() => { if (state.plan) renderShell(); },
+        request:async (body) => {
+            const read = ["list", "load"].includes(body.action);
+            const path = "/minimax_h3_context_loop/working-branches";
+            const response = await api.fetchApi(read ? `${path}?${new URLSearchParams(body)}` : path,
+                read ? undefined : await projectMutationOptions(node, body.run_name, {
+                    method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body),
+                }));
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+            return data;
+        },
+    });
+
+    function branchToolbar() {
+        const bar = element("div", "h3studio-toolbar");
+        const records = branches.records;
+        const selected = records.findIndex(item => item.id === currentBranch());
+        const previous = button("←", "Previous working branch", () => void branches.switchTo(records[selected - 1]?.id));
+        const next = button("→", "Next working branch", () => void branches.switchTo(records[selected + 1]?.id));
+        previous.disabled = branches.busy || selected <= 0;
+        next.disabled = branches.busy || selected < 0 || selected >= records.length - 1;
+        const select = element("select", "h3studio-select");
+        select.title = "Editing and generating branch (not the project default)";
+        for (const item of records) {
+            const option = element("option", "", item.name); option.value = item.id; select.append(option);
+        }
+        select.value = currentBranch(); select.disabled = branches.busy || !records.length;
+        select.addEventListener("change", () => void branches.switchTo(select.value));
+        const create = (fork) => {
+            const name = window.prompt(fork ? "Name this continuation branch" : "Name this empty branch", `Branch ${records.length + 1}`);
+            if (!name) return;
+            const newSeeds = !fork && window.confirm("Use new random scene seeds?\nCancel keeps all existing seeds.");
+            void branches.create(name, fork ? state.active + 1 : 0, newSeeds);
+        };
+        const empty = button("+ Empty branch", "Copy the complete Plan and references; no generated videos", () => create(false));
+        const fork = button("Fork here", "Keep saved scenes through the selected scene; copy the full Plan", () => create(true));
+        empty.disabled = fork.disabled = branches.busy || !records.length || !branchWidget;
+        const makeDefault = button("Make project default", "Change the preferred branch without changing any saved clips or queued jobs", () => void branches.makeDefault());
+        makeDefault.disabled = branches.busy || !records.length || currentBranch() === branches.defaultBranch;
+        const defaultName = records.find(item => item.id === branches.defaultBranch)?.name ?? "Original";
+        const saveBranch = button("Save branch", "Save this branch's current prompts and Plan settings", () => void branches.perform(async () => {}));
+        const useDefault = button("Open project default", "Load the project's preferred branch in this Studio", () => void branches.switchTo(branches.defaultBranch));
+        saveBranch.disabled = branches.busy || !records.length;
+        useDefault.disabled = branches.busy || !records.length || currentBranch() === branches.defaultBranch;
+        bar.append(saveBranch, useDefault);
+        bar.append(previous, select, next, empty, fork, makeDefault,
+            element("span", "h3studio-message", `Project default: ${defaultName}`));
+        if (branches.error) bar.append(element("span", "h3studio-error", branches.error));
+        return bar;
+    }
 
     root.tabIndex = 0;
     root.addEventListener("pointerenter", () => { state.keyboardHover = true; });
@@ -1222,6 +1327,7 @@ function mount(node) {
         const comparable = {...payload};
         delete comparable.base_revision;
         delete comparable.revision;
+        delete comparable.branch_id;
         return JSON.stringify(comparable);
     }
 
@@ -1233,6 +1339,7 @@ function mount(node) {
     }
 
     async function persistEditorial(payload, signature) {
+        const requestBranch = payload.branch_id ?? currentBranch();
         // Capture the editor binding, not just its Run name: A -> B -> A
         // creates a new view that must not adopt an old request's revision.
         const binding = state.editorial;
@@ -1250,7 +1357,7 @@ function mount(node) {
                     ? previous.revision : readRevision,
             };
             const response = await api.fetchApi(
-                "/minimax_h3_context_loop/editorial",
+                scopedPath("/minimax_h3_context_loop/editorial", requestBranch),
                 await projectMutationOptions(node, payload.run_name, {
                     method:"POST", headers:{"Content-Type":"application/json"},
                     body:JSON.stringify(outbound),
@@ -1330,6 +1437,7 @@ function mount(node) {
         if (signature === state.lastEditorialSignature) return;
         state.editorialEditEpoch = (state.editorialEditEpoch ?? 0) + 1;
         state.lastEditorialSignature = signature;
+        payload.branch_id = currentBranch();
         if (state.editorialTimer != null) clearTimeout(state.editorialTimer);
         if (!payload.run_name) return;
         state.editorialPending = {payload, signature};
@@ -1399,13 +1507,13 @@ function mount(node) {
     }
 
     function historyKey(sceneId) {
-        return `${runName()}\u0000${sceneId}`;
+        return `${runName()}\u0000${currentBranch()}\u0000${sceneId}`;
     }
 
     async function historyRequest(query = {}, body = null) {
         const suffix = new URLSearchParams(query).toString();
         const response = await api.fetchApi(
-            `/minimax_h3_context_loop/prompt-history${suffix ? `?${suffix}` : ""}`,
+            scopedPath(`/minimax_h3_context_loop/prompt-history${suffix ? `?${suffix}` : ""}`, body?.branch_id ?? currentBranch()),
             body == null ? undefined : await projectMutationOptions(
                 node, body.run_name ?? runName(), {
                     method:"POST", headers:{"Content-Type":"application/json"},
@@ -1475,7 +1583,7 @@ function mount(node) {
         const currentRun = runName();
         if (!currentRun) return;
         const history = state.history;
-        history.pendingDraft = {key:historyKey(sceneId), runName:currentRun, sceneId, prompt};
+        history.pendingDraft = {key:historyKey(sceneId), runName:currentRun, branchId:currentBranch(), sceneId, prompt};
         if (history.saveTimer != null) clearTimeout(history.saveTimer);
         history.saveTimer = setTimeout(() => { history.saveTimer = null; void flushHistoryDraft(); }, 650);
     }
@@ -1489,6 +1597,7 @@ function mount(node) {
         history.pendingDraft = null;
         if (history.loadPromise && history.sceneKey === draft.key) await history.loadPromise;
         const request = historyRequest({}, {action:"save", run_name:draft.runName,
+            branch_id:draft.branchId,
             scene_id:draft.sceneId, prompt:draft.prompt,
             parent_revision:history.sceneKey === draft.key ? history.revisionId : null});
         history.savePromise = request;
@@ -1538,11 +1647,13 @@ function mount(node) {
         try {
             const query = new URLSearchParams({
                 run_name:currentRun, include_graph:"false",
+                branch_id:currentBranch(),
             });
             const response = await api.fetchApi(`/minimax_h3_context_loop/checkpoints?${query.toString()}`);
             const payload = await response.json();
             if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
-            if (state.disposed || token !== state.checkpointToken || currentRun !== runName()) return;
+            if (state.disposed || token !== state.checkpointToken || currentRun !== runName()
+                    || (payload.working_branch_id ?? "main") !== currentBranch()) return;
             editorialChanged = applyEditorialPayload(
                 payload.editorial, editorialEpoch, payload.editorial_unused_scene_ids,
             );
@@ -1934,6 +2045,7 @@ function mount(node) {
         }
         const query = new URLSearchParams({
             run_name:runName(), scene:String(index + 1), revision,
+            branch_id:currentBranch(),
         });
         return api.apiURL(`/minimax_h3_context_loop/plan-studio/checkpoint-thumbnail?${query.toString()}`);
     }
@@ -2070,7 +2182,8 @@ function mount(node) {
     }
 
     function applySourcePresentation(payload) {
-        if (!payload || String(payload.run_name ?? "") !== runName()) return;
+        if (!payload || String(payload.run_name ?? "") !== runName()
+                || (payload._branch_id ?? "main") !== currentBranch()) return;
         if (!state.sourceWaveformToken.startsWith(
             `${String(payload.token ?? "")}:`,
         )) {
@@ -2096,7 +2209,7 @@ function mount(node) {
         if (!currentRun || state.disposed) return;
         const token = ++state.presentationToken;
         try {
-            const query = new URLSearchParams({run_name:currentRun});
+            const query = new URLSearchParams({run_name:currentRun, branch_id:currentBranch()});
             const response = await api.fetchApi(
                 `/minimax_h3_context_loop/plan-studio/presentation?${query.toString()}`,
             );
@@ -6062,7 +6175,7 @@ function mount(node) {
             state.timelineResizeObserver.observe(timelineViewport);
         }
         const panelHost = element("div", "h3studio-panel"); state.panelHost = panelHost;
-        root.append(head, toolbar, status, shell, panelHost);
+        root.append(head, branchToolbar(), toolbar, status, shell, panelHost);
         renderToolbarState(); renderStatus();
         renderTimeline({
             revealActive:revealTimelineActive,
@@ -6092,6 +6205,10 @@ function mount(node) {
             return;
         }
         const value = String(planWidget.value ?? "");
+        if (planNode && branchWidget) {
+            try { branchWidget.value = workingBranchId(parsePlanJson(value)._branch_id); }
+            catch { /* The normal Plan validation below reports this. */ }
+        }
         const currentRun = String(widget(planOwner, "run_name")?.value ?? "").trim();
         const currentSettings = settingsSignature(planOwner);
         const promptEditors = planNode ? connectedPromptEditors(node).filter(
@@ -6100,10 +6217,14 @@ function mount(node) {
         const currentPromptEditors = promptEditorsSignature(promptEditors);
         if (!force && planOwner === state.planOwner && value === state.lastValue
                 && currentRun === state.lastRunName
+                && state.lastBranchId === currentBranch()
                 && currentSettings === state.lastSettingsSignature
                 && currentPromptEditors === state.lastPromptEditorsSignature) return;
         try {
-            const runChanged = planOwner !== state.planOwner || currentRun !== state.lastRunName;
+            const runChanged = planOwner !== state.planOwner || currentRun !== state.lastRunName
+                || state.lastBranchId !== currentBranch();
+            state.lastBranchId = currentBranch();
+            branches.selected = currentBranch();
             const previousRun = state.lastRunName;
             if (runChanged && previousRun) {
                 void flushProjectWrites(previousRun).catch((error) => {
@@ -6123,9 +6244,9 @@ function mount(node) {
                 (chapter) => chapter.id === state.activeChapterId,
             )) state.activeChapterId = "";
             if (runChanged) {
-                const cached = restoreStudioCheckpointCache(
+                const cached = currentBranch() === "main" ? restoreStudioCheckpointCache(
                     node.properties[CHECKPOINT_CACHE_PROPERTY], currentRun,
-                );
+                ) : null;
                 const cachedRecords = cached?.checkpoints ?? [];
                 state.checkpoints = new Map(cachedRecords.map(
                     (item) => [Number(item.scene), item],
@@ -6164,6 +6285,9 @@ function mount(node) {
             if (runChanged && currentRun) {
                 void restoreSourcePresentation();
                 void loadSubtitleAssets();
+                if (branches.run !== currentRun) void branches.refresh(currentRun).catch(error => {
+                    branches.error = error.message; renderShell();
+                });
             }
         } catch (error) {
             showFailure(`${planNode ? "Connected Plan" : "Standalone Plan Studio"} JSON is invalid:\n${error.message}`);
@@ -6199,7 +6323,8 @@ function mount(node) {
         }
         const values = event.detail?.output?.h3_chain_active_scene;
         const scene = Array.isArray(values) ? values.at(-1) : null;
-        if (!scene || String(scene.run_name ?? "") !== runName()) return;
+        if (!scene || String(scene.run_name ?? "") !== runName()
+                || (scene._branch_id ?? "main") !== currentBranch()) return;
         const shot = state.plan?.shots?.[state.active];
         const sceneId = safeShotId(
             shot?.id, `clip_${String(state.active + 1).padStart(4, "0")}`,

@@ -15,8 +15,10 @@ except ImportError:  # Standalone unit tests import this module without a packag
 
 try:
     from .checkpoint_manager import checkpoint_run_lock
+    from .branch_scope import working_directory, current_branch
 except ImportError:  # Standalone unit tests import this module without a package.
     from checkpoint_manager import checkpoint_run_lock
+    from branch_scope import working_directory, current_branch
 
 try:
     from .contracts_v05 import (
@@ -401,7 +403,7 @@ class RunArchiveManager:
         root = os.path.realpath(self.output_root)
         if os.path.commonpath([root, path]) != root:
             raise ValueError("H3 run path escapes the output directory.")
-        return path, run
+        return working_directory(path, run), run
 
     def _active_archive_paths(
             self, directory: str, run: str) -> dict[str, str] | None:
@@ -457,7 +459,7 @@ class RunArchiveManager:
             raise ValueError(
                 "Active checkpoint recovery references are invalid.")
         snapshot_root = os.path.realpath(os.path.join(
-            directory, "recovery_archives", revision))
+            self.chains_root, run, "recovery_archives", revision))
         paths = {}
         for key, archive_filename in ARCHIVE_FILENAMES.items():
             value = archives.get(key)
@@ -598,6 +600,15 @@ class RunArchiveManager:
             except (OSError, json.JSONDecodeError) as exc:
                 warnings.append("api_prompt.json: %s" % exc)
 
+        selected_branch = current_branch(run)
+        if selected_branch != "main":
+            if __package__:
+                from .working_branches import WorkingBranches
+            else:
+                from working_branches import WorkingBranches
+            authoring = WorkingBranches(self.output_root, run).load(selected_branch).get("authoring")
+            if authoring:
+                restored.update(authoring)
         restored["run_name"] = run
         if "plan_json" not in restored:
             detail = "; ".join(warnings) if warnings else "no usable Plan archive was found"

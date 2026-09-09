@@ -13,6 +13,11 @@ from collections import defaultdict, deque
 from datetime import datetime, timezone
 from typing import Any
 
+if __package__:
+    from .branch_scope import working_directory
+else:
+    from branch_scope import working_directory
+
 
 _REVISION = re.compile(r"clip_(\d{4})\.([0-9a-f]{32})\.json")
 _ACTIVE = re.compile(r"clip_(\d{4})\.json")
@@ -452,6 +457,7 @@ class CheckpointGraphManager:
             self, run_name: Any) -> tuple[dict[int, str], dict[int, str]]:
         """Cheap, read-only selection shared by recovery and the UI."""
         run_dir, _run = self._run_dir(run_name)
+        run_dir = working_directory(run_dir, _run)
         checkpoint_dir = os.path.join(run_dir, "checkpoints")
         segments = {}
         if os.path.isdir(checkpoint_dir):
@@ -580,10 +586,12 @@ class CheckpointGraphManager:
         run_dir, run = self._run_dir(run_name)
         checkpoint_dir = os.path.join(run_dir, "checkpoints")
         review_dir = os.path.join(run_dir, "reviews")
-        chapter_starts = self._chapter_starts(run_dir)
+        working_dir = working_directory(run_dir, run)
+        pointer_dir = os.path.join(working_dir, "checkpoints")
+        chapter_starts = self._chapter_starts(working_dir)
         if adopt_legacy:
             self._adopt_legacy_active_revisions(checkpoint_dir, run)
-        active = self._active_revisions(checkpoint_dir)
+        active = self._active_revisions(pointer_dir)
         selected, stale = self.active_selection(run)
         records: dict[tuple[int, str], dict[str, Any]] = {}
         if os.path.isdir(checkpoint_dir):
@@ -785,6 +793,8 @@ class CheckpointGraphManager:
             "run_dir": run_dir,
             "run_name": run,
             "checkpoint_dir": checkpoint_dir,
+            "pointer_dir": pointer_dir,
+            "working_dir": working_dir,
             "review_dir": review_dir,
             "review_names": review_names,
             "chapter_starts": chapter_starts,
@@ -989,8 +999,8 @@ class CheckpointGraphManager:
     ) -> dict[str, Any]:
         """Describe the mutable pointer removed by an active-tip rollback."""
         path = os.path.realpath(os.path.join(
-            scan["checkpoint_dir"], "clip_%04d.json" % record["scene"]))
-        if not self._inside(scan["checkpoint_dir"], path):
+            scan["pointer_dir"], "clip_%04d.json" % record["scene"]))
+        if not self._inside(scan["pointer_dir"], path):
             raise ValueError("Active checkpoint pointer escapes its run directory.")
         exists = os.path.isfile(path)
         stat_result = os.stat(path) if exists else None
@@ -1157,7 +1167,7 @@ class CheckpointGraphManager:
             public_records.append(item)
         try:
             editorial = self._read_json(os.path.join(
-                scan["run_dir"], "editorial.json"))
+                scan["working_dir"], "editorial.json"))
             replacement_rows = editorial.get("replacements", [])
         except (OSError, TypeError, ValueError, json.JSONDecodeError,
                 AttributeError):
@@ -1395,6 +1405,17 @@ class CheckpointGraphManager:
             return os.path.realpath(os.path.join(self.output_root, relative)) in paths
 
         references = []
+        if not scan.get("_branch_snapshot_scan"):
+            branch_root = os.path.join(scan["run_dir"], "branches")
+            if os.path.isdir(branch_root):
+                for name in os.listdir(branch_root):
+                    if re.fullmatch(r"[0-9a-f]{32}", name):
+                        directory = os.path.join(branch_root, name)
+                        if os.path.islink(directory):
+                            references.append({"error": "Cannot verify symlinked working branch " + name})
+                            continue
+                        references.extend(self._chapter_references(
+                            dict(scan, run_dir=directory, _branch_snapshot_scan=True), revision, artifacts))
         if not os.path.lexists(root):
             return references
         try:
@@ -1484,9 +1505,37 @@ class CheckpointGraphManager:
                     "if its chapter recovery is no longer needed." %
                     (item["number"], item["title"], item["snapshot"][:8]))
                 for item in chapter_references]
+            # A retained named branch owns its exact selection even when not
+            # the project default. Never delete a shared prefix out from under it.
+            other_dirs = [("Original", run_dir)]
+            branches_dir = os.path.join(run_dir, "branches")
+            if os.path.isdir(branches_dir):
+                for name in os.listdir(branches_dir):
+                    if re.fullmatch(r"[0-9a-f]{32}", name):
+                        other_dirs.append((name[:8], os.path.join(branches_dir, name)))
+            for title, directory in other_dirs:
+                if os.path.realpath(directory) == os.path.realpath(scan["working_dir"]):
+                    continue
+                pointer = os.path.join(directory, "checkpoints", "clip_%04d.json" % scene_number)
+                if os.path.isfile(pointer):
+                    try:
+                        saved = self._read_json(pointer).get("segment") or {}
+                        if str(saved.get("revision") or "") == token:
+                            blockers.append("Working branch %s still uses this revision." % title)
+                    except (OSError, ValueError, AttributeError):
+                        blockers.append("Cannot verify retained working branch %s." % title)
+                editorial_path = os.path.join(directory, "editorial.json")
+                if os.path.isfile(editorial_path):
+                    try:
+                        replacements = self._read_json(editorial_path).get("replacements", [])
+                        if any(token in (item.get("base_revision"), item.get("alternate_revision"))
+                               for item in replacements):
+                            blockers.append("Working branch %s uses this revision in its edit." % title)
+                    except (OSError, ValueError, AttributeError, TypeError):
+                        blockers.append("Cannot verify retained working branch %s editorial." % title)
             try:
                 editorial = self._read_json(os.path.join(
-                    scan["run_dir"], "editorial.json"))
+                    scan["working_dir"], "editorial.json"))
                 active_revision = next((
                     str(record.get("revision") or "").lower()
                     for record in scan["records"].values()

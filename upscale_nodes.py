@@ -63,7 +63,8 @@ CONDITIONING_SYNC_MOTION_MODES = (
 def _profile_dir(run_name: str, profile: str, source_manifest=None) -> str:
     run = chain._safe_name(run_name, "h3_chain")
     name = chain._safe_name(profile, "upscale")
-    parent = os.path.join(chain._output_root(), "h3_chains", run)
+    parent = chain._run_dir({"run_name": run, **({"_branch_id": source_manifest["_branch_id"]}
+                            if isinstance(source_manifest, dict) and source_manifest.get("_branch_id") else {})})
     if isinstance(source_manifest, dict) and source_manifest.get("chapter"):
         parent = chain._chapter_delivery_root({**source_manifest, "run_name": run})
     path = os.path.abspath(os.path.join(parent, "upscaled", name))
@@ -3223,6 +3224,8 @@ UPSCALE_NODE_CLASS_MAPPINGS = {
     "MiniMaxH3ChainUpscaleAdvance": MiniMaxH3ChainUpscaleAdvance,
     "MiniMaxH3ChainUpscaleMerge": MiniMaxH3ChainUpscaleMerge,
 }
+
+chain.scope_nodes(UPSCALE_NODE_CLASS_MAPPINGS)
 
 UPSCALE_NODE_DISPLAY_NAME_MAPPINGS = {
     "MiniMaxH3ChainUpscalePixelCurrent": "MiniMax H3 Pixel Upscale Current Scene (Experimental)",

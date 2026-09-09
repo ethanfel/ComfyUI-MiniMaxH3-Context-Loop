@@ -53,7 +53,7 @@ def derope_source_manifest(manifest, selection, chain, upscale):
     if not isinstance(selection, dict) or selection.get("stage") != "derope":
         raise ValueError("Unknown Checkpoint Manager processing source.")
     root = Path(chain._output_root()).resolve()
-    run = root / "h3_chains" / chain._strict_run_name(manifest["run_name"])
+    run = Path(chain._run_dir(manifest))
     try:
         profile = (root / artifact_address(selection.get("profile_path"))).resolve()
     except ValueError as exc:

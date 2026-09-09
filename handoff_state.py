@@ -223,6 +223,9 @@ def _validate_record(record: Any, *, expect_format: str = HANDOFF_FORMAT_VERSION
                 "Handoff record %s must be an ISO-8601 string." % key)
     _validate_handoff_id(record.get("handoff_id"))
     _validate_run_name(record.get("run_name"))
+    selected_branch = record.get("working_branch_id", "main")
+    if selected_branch != "main" and not re.fullmatch(r"[0-9a-f]{32}", str(selected_branch)):
+        raise HandoffCorruptError("Invalid working branch identity in handoff.")
     for key in ("scene", "start_clip", "end_clip", "candidate_ordinal",
                 "candidate_count", "seed", "predecessor_scene"):
         value = record.get(key)
@@ -468,7 +471,8 @@ class HandoffStore:
                predecessor_scene: int | None = None,
                transition_key: str | None = None,
                max_attempts: int = DEFAULT_MAX_ATTEMPTS,
-               handoff_id: str | None = None) -> dict[str, Any]:
+               handoff_id: str | None = None,
+               working_branch_id: str = "main") -> dict[str, Any]:
         """Create a fresh ``pending`` handoff with a unique ID.
 
         Every value must be lightweight JSON data; the store raises before
@@ -538,6 +542,10 @@ class HandoffStore:
             "created_at": now,
             "updated_at": now,
         }
+        if working_branch_id != "main":
+            if not re.fullmatch(r"[0-9a-f]{32}", str(working_branch_id)):
+                raise HandoffError("Invalid working branch identity.")
+            record["working_branch_id"] = working_branch_id
         for key, value in record.items():
             _assert_lightweight_value(key, value)
         path = self._record_path(run, record_id)

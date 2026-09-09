@@ -169,6 +169,11 @@ from .checkpoint_manager import (
     checkpoint_revision_token,
     checkpoint_run_lock,
 )
+from .branch_scope import (
+    branch_id as _working_branch_id, branch_scope, current_branch,
+    working_directory, scope_nodes, scoped_request, scoped_review,
+)
+from .working_branches import WorkingBranches
 from .project_ownership import (
     ProjectOwnershipError,
     claim_project_ownership,
@@ -4649,7 +4654,7 @@ def _run_local_reference_cache(
     if descriptor is None or int(scene) < 1:
         return None
     root = os.path.abspath(os.path.join(
-        _run_dir({"run_name": normalized_run}), "reference_cache"))
+        _project_run_dir({"run_name": normalized_run}), "reference_cache"))
     signature = str(descriptor["signature"])
     stem = "scene_%04d.%s" % (int(scene), signature[:24])
     tensors_path = os.path.join(root, stem + ".safetensors")
@@ -4691,8 +4696,8 @@ def _adopt_reference_cache_for_run(
         plan["run_name"], scene, descriptor)
     if existing is not None:
         return existing
-    root = os.path.abspath(os.path.join(_run_dir(plan), "reference_cache"))
-    run_root = os.path.abspath(_run_dir(plan))
+    root = os.path.abspath(os.path.join(_project_run_dir(plan), "reference_cache"))
+    run_root = os.path.abspath(_project_run_dir(plan))
     if os.path.commonpath([run_root, root]) != run_root:
         raise ValueError("H3 run-local reference cache escapes the run folder.")
     signature = str(descriptor["signature"])
@@ -8159,7 +8164,7 @@ def _run_manager_source_track_timeline(
     return _validate_source_timeline(timeline, require_runtime=True)
 
 
-def _run_dir(plan: dict[str, Any]) -> str:
+def _project_run_dir(plan: dict[str, Any]) -> str:
     root = os.path.realpath(_output_root())
     run_name = _strict_run_name(plan.get("run_name"))
     path = os.path.realpath(os.path.join(root, "h3_chains", run_name))
@@ -8170,6 +8175,11 @@ def _run_dir(plan: dict[str, Any]) -> str:
     if not inside:
         raise ValueError("H3 chain run path escapes the ComfyUI output directory.")
     return path
+
+
+def _run_dir(plan: dict[str, Any]) -> str:
+    return working_directory(_project_run_dir(plan), plan["run_name"],
+                             plan.get("_branch_id"))
 
 
 def _launch_directory(path: str) -> tuple[bool, str | None]:
@@ -8432,7 +8442,7 @@ def _video_output_item(path: str) -> dict[str, str]:
 def _final_review_preview_key(document: dict[str, Any]) -> tuple[str, str]:
     return (
         _strict_run_name(document.get("run_name")),
-        str(document.get("plan_hash") or ""),
+        str(document.get("plan_hash") or "") + ":" + str(document.get("_branch_id", "main")),
     )
 
 
@@ -8467,7 +8477,8 @@ def _publish_final_review_preview(
 
 
 def _artifact_paths(plan: dict[str, Any], index: int) -> dict[str, str]:
-    run_dir = _run_dir(plan)
+    # UUID-addressed media and revisions are shared; only selection is scoped.
+    run_dir = _project_run_dir(plan)
     return {
         "run_dir": run_dir,
         "segment": os.path.join(run_dir, "segments", "clip_%04d.mp4" % index),
@@ -8477,7 +8488,7 @@ def _artifact_paths(plan: dict[str, Any], index: int) -> dict[str, str]:
             run_dir, "generated_audio", "clip_%04d.wav" % index),
         "checkpoint": os.path.join(run_dir, "checkpoints",
                                    "clip_%04d.safetensors" % index),
-        "metadata": os.path.join(run_dir, "checkpoints", "clip_%04d.json" % index),
+        "metadata": os.path.join(_run_dir(plan), "checkpoints", "clip_%04d.json" % index),
     }
 
 
@@ -8547,7 +8558,6 @@ def _preserve_previous_revision(plan: dict[str, Any], index: int,
     previous = previous_metadata.get("segment")
     if not isinstance(previous, dict):
         return None
-    canonical = _artifact_paths(plan, index)
     existing = previous.get("revision_metadata")
     if isinstance(existing, str):
         try:
@@ -8563,7 +8573,8 @@ def _preserve_previous_revision(plan: dict[str, Any], index: int,
         match = re.fullmatch(
             r"clip_%04d\.([0-9a-f]{32})\.mp4" % index, name)
         revision = match.group(1) if match is not None else uuid.uuid4().hex
-    snapshot_path = _versioned_path(canonical["metadata"], revision)
+    snapshot_path = os.path.join(_project_run_dir(plan), "checkpoints",
+                                "clip_%04d.%s.json" % (index, revision))
     snapshot = dict(previous_metadata)
     snapshot_segment = dict(previous)
     snapshot_segment["revision"] = revision
@@ -8605,8 +8616,7 @@ def _read_json(path: str) -> Any:
 
 def _run_editorial_path(run_name: Any) -> str:
     normalized = _strict_run_name(run_name)
-    return os.path.join(
-        _output_root(), "h3_chains", normalized, "editorial.json")
+    return os.path.join(_run_dir({"run_name": normalized}), "editorial.json")
 
 
 def _normalize_run_editorial(value: Any, run_name: Any) -> dict[str, Any]:
@@ -9707,6 +9717,8 @@ def _effective_editor_plan(plan: dict[str, Any]) -> dict[str, Any]:
             **({"resolution": dict(chapter["resolution"])}
                if chapter.get("resolution") else {}),
         } for chapter in chapters]
+    if plan.get("_branch_id"):
+        result["_branch_id"] = plan["_branch_id"]
     return result
 
 
@@ -9846,7 +9858,7 @@ def _run_archive_snapshot_paths(
     token = str(revision or "").strip().lower()
     if re.fullmatch(r"[0-9a-f]{32}", token) is None:
         raise ValueError("Recovery archive revision must be a revision id.")
-    root = os.path.join(_run_dir(plan), "recovery_archives", token)
+    root = os.path.join(_project_run_dir(plan), "recovery_archives", token)
     return {
         "plan": os.path.join(root, "plan.json"),
         "workflow": os.path.join(root, "workflow.json"),
@@ -9920,12 +9932,15 @@ def _checkpoint_run_archives(
         return {}
     if isinstance(archives, dict):
         canonical = _run_archive_paths(plan)
+        project_canonical = {key: os.path.join(_project_run_dir(plan), os.path.basename(path))
+                             for key, path in canonical.items()}
         references = {key: archives[key] for key in canonical
                       if archives.get(key) is not None}
-        if references and all(
+        if references and any(all(
                 isinstance(value, str) and value and
-                _absolute_output_path(value) == canonical[key]
-                for key, value in references.items()):
+                _absolute_output_path(value) == candidates[key]
+                for key, value in references.items())
+                for candidates in (canonical, project_canonical)):
             # Pre-snapshot saves explicitly referenced these shared Run files.
             # They are not an immutable revision: readers use the existing
             # root fallback, while activation rebuilds from the restored Plan.
@@ -17744,8 +17759,7 @@ def _plan_studio_preview_cleanup() -> None:
 
 def _plan_studio_presentation_path(run_name: Any) -> str:
     normalized = _strict_run_name(run_name)
-    return _absolute_output_path(os.path.join(
-        "h3_chains", normalized, "plan_studio_presentation.json"))
+    return os.path.join(_run_dir({"run_name": normalized}), "plan_studio_presentation.json")
 
 
 def _validated_plan_studio_preview_record(value: Any) -> dict[str, Any]:
@@ -17973,6 +17987,7 @@ def _register_plan_studio_source_previews(
     payload: dict[str, Any] = {
         "version": 2,
         "run_name": str(plan.get("run_name") or ""),
+        **({"_branch_id": plan["_branch_id"]} if plan.get("_branch_id") else {}),
         "route": route,
         "token": "",
         "scenes": [],
@@ -18200,6 +18215,8 @@ class MiniMaxH3ChainPlanStudio:
                        "The frontend keeps this hidden and synchronized so "
                        "queueing cannot race the editorial sidecar save.",
         })
+        optional["working_branch_id"] = ("STRING", {
+            "default": "main", "tooltip": "Working branch selected in Plan Studio. Queued jobs keep this branch; changing the project default does not redirect them."})
         return {
             "required": {},
             "optional": optional,
@@ -18238,12 +18255,20 @@ class MiniMaxH3ChainPlanStudio:
 
     @classmethod
     def IS_CHANGED(cls, plan=None, plan_json="", **_kwargs):
+        run = (plan or {}).get("run_name") or (_kwargs.get("project_assets") or {}).get("project") or _kwargs.get("run_name", "")
+        selected = (plan.get("_branch_id", "main") if plan is not None
+                    else _kwargs.get("working_branch_id", "main"))
+        if not _kwargs.get("_branch_fingerprint_scoped"):
+            with branch_scope(run, selected):
+                return cls.IS_CHANGED(plan=plan, plan_json=plan_json,
+                    **dict(_kwargs, _branch_fingerprint_scoped=True, working_branch_id=selected))
         queued_alternate = str(_kwargs.get("alternate_take_json") or "")
         if plan is not None:
             run_name = str(plan.get("run_name") or "")
             draft = _load_run_editorial(run_name).get("alternate_draft")
             return _fingerprint({
                 "plan_hash": str(plan.get("plan_hash") or ""),
+                "working_branch_id": _kwargs.get("working_branch_id", "main"),
                 "alternate_draft": draft,
                 "queued_alternate": queued_alternate,
             })
@@ -18253,6 +18278,7 @@ class MiniMaxH3ChainPlanStudio:
             return plan_change
         return _fingerprint({
             "plan": plan_change,
+            "working_branch_id": _kwargs.get("working_branch_id", "main"),
             "alternate_draft": _load_run_editorial(
                 run_name).get("alternate_draft"),
             "queued_alternate": queued_alternate,
@@ -18269,7 +18295,10 @@ class MiniMaxH3ChainPlanStudio:
                     default_duration_seconds=15.0, default_steps=20,
                     base_seed=0, segment_crf=18, video_blend_frames=0,
                     continuation_mode="guide", chain_policy=None,
-                    project_assets=None, alternate_take_json=None):
+                    project_assets=None, alternate_take_json=None,
+                    working_branch_id="main"):
+        if plan is not None:
+            working_branch_id = plan.get("_branch_id", "main")
         if project_assets is not None:
             project = _validate_project_assets(project_assets)
             if tagged_references is None:
@@ -18288,6 +18317,31 @@ class MiniMaxH3ChainPlanStudio:
                 continuation_mode, chain_policy=chain_policy,
                 project_assets=project_assets,
             )[0]
+        selected_branch = _working_branch_id(working_branch_id)
+        WorkingBranches(_output_root(), plan["run_name"]).load(selected_branch)
+        if plan.get("_branch_id", "main") != selected_branch:
+            plan = dict(plan)
+            if selected_branch != "main":
+                plan["_branch_id"] = selected_branch
+            else:
+                plan.pop("_branch_id", None)
+        return self._branch_passthrough(
+            plan, source_timeline, source_audio, start_clip, scene_range,
+            verify_resume_history, tagged_references, reference_schedule,
+            alternate_take_json)
+
+    def _branch_passthrough(self, plan, source_timeline, source_audio,
+                           start_clip, scene_range, verify_resume_history,
+                           tagged_references, reference_schedule, alternate_take_json):
+        # Explicit scope here because standalone Studio creates the Plan itself.
+        with branch_scope(plan["run_name"], plan.get("_branch_id", "main")):
+            return self._present_branch(plan, source_timeline, source_audio,
+                start_clip, scene_range, verify_resume_history,
+                tagged_references, reference_schedule, alternate_take_json)
+
+    def _present_branch(self, plan, source_timeline, source_audio,
+                        start_clip, scene_range, verify_resume_history,
+                        tagged_references, reference_schedule, alternate_take_json):
         editorial = _load_run_editorial(plan.get("run_name"))
         if alternate_take_json is None:
             editorial = dict(editorial)
@@ -20713,7 +20767,8 @@ class MiniMaxH3ChainSegmentSave:
         published_audio = (_versioned_path(paths["generated_audio"], transaction)
                            if audio is not None else None)
         published_prompt = os.path.splitext(published_segment)[0] + ".prompt.txt"
-        published_metadata = _versioned_path(paths["metadata"], transaction)
+        published_metadata = os.path.join(_project_run_dir(plan), "checkpoints",
+            "clip_%04d.%s.json" % (index, transaction))
         checkpoint_tmp = "%s.%s.tmp" % (published_checkpoint, uuid.uuid4().hex)
         committed = False
         try:
@@ -21433,6 +21488,7 @@ def _persist_deferred_review(
     public = dict(payload)
     public.update({
         "deferred_review": True,
+        "_branch_id": plan.get("_branch_id", "main"),
         "candidate_batch_active": False,
         "pending_decision": True,
         "deadline": None,
@@ -21478,6 +21534,8 @@ def _load_deferred_review(run_name: Any, token: Any) -> tuple[
             or not isinstance(document.get("candidates"), list)
             or not isinstance(document.get("public"), dict)):
         raise ValueError("Pending H3 review metadata is invalid.")
+    if document["plan"].get("_branch_id", "main") != current_branch(normalized):
+        raise ValueError("Pending H3 review belongs to a different working branch.")
     return document, path
 
 
@@ -22117,6 +22175,7 @@ class MiniMaxH3ChainReview:
                         _ACTIVE_CANDIDATE_BATCHES.items()):
                     if (str(stale.get("run_name") or "") == str(
                             plan["run_name"])
+                            and stale.get("plan", {}).get("_branch_id", "main") == plan.get("_branch_id", "main")
                             and int(stale.get("scene", -1)) == index):
                         _ACTIVE_CANDIDATE_BATCHES.pop(stale_token, None)
                 batch_token = uuid.uuid4().hex
@@ -22127,6 +22186,7 @@ class MiniMaxH3ChainReview:
             display_id = _review_display_id(unique_id, dynprompt)
             progress_payload = {
                 "token": batch_token,
+                "_branch_id": plan.get("_branch_id", "main"),
                 "node_id": display_id,
                 "execution_id": str(unique_id),
                 "run_name": str(plan["run_name"]),
@@ -22214,6 +22274,7 @@ class MiniMaxH3ChainReview:
         preview_base = candidate_index * 2 if batch_token else 0
         payload = {
             "token": token,
+            "_branch_id": plan.get("_branch_id", "main"),
             "node_id": _review_display_id(unique_id, dynprompt),
             "execution_id": str(unique_id),
             "run_name": str(plan["run_name"]),
@@ -22596,6 +22657,8 @@ def _manifest_from_segments(plan: dict[str, Any], values: list[dict[str, Any]],
         "duration_seconds": total_frames / float(FPS),
         "segments": segments,
     }
+    if plan.get("_branch_id"):
+        manifest["_branch_id"] = plan["_branch_id"]
     if archives:
         manifest["archives"] = archives
     if isinstance(plan.get("prelude"), dict):
@@ -22734,7 +22797,7 @@ def _chapter_directory_name(chapter: dict[str, Any]) -> str:
 
 
 def _chapter_delivery_root(manifest: dict[str, Any]) -> str:
-    root = _run_dir({"run_name": _strict_run_name(manifest.get("run_name"))})
+    root = _run_dir(manifest)
     chapter = manifest.get("chapter")
     if not isinstance(chapter, dict):
         return root
@@ -23117,6 +23180,7 @@ def _write_next_scene_handoff(plan: dict[str, Any], index: int,
         "revision": revision, "checkpoint": checkpoint_sha,
         "workflow": str(plan.get("plan_hash") or ""),
         "end": int(end_clip),
+        **({"working_branch_id": plan["_branch_id"]} if plan.get("_branch_id") else {}),
     }, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
     handoff_id = "next_scene_%04d_%s" % (next_scene, transition_key[:16])
     store = _HandoffStore(_output_root())
@@ -23132,7 +23196,7 @@ def _write_next_scene_handoff(plan: dict[str, Any], index: int,
         source_checkpoint_sha256=checkpoint_sha,
         workflow_fingerprint=str(plan.get("plan_hash") or ""),
         predecessor_scene=int(index), transition_key=transition_key,
-        handoff_id=handoff_id)
+        handoff_id=handoff_id, working_branch_id=plan.get("_branch_id", "main"))
 
 
 class MiniMaxH3ChainLoopEnd:
@@ -28357,13 +28421,13 @@ async def _list_pending_reviews(_request):
     live_run_scenes = set()
 
     def review_run_scene_key(payload: dict[str, Any],
-                             fallback_run_name: str = "") -> tuple[str, int] | None:
+                             fallback_run_name: str = "") -> tuple[str, str, int] | None:
         run_name = str(payload.get("run_name") or fallback_run_name).strip()
         try:
             scene = int(payload.get("clip_index", payload.get("scene")))
         except (TypeError, ValueError):
             return None
-        return (run_name, scene) if run_name and scene > 0 else None
+        return (run_name, str(payload.get("_branch_id", "main")), scene) if run_name and scene > 0 else None
 
     _review_candidate_batch_cleanup()
     for entry in list(_ACTIVE_CANDIDATE_BATCHES.values()):
@@ -28410,7 +28474,21 @@ async def _list_pending_reviews(_request):
         run_dir = os.path.join(runs_dir, run_name)
         if not os.path.isdir(run_dir):
             continue
-        for snapshot in _load_review_snapshots(run_dir):
+        try:
+            _strict_run_name(run_name)
+        except ValueError:
+            continue
+        snapshots = list(_load_review_snapshots(run_dir))
+        try:
+            branches = WorkingBranches(_output_root(), run_name).listing()["branches"]
+            for branch in branches:
+                if branch["id"] != "main":
+                    directory = _run_dir({"run_name": run_name, "_branch_id": branch["id"]})
+                    snapshots.extend(dict(item, _branch_id=branch["id"])
+                                     for item in _load_review_snapshots(directory))
+        except (OSError, ValueError, TypeError):
+            _LOG.warning("Could not list working-branch review snapshots for %s", run_name)
+        for snapshot in snapshots:
             if snapshot.get("status") != "pending":
                 continue
             token = str(snapshot.get("token") or "")
@@ -28427,6 +28505,7 @@ async def _list_pending_reviews(_request):
                     "candidates and resume manually from its checkpoint; "
                     "approve/retry decisions are unavailable after restart."),
                 "run_name": str(snapshot.get("run_name") or run_name),
+                "_branch_id": str(snapshot.get("_branch_id", "main")),
                 "clip_index": snapshot.get("scene"),
                 "candidates": snapshot.get("candidates") or [],
                 "deadline": snapshot.get("deadline"),
@@ -28504,6 +28583,7 @@ async def _submit_deferred_review(request):
             "action": action,
             "token": str(document["token"]),
             "run_name": run_name,
+            "_branch_id": current_branch(run_name),
             "scene": scene,
             "resume_scene": scene + 1,
             "end_clip": int(document["public"].get(
@@ -28923,6 +29003,8 @@ def _checkpoint_selection_manifest(value: Any) -> dict[str, Any] | None:
                 segment["adopted_from_revision"] = original_metadata["adopted_from_revision"]
         manifest = derope_source_manifest(
             manifest, selection["processing_source"], sys.modules[__name__], upscale_nodes)
+    if current_branch(run_name) != "main":
+        manifest["_branch_id"] = current_branch(run_name)
     return manifest
 
 
@@ -29004,8 +29086,7 @@ def _recover_checkpoint_pointer_transactions(run_name: Any) -> int:
     normalized = _safe_name(requested, "")
     if not normalized or requested != normalized:
         raise ValueError("Checkpoint recovery requires the exact saved Run name.")
-    checkpoint_dir = os.path.join(
-        _output_root(), "h3_chains", normalized, "checkpoints")
+    checkpoint_dir = os.path.join(_run_dir({"run_name": normalized}), "checkpoints")
     transaction_dir = os.path.join(checkpoint_dir, ".transactions")
     if not os.path.isdir(checkpoint_dir):
         return 0
@@ -29260,8 +29341,8 @@ async def _restore_checkpoint_revisions(request):
                         (scene, dependency_scene,
                          dependency_revision[:8]))
 
-        checkpoint_dir = os.path.join(
-            _output_root(), "h3_chains", run_name, "checkpoints")
+        checkpoint_dir = os.path.join(_run_dir({"run_name": run_name}), "checkpoints")
+        os.makedirs(checkpoint_dir, exist_ok=True)
         originals = {}
         committed = []
         retired = []
@@ -29575,10 +29656,9 @@ def _saved_checkpoint_listing(
         run_name: str, include_graph: bool = True) -> dict[str, Any]:
     """Read checkpoint metadata without blocking ComfyUI's event loop."""
     _recover_checkpoint_pointer_transactions(run_name)
-    checkpoint_dir = os.path.join(
-        _output_root(), "h3_chains", run_name, "checkpoints")
-    review_dir = os.path.join(
-        _output_root(), "h3_chains", run_name, "reviews")
+    checkpoint_dir = os.path.join(_project_run_dir({"run_name": run_name}), "checkpoints")
+    pointer_dir = os.path.join(_run_dir({"run_name": run_name}), "checkpoints")
+    review_dir = os.path.join(_run_dir({"run_name": run_name}), "reviews")
     try:
         review_filenames = os.listdir(review_dir) if os.path.isdir(review_dir) else []
     except OSError:
@@ -29607,13 +29687,13 @@ def _saved_checkpoint_listing(
         not re.match(r"clip_\d{4}.*\.json$", filename) or
         re.fullmatch(r"clip_\d{4}(?:\.[0-9a-f]{32})?\.json", filename)
         for filename in checkpoint_filenames)
-    if os.path.isdir(checkpoint_dir):
-        for filename in checkpoint_filenames:
+    if os.path.isdir(pointer_dir) or os.path.isdir(checkpoint_dir):
+        for filename in sorted(os.listdir(pointer_dir)) if os.path.isdir(pointer_dir) else []:
             match = re.fullmatch(r"clip_(\d{4})\.json", filename)
             if match is None:
                 continue
             try:
-                metadata = _read_json(os.path.join(checkpoint_dir, filename))
+                metadata = _read_json(os.path.join(pointer_dir, filename))
                 segment = metadata.get("segment") if isinstance(metadata, dict) else None
                 if not isinstance(segment, dict):
                     inventory_complete = False
@@ -29641,7 +29721,7 @@ def _saved_checkpoint_listing(
                     # This is the exact immutable identity used by the
                     # top-level handoff, not merely "a checkpoint exists".
                     "metadata_sha256": _file_sha256(os.path.join(
-                        checkpoint_dir, filename)),
+                        pointer_dir, filename)),
                 }
                 if os.path.isfile(segment_path):
                     item["video"] = _video_output_item(segment_path)
@@ -29653,7 +29733,7 @@ def _saved_checkpoint_listing(
                     if preview is not None:
                         item["preview_video"] = _video_output_item(preview)
                 partial_path = os.path.join(
-                    _output_root(), "h3_chains", run_name, "final",
+                    _run_dir({"run_name": run_name}), "final",
                     "partial_through_clip_%04d.mp4" % index)
                 if os.path.isfile(partial_path):
                     item["partial_video"] = _video_output_item(partial_path)
@@ -29709,7 +29789,7 @@ def _saved_checkpoint_listing(
                 continue
     active_segments, stale_pointers = CheckpointGraphManager.select_active_lineage(
         active_segments, CheckpointGraphManager._chapter_starts(
-            os.path.dirname(checkpoint_dir)))
+            os.path.dirname(pointer_dir)))
     inactive_checkpoints = [
         {**item, "inactive_reason": stale_pointers[int(item["scene"])]}
         for item in checkpoints if int(item["scene"]) in stale_pointers]
@@ -29782,6 +29862,7 @@ def _saved_checkpoint_listing(
             item["continuation_stale_reason"] = "; ".join(reasons)
     payload: dict[str, Any] = {
         "run_name": run_name,
+        "working_branch_id": current_branch(run_name),
         "checkpoints": checkpoints,
         "inactive_checkpoints": inactive_checkpoints,
         "editorial": editorial,
@@ -29852,8 +29933,7 @@ def _save_run_editorial_document_unlocked(body: Any) -> dict[str, Any]:
     document["updated_at"] = datetime.now(timezone.utc).isoformat(
         timespec="seconds").replace("+00:00", "Z")
     normalized = _normalize_run_editorial(document, body.get("run_name"))
-    checkpoint_dir = os.path.join(
-        _output_root(), "h3_chains", normalized["run_name"], "checkpoints")
+    checkpoint_dir = os.path.join(_run_dir({"run_name": normalized["run_name"]}), "checkpoints")
     draft = normalized.get("alternate_draft")
     if isinstance(draft, dict):
         scene = int(draft["scene"])
@@ -29890,7 +29970,7 @@ def _save_run_editorial_document_unlocked(body: Any) -> dict[str, Any]:
                 "Scene %d final-cut alternate belongs to a different active "
                 "generation revision." % scene)
         alternate_path = os.path.join(
-            checkpoint_dir, "clip_%04d.%s.json" %
+            _project_run_dir({"run_name": normalized["run_name"]}), "checkpoints", "clip_%04d.%s.json" %
             (scene, replacement["alternate_revision"]))
         if not os.path.isfile(alternate_path):
             raise ValueError(
@@ -30252,7 +30332,7 @@ def _plan_studio_checkpoint_thumbnail_record(
         "clip_%04d.%s.json" % (index, token))
     if not os.path.isfile(metadata_path):
         active_path = os.path.join(
-            _output_root(), "h3_chains", run_name, "checkpoints",
+            _run_dir({"run_name": run_name}), "checkpoints",
             "clip_%04d.json" % index)
         if not os.path.isfile(active_path):
             raise FileNotFoundError(
@@ -31420,8 +31500,7 @@ def _handoff_store() -> "_HandoffStore":
 
 def _handoff_scene_count(run_name: str) -> int | None:
     """Scene count of the run's saved Plan, or None when unreadable."""
-    plan_path = os.path.join(
-        _output_root(), "h3_chains", _safe_name(run_name, ""), "plan.json")
+    plan_path = os.path.join(_run_dir({"run_name": _safe_name(run_name, "")}), "plan.json")
     try:
         with open(plan_path, "r", encoding="utf-8") as handle:
             plan = json.load(handle)
@@ -31440,7 +31519,8 @@ def _handoff_record_view(record: dict[str, Any]) -> dict[str, Any]:
         return view
     start = record.get("start_clip")
     end = record.get("end_clip")
-    total = _handoff_scene_count(record.get("run_name", ""))
+    with branch_scope(record.get("run_name", ""), record.get("working_branch_id", "main")):
+        total = _handoff_scene_count(record.get("run_name", ""))
     if not isinstance(start, int) or isinstance(start, bool) or start < 1:
         return view
     if total is None:
@@ -31575,8 +31655,71 @@ async def _release_handoff(request):
     return web.json_response({"handoff": _handoff_record_view(record)})
 
 
+async def _working_branch_command(request):
+    try:
+        body = dict(request.query) if request.method == "GET" else await request.json()
+        if not isinstance(body, dict):
+            raise ValueError("Working branch request must be a JSON object.")
+        run = _strict_run_name(body.get("run_name"))
+        store = WorkingBranches(_output_root(), run)
+        action = body.get("action", "list")
+        selected = _working_branch_id(body.get("branch_id", "main"))
+        if action == "list":
+            return web.json_response(store.listing())
+        if action == "load":
+            return web.json_response(store.load(selected))
+        if request.method != "POST":
+            return web.json_response({"error": "Branch changes require POST."}, status=405)
+        rejection = _project_write_rejection(request, run, "edit a working branch")
+        if rejection is not None:
+            return rejection
+        with checkpoint_run_lock(_output_root(), run), project_write_guard(_output_root(), run,
+                _request_project_ownership(request), "edit a working branch"):
+            if action == "save":
+                result = store.save(selected, body.get("authoring"), body.get("revision"))
+            elif action == "create":
+                through = body.get("through_scene", 0)
+                with checkpoint_run_lock(_output_root(), run), branch_scope(run, selected):
+                    active, stale = CheckpointGraphManager(_output_root()).active_selection(run)
+                    if (type(through) is not int or through < 0 or through > MAX_SHOTS or
+                            any(i not in active or i in stale for i in range(1, through + 1))):
+                        raise ValueError("Fork requires a coherent saved prefix of the selected branch.")
+                    for i in range(1, through + 1):
+                        _load_checkpoint_revision(run, i, active[i])
+                    result = store.create(selected, body.get("name"), body.get("authoring"), through)
+            elif action == "default":
+                result = store.make_default(selected)
+            else:
+                raise ValueError("Unknown working branch action.")
+        return web.json_response(result)
+    except ProjectOwnershipError as exc:
+        return web.json_response({"error": str(exc), "code": "h3_project_read_only"}, status=423)
+    except (OSError, ValueError, TypeError, KeyError) as exc:
+        return web.json_response({"error": str(exc)}, status=400)
+
+
+# ContextVar scope is task/thread local and asyncio.to_thread propagates it.
+# These are our own routes only; no ComfyUI/global filesystem monkey patch.
+for _branch_route_name in (
+        "_list_saved_checkpoints", "_restore_checkpoint_revisions",
+        "_attribute_checkpoint_revision", "_preview_checkpoint_revision_deletion",
+        "_delete_checkpoint_revision", "_update_run_editorial",
+        "_get_prompt_history", "_update_prompt_history",
+        "_plan_studio_presentation", "_plan_studio_checkpoint_thumbnail",
+        "_processing_checkpoint_deletion", "_chapter_snapshot_retirement",
+        "_load_saved_run", "_list_deferred_reviews", "_submit_deferred_review"):
+    globals()[_branch_route_name] = scoped_request(globals()[_branch_route_name])
+
+_submit_review_decision = scoped_review(_submit_review_decision, _PENDING_REVIEWS)
+_submit_candidate_batch_command = scoped_review(_submit_candidate_batch_command, _ACTIVE_CANDIDATE_BATCHES)
+
+
 if (PromptServer is not None and web is not None and
         getattr(PromptServer, "instance", None) is not None):
+    PromptServer.instance.routes.get(
+        "/minimax_h3_context_loop/working-branches")(_working_branch_command)
+    PromptServer.instance.routes.post(
+        "/minimax_h3_context_loop/working-branches")(_working_branch_command)
     PromptServer.instance.routes.post(
         "/minimax_h3_context_loop/project-ownership")(
             _project_ownership_command)
@@ -31772,6 +31915,8 @@ CHAIN_NODE_CLASS_MAPPINGS = {
     "MiniMaxH3ChainLatentVideoAdapter": MiniMaxH3ChainLatentVideoAdapter,
     "MiniMaxH3ChainAssemble": MiniMaxH3ChainAssemble,
 }
+
+scope_nodes(CHAIN_NODE_CLASS_MAPPINGS)
 
 CHAIN_NODE_DISPLAY_NAME_MAPPINGS = {
     "MiniMaxH3LipSyncOptions": "MiniMax H3 Lip-Sync Options",

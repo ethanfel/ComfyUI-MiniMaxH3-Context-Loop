@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import vm from "node:vm";
 import * as core from "../web/h3_checkpoint_manager_core.mjs";
+import * as workingBranches from "../web/h3_working_branches.mjs";
 
 const a = "a".repeat(32), b = "b".repeat(32), c = "c".repeat(32), d = "d".repeat(32);
 const payload = {
@@ -69,6 +70,7 @@ const source = fs.readFileSync(new URL("../web/h3_chain_checkpoint_manager.js", 
     .replace(/^import\s[\s\S]*?from\s+"[^"]+";\n/gm, "");
 let currentGraph = structuredClone(payload), runs = ["demo", "other"], failRequests = false;
 let confirms = true, mutations = 0, dirty = 0;
+let namedWorkingBranch = "", allowWorkingAssignment = false;
 let attachResponse = null;
 let processingDeletion = false, deleteConflict = false, delayedProcessingPreview = null;
 let retainedPixelTakes = [];
@@ -78,14 +80,17 @@ const confirmations = [];
 let extension;
 const requests = [];
 const context = vm.createContext({
-    ...core, URLSearchParams, console,
+    ...core, ...workingBranches, URLSearchParams, console,
     document:{head:new Element("head"), getElementById:() => null, createElement:tag => new Element(tag)},
     app:{registerExtension(value){ extension = value; }, graph:{setDirtyCanvas(){}}},
     api:{apiURL:path => path, fetchApi:async (path, options={}) => {
         requests.push({path, options});
+        path = path.split("?branch_id=")[0];
         if (failRequests) throw new Error("offline");
         let data;
         if (path.endsWith("/runs")) data = {runs:runs.map(run_name => ({run_name, checkpoint_count:3}))};
+        else if (path.includes("/working-branches?")) data = {default_branch:"main", branches:[{id:"main",name:"Original"},
+            ...(namedWorkingBranch ? [{id:namedWorkingBranch,name:"New working branch"}] : [])]};
         else if (path.includes("/checkpoints?")) data = structuredClone(currentGraph);
         else if (path.endsWith("/processing-checkpoints/delete-preview") && processingDeletion) {
             const body = JSON.parse(options.body);
@@ -143,12 +148,20 @@ const context = vm.createContext({
             delete currentGraph.branches[0].attribution_slot;
             data = attachResponse;
         }
+        else if (path.endsWith("/checkpoint-revisions/restore") && allowWorkingAssignment) {
+            mutations++;
+            const chosen = JSON.parse(options.body).revisions;
+            for (const item of currentGraph.revisions) {
+                item.active = chosen.some(value => value.scene === item.scene && value.revision === item.revision);
+            }
+            data = {restored:[], retired_scope_pointers:0};
+        }
         else { mutations++; throw new Error(`Unexpected request ${path}`); }
         return {ok:true, json:async () => data};
     }},
     window:{setTimeout:callback => callback(), confirm:message => { confirmations.push(message); return confirms; }},
     projectMutationOptions:(_node, _run, options) => {
-        if (attachResponse || processingDeletion || snapshotRetirement) return options;
+        if (attachResponse || processingDeletion || snapshotRetirement || allowWorkingAssignment) return options;
         mutations++; throw new Error("Local output attempted project mutation");
     },
     promptCompanionSync:{},
@@ -403,7 +416,7 @@ assert.ok(elements(variants).some(item => /Continuation tail only/.test(item.tex
 byText(variants, "Use DeRoPE branch locally").click();
 assert.equal(value(variants), originalOutput, "an unusable processing branch never changes output");
 assert.match(byClass(variants, "h3cm-status").textContent, /unambiguous saved branch/);
-assert.ok(byText(variants, "Make branch active (project)").disabled);
+assert.ok(byText(variants, "Assign to working branch").disabled);
 assert.ok(byText(variants, "Delete processed version").disabled);
 select(variants, 2, "2".repeat(32));
 assert.equal(value(variants), originalOutput);
@@ -662,7 +675,7 @@ processingRows()[0].children[0].listeners.keydown({key:"Enter", preventDefault()
 await settle();
 assert.equal(byClass(branchView, "h3cm-preview").dataset.source, "/view?filename=3.mp4&subfolder=&type=output");
 assert.equal(value(branchView), outputBeforePreview, "Keyboard heading selection is preview only");
-assert.ok(byText(branchView, "Make branch active (project)").disabled);
+assert.ok(byText(branchView, "Assign to working branch").disabled);
 byText(branchView, "Chapter 2").click();
 assert.equal(processingRows().length, 1);
 assert.deepEqual(cardNames(processingRows()[0]), ["S3 · 44444444"]);
@@ -678,3 +691,23 @@ assert.equal(displayed.flatMap(row => cardNames(row)).filter(name => name === "S
 assert.equal(value(branchView), outputBeforePreview);
 assert.equal(mutations, mutationsBeforePreview, "Rendering, headings and chapter tabs never mutate saved projects");
 console.log("Processing branch UI: shared colors, latest dates, real paths, missing slots, keyboard previews and output isolation pass");
+
+// Named branch selection preserves the original assign/reuse feature and
+// scopes both its mutation and the source manifest serialized for execution.
+currentGraph = structuredClone(payload);
+namedWorkingBranch = "e".repeat(32);
+allowWorkingAssignment = true;
+const workingManager = makeNode(); await settle();
+const otherOutput = value(branchView);
+const workingDropdown = elements(workingManager).find(item => item.title?.startsWith("Working branch for"));
+workingDropdown.value = namedWorkingBranch;
+await workingDropdown.listeners.change(); await settle();
+assert.equal(JSON.parse(value(workingManager))._branch_id, namedWorkingBranch);
+select(workingManager, 2, c);
+byText(workingManager, "Assign to working branch").click(); await settle();
+const assignment = requests.findLast(item => item.path.includes("/checkpoint-revisions/restore"));
+assert.ok(assignment.path.endsWith(`?branch_id=${namedWorkingBranch}`));
+assert.deepEqual(JSON.parse(assignment.options.body).revisions, [{scene:1,revision:a}, {scene:2,revision:c}]);
+assert.equal(JSON.parse(value(workingManager))._branch_id, namedWorkingBranch);
+assert.equal(value(branchView), otherOutput, "Assignment must not change another manager's output");
+console.log("Named working branch UI: selector, output identity and retained assign/reuse action pass");

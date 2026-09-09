@@ -62,6 +62,11 @@ def saved_checkpoint_variants(output_root, run_name, originals):
     run = (root / "h3_chains" / run_name).resolve()
     if run.parent != root / "h3_chains":
         raise ValueError("Invalid checkpoint variant run directory.")
+    if __package__:
+        from .branch_scope import working_directory
+    else:
+        from branch_scope import working_directory
+    run = Path(working_directory(run, run_name))
     records, warnings, seen, branches = [], [], set(), []
     legacy_profiles = set()
 

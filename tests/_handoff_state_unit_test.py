@@ -84,6 +84,10 @@ def main():
 
         # Re-read matches; reads never mutate timestamps.
         assert store.load("film_run", record["handoff_id"]) == record
+        branch_record = store.create("film_run", action="next_scene", scene=6,
+                                     working_branch_id="a" * 32)
+        assert store.load("film_run", branch_record["handoff_id"])["working_branch_id"] == "a" * 32
+        assert "working_branch_id" not in record, "Legacy handoff shape must stay unchanged"
         try:
             store.load("film_run", "never-created")
         except HandoffNotFoundError:

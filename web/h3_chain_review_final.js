@@ -49,8 +49,8 @@ let pendingPollTimer = null;
 const activeSceneExecutions = new Map();
 const reviewInterruptionWaiters = new Map();
 
-function sceneExecutionKey(runName, clipIndex) {
-    return `${String(runName ?? "").trim()}\u0000${Number(clipIndex)}`;
+function sceneExecutionKey(runName, clipIndex, branchId = "main") {
+    return `${String(runName ?? "").trim()}\u0000${Number(clipIndex)}\u0000${branchId}`;
 }
 
 function activeSceneFromExecutedOutput(output) {
@@ -61,6 +61,7 @@ function activeSceneFromExecutedOutput(output) {
             || !Number.isInteger(clipIndex) || clipIndex < 1) return null;
     return {
         runName: String(value.run_name).trim(),
+        branchId: value._branch_id ?? "main",
         clipIndex,
     };
 }
@@ -70,7 +71,7 @@ function trackActiveSceneExecution(data) {
     const promptId = String(data?.prompt_id ?? "");
     if (!scene || !promptId) return;
     activeSceneExecutions.set(
-        sceneExecutionKey(scene.runName, scene.clipIndex),
+        sceneExecutionKey(scene.runName, scene.clipIndex, scene.branchId),
         {promptId, displayNode: String(data?.display_node ?? "")},
     );
 }
@@ -394,9 +395,24 @@ function planResumeContext(reviewNode) {
         throw new Error("Connect this Review Gate to an H3 Chain Plan and Loop Start.");
     }
     const plan = parsePlanJson(String(planWidget.value ?? ""));
-    const runName = String(runWidget.value ?? "").trim();
+    const runName = reviewRunName(planNode);
     if (!runName) throw new Error("The H3 Chain Plan run_name is empty.");
-    return {runName, clipCount: plan.shots.length};
+    return {runName, clipCount: plan.shots.length, branchId: plan._branch_id ?? "main"};
+}
+
+function reviewBranchMatches(reviewNode, review) {
+    try {
+        const context = planResumeContext(reviewNode);
+        return context.runName === review.run_name && context.branchId === (review._branch_id ?? "main");
+    } catch {
+        return (review._branch_id ?? "main") === "main";
+    }
+}
+
+function requireReviewBranch(reviewNode, review) {
+    if (!reviewBranchMatches(reviewNode, review)) {
+        throw new Error("The visible Plan branch changed. Open this review's branch before accepting or resuming it.");
+    }
 }
 
 function updatePlan(reviewNode, index, prompt, seed, length) {
@@ -552,6 +568,7 @@ function prepareResume(reviewNode, nextIndex, endIndex = null, clipCount = null)
 }
 
 async function activateAcceptedCandidate(reviewNode, submittedReview, body) {
+    requireReviewBranch(reviewNode, submittedReview);
     const endClip = Number(submittedReview.end_clip ?? submittedReview.clip_count);
     const clipIndex = Number(submittedReview.clip_index);
     if (!Number.isInteger(endClip) || clipIndex >= endClip) {
@@ -562,7 +579,7 @@ async function activateAcceptedCandidate(reviewNode, submittedReview, body) {
         };
     }
     const execution = activeSceneExecutions.get(sceneExecutionKey(
-        submittedReview.run_name, clipIndex));
+        submittedReview.run_name, clipIndex, submittedReview._branch_id ?? "main"));
     if (!execution?.promptId) {
         return {
             immediate: false,
@@ -596,6 +613,7 @@ async function activateAcceptedCandidate(reviewNode, submittedReview, body) {
             headers: {"Content-Type": "application/json"},
             body: JSON.stringify({
                 run_name: submittedReview.run_name,
+                branch_id: submittedReview._branch_id ?? "main",
                 resume_scene: Number(body.resume_scene),
                 revisions,
                 activate_only: true,
@@ -603,6 +621,7 @@ async function activateAcceptedCandidate(reviewNode, submittedReview, body) {
         }),
     );
     const activation = await activationResponse.json().catch(() => ({}));
+    requireReviewBranch(reviewNode, submittedReview);
     if (!activationResponse.ok) {
         return {
             immediate: false,
@@ -645,6 +664,7 @@ async function activateAcceptedCandidate(reviewNode, submittedReview, body) {
         await waiter.promise;
     }
     const nextIndex = clipIndex + 1;
+    requireReviewBranch(reviewNode, submittedReview);
     if (!prepareResume(
         reviewNode, nextIndex, endClip, Number(submittedReview.clip_count))) {
         throw new Error(
@@ -679,6 +699,7 @@ async function activateAcceptedCandidate(reviewNode, submittedReview, body) {
     } catch (error) {
         cleanupWarning = ` Candidate cleanup warning: ${error.message}`;
     }
+    requireReviewBranch(reviewNode, submittedReview);
     await app.queuePrompt(0, 1);
     return {immediate: true, nextIndex, saved, cleanupWarning};
 }
@@ -723,6 +744,7 @@ function reviewRunName(planNode) {
 
 function deliverReview(node, data) {
     if (!node || nodeType(node) !== NODE_NAME) return false;
+    if (!reviewBranchMatches(node, data)) return false;
     const expectedRun = String(data?.run_name ?? "").trim();
     if (expectedRun) {
         const actualRun = reviewRunName(findUpstreamNode(node, PLAN_NAMES));
@@ -747,7 +769,7 @@ function reviewFallbackNode(data) {
     const expectedRun = String(data?.run_name ?? "").trim();
     if (expectedRun) {
         const matchingRun = gates.filter((item) =>
-            reviewRunName(findUpstreamNode(item, PLAN_NAMES)) === expectedRun);
+            reviewRunName(findUpstreamNode(item, PLAN_NAMES)) === expectedRun && reviewBranchMatches(item, data));
 
         if (matchingRun.length === 1) return matchingRun[0];
     }
@@ -1684,12 +1706,14 @@ function mount(node) {
         const refreshToken = ++deferredRefreshToken;
         try {
             const context = planResumeContext(node);
-            const query = new URLSearchParams({run_name: context.runName});
+            const query = new URLSearchParams({run_name: context.runName, branch_id: context.branchId});
             const response = await api.fetchApi(
                 `/minimax_h3_context_loop/deferred-reviews?${query.toString()}`,
             );
             const body = await response.json();
             if (refreshToken !== deferredRefreshToken) return;
+            const visible = planResumeContext(node);
+            if (visible.runName !== context.runName || visible.branchId !== context.branchId) return;
             if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
             deferredReviews = Array.isArray(body.reviews) ? body.reviews : [];
             renderDeferredChoices();
@@ -1743,6 +1767,7 @@ function mount(node) {
                     headers: {"Content-Type": "application/json"},
                     body: JSON.stringify({
                         run_name: context.runName,
+                        branch_id: context.branchId,
                         scene: revision.scene,
                         revision: revision.revision,
                     }),
@@ -1775,6 +1800,7 @@ function mount(node) {
                         scene: revision.scene,
                         revision: revision.revision,
                         snapshot: preview.snapshot,
+                        branch_id: context.branchId,
                     }),
                 }),
             );
@@ -1847,12 +1873,14 @@ function mount(node) {
         try {
             const context = planResumeContext(node);
             planClipCount = context.clipCount;
-            const query = new URLSearchParams({run_name: context.runName});
+            const query = new URLSearchParams({run_name: context.runName, branch_id: context.branchId});
             const response = await api.fetchApi(
                 `/minimax_h3_context_loop/checkpoints?${query.toString()}`,
             );
             const body = await response.json();
             if (refreshToken !== resumeRefreshToken) return;
+            const visible = planResumeContext(node);
+            if (visible.runName !== context.runName || visible.branchId !== context.branchId) return;
             if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
             const nextResumeChoices = checkpointResumeOptions(
                 body.checkpoints, context.clipCount);
@@ -1937,6 +1965,7 @@ function mount(node) {
             }
             const runQuery = new URLSearchParams({
                 run_name: context.runName,
+                branch_id: context.branchId,
                 include_assets: "false",
             });
             const runResponse = await api.fetchApi(
@@ -1947,6 +1976,7 @@ function mount(node) {
                 runBody.error || `HTTP ${runResponse.status}`,
             );
             let restoredPolicyInputs = runBody.policy_inputs;
+            requireReviewBranch(node, {run_name: context.runName, _branch_id: context.branchId});
             if (selections.length) {
                 const response = await api.fetchApi(
                     "/minimax_h3_context_loop/checkpoint-revisions/restore",
@@ -1955,6 +1985,7 @@ function mount(node) {
                         headers: {"Content-Type": "application/json"},
                         body: JSON.stringify({
                             run_name: context.runName,
+                            branch_id: context.branchId,
                             resume_scene: resumeScene,
                             revisions: selections.map((item) => ({
                                 scene: item.scene,
@@ -1971,6 +2002,7 @@ function mount(node) {
                 restoredPolicyInputs = body.policy_inputs
                     ?? restoredPolicyInputs;
             }
+            requireReviewBranch(node, {run_name: context.runName, _branch_id: context.branchId});
             const savedPlan = restoreSavedPlanInputs(
                 node, runBody.plan_inputs, restoredPolicyInputs);
             if (savedPlan.sceneCount < resumeScene) {
@@ -2066,12 +2098,14 @@ function mount(node) {
     }
 
     async function submitDeferredReview(submittedReview, submittedCandidate) {
+        requireReviewBranch(node, submittedReview);
         if (!submittedCandidate?.revision) {
             throw new Error("Choose a saved candidate before resolving this pending review.");
         }
         const requestBody = {
             token: submittedReview.token,
             run_name: submittedReview.run_name,
+            branch_id: submittedReview._branch_id ?? "main",
             candidate_revision: submittedCandidate.revision,
             candidate_revisions: [...keptCandidateRevisions],
         };
@@ -2084,6 +2118,7 @@ function mount(node) {
             }),
         );
         const prepared = await prepareResponse.json();
+        requireReviewBranch(node, submittedReview);
         if (!prepareResponse.ok) {
             throw new Error(prepared.error || `HTTP ${prepareResponse.status}`);
         }
@@ -2094,6 +2129,7 @@ function mount(node) {
                 headers: {"Content-Type": "application/json"},
                 body: JSON.stringify({
                     run_name: prepared.run_name,
+                    branch_id: submittedReview._branch_id ?? "main",
                     resume_scene: prepared.resume_scene,
                     scope_start_scene: 1,
                     // Changing the selected scene invalidates every later
@@ -2118,6 +2154,7 @@ function mount(node) {
             }),
         );
         const finalized = await finalizeResponse.json();
+        requireReviewBranch(node, submittedReview);
         if (!finalizeResponse.ok) {
             throw new Error(finalized.error || `HTTP ${finalizeResponse.status}`);
         }
@@ -2163,6 +2200,7 @@ function mount(node) {
             // Websocket recovery can replace `current`, and a companion UI can
             // refresh the live controls, while this request is in flight.
             const submittedReview = current;
+            requireReviewBranch(node, submittedReview);
             const submittedToken = submittedReview.token;
             const submittedIndex = submittedReview.clip_index;
             const submittedCandidate = selectedCandidate();
@@ -2225,6 +2263,7 @@ function mount(node) {
             }));
             const body = await response.json();
             if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
+            requireReviewBranch(node, submittedReview);
             if (candidateBatchAction) {
                 if (current?.token === submittedToken) {
                     current.candidate_batch_command_pending = candidateBatchAction;
@@ -2308,6 +2347,7 @@ function mount(node) {
     }
 
     node._h3ReviewHandler = (data) => {
+        if (!reviewBranchMatches(node, data)) return;
         const acceptedDisposition = acceptedPreviewDisposition(
             acceptedPreviewPin, data);
         if (acceptedDisposition === "ignore") return;
@@ -2315,6 +2355,7 @@ function mount(node) {
         const sameToken = Boolean(current?.token) && current.token === data?.token;
         const carriesCandidateBatch = !sameToken &&
             String(current?.run_name ?? "") === String(data?.run_name ?? "") &&
+            (current?._branch_id ?? "main") === (data?._branch_id ?? "main") &&
             Number(current?.clip_index) === Number(data?.clip_index) &&
             Number(current?.candidate_count) > 1;
         const carriedActiveCandidateRevision = carriesCandidateBatch

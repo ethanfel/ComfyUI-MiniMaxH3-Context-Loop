@@ -89,6 +89,7 @@ function studioContext() {
             editorial:{}, checkpoints:new Map()},
         node:{properties:{}}, alternateTakeWidget:{value:"stale"},
         runName:() => "run_b", cacheStudioPresentation(){}, dirty(){}, renderStatus(){},
+        currentBranch:() => "main", scopedPath:path => path,
         setTimeout:fn => { timers.set(++id, fn); return id; }, clearTimeout:key => timers.delete(key),
         projectMutationOptions:async (_node, _run, options) => options,
         api:{fetchApi:async (_route, options) => {

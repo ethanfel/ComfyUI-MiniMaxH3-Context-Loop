@@ -72,6 +72,8 @@ class ProcessingCheckpointManager:
         address = artifact_address(address)
         path = self._path(address)
         parts = PurePosixPath(address).parts
+        if len(parts) > 4 and parts[2] == "branches" and re.fullmatch(r"[0-9a-f]{32}", parts[3]):
+            parts = parts[:2] + parts[4:]
         if not (parts[:2] == ("h3_chains", run) and (
                 len(parts) == 6 and parts[2] == "upscaled" or
                 len(parts) == 8 and parts[2] == "chapters" and parts[4] == "upscaled")
@@ -83,13 +85,20 @@ class ProcessingCheckpointManager:
 
     def _documents(self, run):
         run_dir = self._path("h3_chains/" + run)
-        parents = [run_dir / "upscaled"]
-        chapters = self._path(self._address(run_dir / "chapters"))
-        if chapters.is_dir():
-            for chapter in chapters.iterdir():
-                self._path(self._address(chapter))
-                if chapter.is_dir():
-                    parents.append(chapter / "upscaled")
+        scopes = [run_dir]
+        branches = run_dir / "branches"
+        if branches.is_dir():
+            scopes.extend(path for path in branches.iterdir()
+                          if path.is_dir() and re.fullmatch(r"[0-9a-f]{32}", path.name))
+        parents = []
+        for scope in scopes:
+            parents.append(scope / "upscaled")
+            chapters = self._path(self._address(scope / "chapters"))
+            if chapters.is_dir():
+                for chapter in chapters.iterdir():
+                    self._path(self._address(chapter))
+                    if chapter.is_dir():
+                        parents.append(chapter / "upscaled")
         docs = {}
         for parent in parents:
             self._path(self._address(parent))

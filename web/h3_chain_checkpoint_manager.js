@@ -1,5 +1,6 @@
 import {app} from "/scripts/app.js";
 import {api} from "/scripts/api.js";
+import {branchRequestPath, branchSelectionJson} from "./h3_working_branches.mjs?v=0.7.0";
 import {
     CHECKPOINT_STAGES,
     checkpointStageVariants,
@@ -170,7 +171,8 @@ async function jsonRequest(path, options = {}) {
 
 async function mutationRequest(node, runName, path, options = {}) {
     return await jsonRequest(
-        path, await projectMutationOptions(node, runName, options),
+        branchRequestPath(path, node.properties?.h3_working_branch_id ?? "main"),
+        await projectMutationOptions(node, runName, options),
     );
 }
 
@@ -313,6 +315,11 @@ function mount(node) {
     injectStyles();
     node.properties ??= {};
     let selectionWidget = widget(node, "selection_json");
+    try {
+        const saved = JSON.parse(selectionWidget?.value || "null");
+        if (saved?.run_name) node.properties.h3_working_branch_id = saved._branch_id ?? "main";
+    } catch { /* Execution reports invalid selections; never silently repair them. */ }
+    const selectedWorkingBranch = () => node.properties.h3_working_branch_id ?? "main";
     const state = {
         runs:[], runName:String(node.properties[RUN_PROPERTY] ?? ""), payload:null,
         scene:Number(node.properties[SCENE_PROPERTY]) || null,
@@ -336,6 +343,19 @@ function mount(node) {
     head.append(title, summary);
     const runRow = element("div", "h3cm-run-row");
     const runSelect = element("select", "h3cm-run-select");
+    const workingSelect = element("select", "h3cm-run-select");
+    workingSelect.title = "Working branch for checkpoint assignments and output; does not change the project default";
+    workingSelect.addEventListener("change", async () => {
+        if (state.busy) { workingSelect.value = selectedWorkingBranch(); return; }
+        if (checkpointLocalSelection(selectionWidget?.value) && !window.confirm(
+            "Replace this manager's pinned output with the selected working branch? The project default stays unchanged.")) {
+            workingSelect.value = selectedWorkingBranch(); return;
+        }
+        node.properties.h3_working_branch_id = workingSelect.value;
+        if (selectionWidget) selectionWidget.value = "";
+        state.outputTip = null; state.selected = null;
+        await refreshCheckpoints();
+    });
     const refresh = button("Refresh", "Rescan saved runs and checkpoint revisions", () => void refreshRuns());
     const open = button("Open folder", "Open the selected run folder on the ComfyUI host", () => void openFolder());
     const deleteRun = button(
@@ -422,7 +442,7 @@ function mount(node) {
     remove.disabled = true;
     deletionActions.append(load, activate, status, remove);
     deletion.append(deletionTitle, deletionBody, deletionActions);
-    root.append(head, runRow, outputRow, stageTabs, stageNote, chapterTabs, scenes, main, deletion);
+    root.append(head, runRow, workingSelect, outputRow, stageTabs, stageNote, chapterTabs, scenes, main, deletion);
 
     function setPreviewHeight(value, persist = false) {
         state.previewHeight = previewHeight(value);
@@ -516,7 +536,7 @@ function mount(node) {
         const previous = selectionWidget.serializeValue;
         selectionWidget.serializeValue = function (...args) {
             const value = previous ? previous.apply(this, args) : this.value;
-            const normalize = (saved) => outputSelectionForScope(saved ?? this.value);
+            const normalize = (saved) => branchSelectionJson(outputSelectionForScope(saved ?? this.value), selectedWorkingBranch());
             return value?.then ? value.then(normalize) : normalize(value);
         };
         selectionWidget._h3ScopeSerializer = true;
@@ -538,9 +558,9 @@ function mount(node) {
             previousRevision !== state.revision ||
             previousChapter !== state.chapterTab || previousScope !== outputScope.value;
         if (selectionWidget && state.stage === "original") {
-            const value = checkpointOutputSelectionJson(
+            const value = branchSelectionJson(checkpointOutputSelectionJson(
                 selectionWidget.value, state.payload, state.runName, state.outputTip,
-                chapterRangeFor(state.outputTip), outputScope.value);
+                chapterRangeFor(state.outputTip), outputScope.value), selectedWorkingBranch());
             if (selectionWidget.value !== value) {
                 selectionWidget.value = value;
                 selectionWidget.callback?.(value);
@@ -553,8 +573,8 @@ function mount(node) {
     function writeOutputSelection(value) {
         if (!selectionWidget) return;
         node.properties[OUTPUT_SCOPE_PROPERTY] = outputScope.value;
-        selectionWidget.value = value;
-        selectionWidget.callback?.(value);
+        selectionWidget.value = branchSelectionJson(value, selectedWorkingBranch());
+        selectionWidget.callback?.(selectionWidget.value);
         node.graph?.setDirtyCanvas?.(true, true);
     }
 
@@ -639,6 +659,7 @@ function mount(node) {
     function setBusy(value, message = "") {
         state.busy = Boolean(value);
         runSelect.disabled = state.busy;
+        workingSelect.disabled = state.busy;
         refresh.disabled = state.busy;
         open.disabled = state.busy || !state.runName;
         deleteRun.disabled = state.busy || !state.runName;
@@ -1299,11 +1320,11 @@ function mount(node) {
                 : state.deletion.allowed
                     ? `Delete processed version · ${state.deletion.owned_file_count} files · ${formatCheckpointBytes(state.deletion.reclaimed_bytes)} · originals kept`
                     : state.deletion.blockers?.join(" ") || "Deletion is blocked.";
-            activate.textContent = "Make branch active (project)";
+            activate.textContent = "Assign to working branch";
             load.disabled = activate.disabled = true;
         } else {
             activate.textContent = rollsBack
-                ? "Roll active branch back (project)" : "Make branch active (project)";
+                ? "Roll working branch back" : "Assign to working branch";
             activate.title = rollsBack
                 ? "Project-wide: retire later active scene pointers in this chapter without deleting saved revisions"
                 : "Project-wide: promote this chapter for all workflows using this Run";
@@ -1431,7 +1452,7 @@ function mount(node) {
                 processing ? "/minimax_h3_context_loop/processing-checkpoints/delete-preview"
                     : "/minimax_h3_context_loop/checkpoint-revisions/delete-preview", {
                     method:"POST", headers:{"Content-Type":"application/json"},
-                    body:JSON.stringify({run_name:state.runName, scene:record.scene, revision:record.revision,
+                    body:JSON.stringify({run_name:state.runName, branch_id:selectedWorkingBranch(), scene:record.scene, revision:record.revision,
                         ...(processing ? {metadata_path:record.key} : {})}),
                 });
             if (token !== state.requestToken) return;
@@ -1452,15 +1473,29 @@ function mount(node) {
             return;
         }
         setBusy(true, "Scanning checkpoint metadata…");
+        const run = state.runName, branch = selectedWorkingBranch();
+        const epoch = state.scanEpoch = (state.scanEpoch ?? 0) + 1;
+        const current = () => state.scanEpoch === epoch && state.runName === run && selectedWorkingBranch() === branch;
         try {
+            const branchList = await jsonRequest(`/minimax_h3_context_loop/working-branches?${new URLSearchParams({run_name:state.runName})}`);
+            if (!current()) return;
+            workingSelect.replaceChildren();
+            for (const item of branchList.branches ?? []) {
+                const option = element("option", "", `${item.name}${item.id === branchList.default_branch ? " · project default" : ""}`);
+                option.value = item.id; workingSelect.append(option);
+            }
+            workingSelect.value = selectedWorkingBranch();
             const query = new URLSearchParams({
                 run_name:state.runName,
+                branch_id:selectedWorkingBranch(),
                 cache_bust:String(Date.now()),
             });
-            state.payload = await jsonRequest(
+            const payload = await jsonRequest(
                 `/minimax_h3_context_loop/checkpoints?${query}`,
                 {cache:"no-store"},
             );
+            if (!current()) return;
+            state.payload = payload;
             // Output is a branch selection, independent of the preview cursor.
             // Preserve old snapshots on reload; never guess a descendant of a
             // shared ancestor. The output row explains how to replace an old
@@ -1491,6 +1526,7 @@ function mount(node) {
             selectRevision(selected, false, state.variantKey);
             void refreshDeletionPreview();
         } catch (error) {
+            if (!current()) return;
             state.payload = null;
             state.selected = null;
             state.deletion = null;
@@ -1498,7 +1534,7 @@ function mount(node) {
             status.textContent = error.message;
             render();
         } finally {
-            setBusy(false);
+            if (current()) setBusy(false);
         }
     }
 
@@ -1516,6 +1552,7 @@ function mount(node) {
             }
             state.runName = local ? preferred : state.runs.some((item) => item.run_name === preferred)
                 ? preferred : state.runs[0]?.run_name ?? "";
+            if (state.runName !== preferred) node.properties.h3_working_branch_id = "main";
             runSelect.replaceChildren();
             for (const run of state.runs) {
                 const option = element("option", "", `${run.run_name} · ${run.checkpoint_count} active checkpoints`);
@@ -1657,6 +1694,10 @@ function mount(node) {
         const plan = applyCheckpointRevisionSet(
             parsePlanJson(String(target.value ?? "")), revisions,
         );
+        if (selectedWorkingBranch() === "main") delete plan._branch_id;
+        else plan._branch_id = selectedWorkingBranch();
+        const selectedWidget = widget(planNode, "working_branch_id");
+        if (selectedWidget) selectedWidget.value = selectedWorkingBranch();
         const value = planToJson(plan);
         target.value = value;
         target.callback?.(value);
@@ -1676,6 +1717,7 @@ function mount(node) {
     function applyActivatedRevisions(planNode, revisions) {
         const target = widget(planNode, "plan_json");
         if (!target) return false;
+        if ((parsePlanJson(String(target.value ?? ""))._branch_id ?? "main") !== selectedWorkingBranch()) return false;
         const plan = applyCheckpointRevisionSet(
             parsePlanJson(String(target.value ?? "")), revisions, {
                 useEffectivePrompts: true,
@@ -1768,7 +1810,7 @@ function mount(node) {
         }
         const confirmed = window.confirm(
             `Load ${state.runName} through scene ${record.scene} revision ${record.revision.slice(0, 8)}?\n\n` +
-            "This activates the branch project-wide and restores the connected Plan. For output only, cancel and choose Use branch locally.\n\n" +
+            "This assigns these clips to the selected working branch and restores the connected Plan. For output only, cancel and choose Use branch locally.\n\n" +
             `${scope.title} scenes ${scope.start}–${scope.end} will use this branch. Other chapters keep their active checkpoint branches. Saved revision files are kept.`,
         );
         if (!confirmed) return;
@@ -1776,12 +1818,15 @@ function mount(node) {
         try {
             const runQuery = new URLSearchParams({
                 run_name: state.runName,
+                branch_id:selectedWorkingBranch(),
                 include_assets: "false",
             });
             const runBody = await jsonRequest(
                 `/minimax_h3_context_loop/run?${runQuery.toString()}`,
             );
-            const sameConnectedRun = activePlanRun() === state.runName;
+            const connectedPlan = parsePlanJson(String(widget(planNode, "plan_json")?.value ?? ""));
+            const sameConnectedRun = activePlanRun() === state.runName &&
+                (connectedPlan._branch_id ?? "main") === selectedWorkingBranch();
             const savedPlan = parsePlanJson(String(sameConnectedRun
                 ? widget(planNode, "plan_json")?.value ?? ""
                 : runBody.plan_inputs?.plan_json ?? ""));
@@ -1848,7 +1893,7 @@ function mount(node) {
         if (!record || !canActivateSelected() || state.busy) return;
         const confirmed = window.confirm(
             `${rollsBack ? "Roll" : "Make"} ${scope.title} ${rollsBack ? "back" : "active"} through scene ${record.scene} revision ${record.revision.slice(0, 8)}?\n\n` +
-            "This changes the project-wide active branch for all workflows using this Run. Use branch locally changes only this manager's output.\n\n" +
+            "This assigns clips to the selected working branch. Other working branches and the project default are unchanged. Use branch locally changes only this manager's output.\n\n" +
             `${rollsBack ? `Active pointers after scene ${record.scene} will be cleared. ` : ""}` +
             `Only scenes ${scope.start}–${scope.end} are affected. Other chapters keep their active branches. If a Plan is connected, the selected chapter's saved scene settings are restored. No saved revision, workflow, reference, or assembled video is deleted.`,
         );
@@ -1893,7 +1938,7 @@ function mount(node) {
             const plan = await jsonRequest(
                 "/minimax_h3_context_loop/chapter-snapshots/retire-preview", {
                     method:"POST", headers:{"Content-Type":"application/json"},
-                    body:JSON.stringify({run_name:runName, path:reference.path}),
+                    body:JSON.stringify({run_name:runName, branch_id:selectedWorkingBranch(), path:reference.path}),
                 });
             // A slow response must not apply to a different run or selection.
             if (state.runName !== runName || state.selected !== record || state.stage !== "original") return;
@@ -2010,6 +2055,7 @@ function mount(node) {
             writeOutputSelection("");
         }
         state.runName = runSelect.value;
+        node.properties.h3_working_branch_id = "main";
         state.payload = null;
         state.selected = null;
         state.outputTip = state.previewTip = null;
