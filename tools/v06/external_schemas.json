@@ -7,16 +7,23 @@
     "LBH": "https://github.com/LBH-123-AI/Comfyui_Minimax_h3_latent_Upscaler",
     "USDU_H3": "https://github.com/lisitskyaa/ComfyUI_UltimateSDUpscaleGuider_H3/blob/main/usdu_nodes.py (2026-09-06; anchor_context BOOLEAN)",
     "DLSS5": "https://github.com/Blueforcer/ComfyUI-DLSS5-Enhancer/tree/main/nodes (2026-09-06)",
+    "LMS": "https://huggingface.co/Alissonerdx/Minimax-H3-ComfyUI/tree/37bd61a3880640e0b5601954a2721d214c5f13b7 (LMS filename); ComfyUI be92396834f9b6e3e361cfe30e7eed693137a448 comfy_extras/nodes_lt.py (Separate AV Latent)",
     "note": "External-only offline contracts; H3 Context Loop contracts are imported from this checkout, never from a server."
   },
   "nodes": {
     "LoraLoaderModelOnly": {
       "input": {"required": {
         "model": ["MODEL", {}],
-        "lora_name": [["minimax_h3_turbo_v4_step600_ema_pruned_comfyui.safetensors", "minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors"], {}],
+        "lora_name": [["minimax_h3_turbo_v4_step600_ema_pruned_comfyui.safetensors", "minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors", "minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors", "minimax_h3_lms_v1.0_r64.safetensors"], {}],
         "strength_model": ["FLOAT", {"default": 1.0, "min": -100.0, "max": 100.0, "step": 0.01}]
       }},
       "output": ["MODEL"], "output_name": ["MODEL"], "output_is_list": [false]
+    },
+    "LTXVSeparateAVLatent": {
+      "input": {"required": {"av_latent": ["LATENT", {}]}},
+      "output": ["LATENT", "LATENT"],
+      "output_name": ["video_latent", "audio_latent"],
+      "output_is_list": [false, false]
     },
     "DLSS5Settings": {
       "input": {

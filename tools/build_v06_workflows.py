@@ -34,6 +34,7 @@ SIZES = {
     'SeedVR2VideoPathUpscaler': (520,580), 'Note': (1000,330),
     'MiniMaxH3ChainUpscalePixelConditioning': (600,520),
     'MiniMaxH3ChainUpscalePixelCurrent': (500,300),
+    'MiniMaxH3ChainLMSGuide': (540,420),
     'UltimateSDUpscaleNoUpscaleGuider': (500,720),
 }
 LABELS = {
@@ -54,6 +55,7 @@ LABELS = {
     'MiniMaxH3ChainDeropeBudget':'De-Rope Budget',
     'H3ManualHoldMap':'De-Rope Ranges • RAW Scene Clock',
     'MiniMaxH3ChainUpscalePixelConditioning':'Pixel Conditioning • Actual Image Size',
+    'MiniMaxH3ChainLMSGuide':'LMS Upscale Guide • Experimental',
     'UltimateSDUpscaleNoUpscaleGuider':'USDU H3 • Refine Upscaled Images',
 }
 

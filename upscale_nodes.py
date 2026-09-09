@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from . import chain_nodes as chain
+from .lms_upscale import MiniMaxH3ChainLMSGuide
 
 try:
     from comfy.nested_tensor import NestedTensor as _ComfyNestedTensor
@@ -3236,6 +3237,7 @@ class MiniMaxH3ChainUpscaleMerge:
 
 
 UPSCALE_NODE_CLASS_MAPPINGS = {
+    "MiniMaxH3ChainLMSGuide": MiniMaxH3ChainLMSGuide,
     "MiniMaxH3ChainUpscalePixelCurrent": MiniMaxH3ChainUpscalePixelCurrent,
     "MiniMaxH3ChainUpscalePixelConditioning": MiniMaxH3ChainUpscalePixelConditioning,
     "MiniMaxH3ChainUpscaleAdapter": MiniMaxH3ChainUpscaleAdapter,
@@ -3261,6 +3263,7 @@ UPSCALE_NODE_CLASS_MAPPINGS = {
 chain.scope_nodes(UPSCALE_NODE_CLASS_MAPPINGS)
 
 UPSCALE_NODE_DISPLAY_NAME_MAPPINGS = {
+    "MiniMaxH3ChainLMSGuide": "MiniMax H3 LMS Upscale Guide (Experimental)",
     "MiniMaxH3ChainUpscalePixelCurrent": "MiniMax H3 Pixel Upscale Current Scene (Experimental)",
     "MiniMaxH3ChainUpscalePixelConditioning": "MiniMax H3 Pixel Upscale Conditioning (Experimental)",
     "MiniMaxH3ChainUpscaleAdapter": "MiniMax H3 Checkpoint Upscale Adapter",
