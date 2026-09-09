@@ -27,6 +27,27 @@ must be enabled when DeRoPE outputs will later serve as deferred latent sources.
   intact and any newly published immutable take is retained. Check the saved
   versions before deciding whether to rerun the scene.
 
+## Reviewing saved processing branches
+
+Checkpoint Manager's DeRoPE, Latent Upscale, and Pixel Upscale tabs display one
+row per saved processing branch, like Original. Rows follow the exact recorded
+scene/take history, not a combination of each scene's newest version. Shared
+prefix clips have matching colors and `shared ×N` badges. Creation dates are
+shown on the cards; rows are ordered by their newest visible save, with a
+`Latest save` label (ties are marked together). This is not an active-output
+indicator or a guarantee that every planned scene has been processed.
+
+Chapter tabs restrict the displayed history to that chapter. Identical chapter
+prefixes are shown once even when later chapters fork. Deleted or unavailable
+takes remain explicit gaps in surviving histories; another version is never
+silently substituted. Older takes without saved lineage appear as standalone
+takes marked `Branch history unavailable`.
+
+Clicking a processed card or branch heading only changes the preview. It does
+not activate an Original branch or change the downstream output selection.
+The existing explicit `Use DeRoPE branch locally` action retains its integrity
+and unambiguous-lineage checks.
+
 ## VIDEO → PNG passthrough
 
 Keep the same PNG folder/export name and `reuse_existing = true` when resuming.
