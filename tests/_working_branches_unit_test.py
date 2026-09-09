@@ -4,6 +4,7 @@ import importlib.util
 import json
 from pathlib import Path
 import tempfile
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("branch_helpers", ROOT / "tests/_checkpoint_revision_unit_test.py")
@@ -44,6 +45,44 @@ async def check():
             assert "another workflow" in str(exc)
         else:
             raise AssertionError("Stale authoring overwrite accepted")
+        operation = "9" * 32
+        receipt = store.save("main", authored, saved["revision"], operation)
+        assert store.save("main", authored, saved["revision"], operation) == receipt
+        try:
+            store.save("main", dict(authored, width=128), saved["revision"], operation)
+        except ValueError as exc:
+            assert "reused" in str(exc)
+        else:
+            raise AssertionError("An operation id accepted different settings")
+        store.save("main", authored, receipt["revision"], "8" * 32)
+        try:
+            store.save("main", authored, saved["revision"], operation)
+        except ValueError as exc:
+            assert "another workflow" in str(exc)
+        else:
+            raise AssertionError("An old retry replaced a newer save")
+        # A failure after rename is an uncertain commit, not lost authoring.
+        latest = store.load("main")
+        with patch(chain.__package__ + ".processing_persistence.sync_directory", side_effect=OSError("sync failed")):
+            try:
+                store.save("main", authored, latest["revision"], "7" * 32)
+            except OSError:
+                pass
+            else:
+                raise AssertionError("Durability failure was hidden")
+        committed = store.load("main")
+        assert store.save("main", authored, latest["revision"], "7" * 32) == committed
+        create_body = {"action":"create", "run_name":"branches_test", "branch_id":"main",
+                       "name":"Retry-safe fork", "authoring":authored, "through_scene":1,
+                       "operation_id":"6" * 32}
+        created = await chain._working_branch_command(Request(create_body))
+        assert created.status == 200, created.text
+        with patch.object(chain.CheckpointGraphManager, "active_selection", side_effect=AssertionError("retry must use receipt")):
+            replay = await chain._working_branch_command(Request(create_body))
+        assert replay.status == 200 and json.loads(replay.text) == json.loads(created.text)
+        assert (root / "branches" / ("6" * 32) / "branch.json").is_file()
+        invalid = await chain._working_branch_command(Request(dict(create_body, name="Different")))
+        assert invalid.status == 400
         empty = store.create("main", "Empty", authored)
         fork = store.create("main", "Fork", authored, 1)
         assert json.loads(empty["authoring"]["plan_json"])["shots"] == json.loads(authored["plan_json"])["shots"]

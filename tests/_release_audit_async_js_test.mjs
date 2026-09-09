@@ -89,6 +89,7 @@ function editorialFixture() {
         editorial:{}, checkpoints:new Map()};
     const context = vm.createContext({
         ...planCore, state, structuredClone, node:{properties:{}}, alternateTakeWidget:null,
+        branches:{ready:true, conflict:"", draftRecovery:null},
         currentRun:"run_a", runName:() => context.currentRun,
         currentBranch:() => "main", scopedPath:path => path,
         dirty() {}, renderStatus() {}, cacheStudioPresentation() {}, flushHistoryDraft:async () => {},
@@ -115,6 +116,12 @@ function editorialFixture() {
     };
 }
 
+for (const blocked of [{ready:false}, {conflict:"stale workflow"}, {draftRecovery:{}}]) {
+    const f = editorialFixture();
+    Object.assign(f.context.branches, blocked);
+    f.edit(24); await f.fire();
+    assert.equal(f.requests.length, 0, "Unbound or unresolved branch must not publish editorial edits");
+}
 {
     const f = editorialFixture();
     f.edit(24); await f.fire();

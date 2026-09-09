@@ -13,7 +13,7 @@ function fixture() {
             events.push(body.action);
             if (body.action === "list") return {branches:[{id:"main",revision:"1"},{id,revision:"2"}],default_branch:"main"};
             if (body.action === "save") return {id:body.branch_id,revision:"3",authoring:body.authoring};
-            if (body.action === "load") return {id:body.branch_id,authoring:structuredClone(authoring)};
+            if (body.action === "load") return {id:body.branch_id,revision:body.branch_id === "main" ? "1" : "2",authoring:structuredClone(authoring)};
             if (body.action === "create") {
                 assert.deepEqual(body.authoring, authoring);
                 assert.equal(body.through_scene, 0);
@@ -28,7 +28,7 @@ function fixture() {
     const {controller,events} = fixture();
     await controller.refresh("demo");
     await controller.switchTo(id);
-    assert.deepEqual(events, ["list","flush","save","load",`apply:${id}`]);
+    assert.deepEqual(events, ["list","load","flush","save","load",`apply:${id}`]);
     assert.equal(controller.selected,id);
     assert.equal(controller.defaultBranch,"main");
     await controller.create("Empty");
@@ -44,15 +44,16 @@ function fixture() {
     await controller.switchTo(id);
     assert.equal(controller.selected,"main");
     assert.equal(controller.error,"Editorial conflict");
-    assert.deepEqual(events,["list"]);
+    assert.deepEqual(events,["list","load"]);
 }
 {
     const {controller,events} = fixture();
     await controller.refresh("demo");
     let finish;
     controller.request = async body => {
-        if (body.action === "save") return {revision:"3"};
-        if (body.action === "load") return new Promise(resolve => { finish=resolve; });
+        if (body.action === "save") return {id:body.branch_id,revision:"3",authoring:body.authoring};
+        if (body.action === "load" && body.run_name !== "another") return new Promise(resolve => { finish=resolve; });
+        if (body.action === "load") return {id:"main",revision:"3",authoring};
         return {branches:[],default_branch:"main"};
     };
     const switching = controller.switchTo(id);
@@ -63,7 +64,7 @@ function fixture() {
     await switching;
     assert.equal(controller.selected,"main");
     assert.ok(!events.some(event => event.startsWith("apply:")), "Late response must not change another project");
-    assert.match(controller.error,/Project changed/);
+    assert.match(controller.error,/Project or branch changed/);
 }
 const selection = {run_name:"demo",lineage:[{scene:1,revision:"f".repeat(32)}],output_mode:"workflow_local"};
 assert.deepEqual(JSON.parse(branchSelectionJson(JSON.stringify(selection),id)),{...selection,_branch_id:id});

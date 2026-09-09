@@ -31676,9 +31676,14 @@ async def _working_branch_command(request):
         with checkpoint_run_lock(_output_root(), run), project_write_guard(_output_root(), run,
                 _request_project_ownership(request), "edit a working branch"):
             if action == "save":
-                result = store.save(selected, body.get("authoring"), body.get("revision"))
+                result = store.save(selected, body.get("authoring"), body.get("revision"),
+                                    body.get("operation_id", ""))
             elif action == "create":
                 through = body.get("through_scene", 0)
+                recovered = store.retry_create(selected, body.get("name"), body.get("authoring"),
+                                               through, body.get("operation_id", ""))
+                if recovered is not None:
+                    return web.json_response(recovered)
                 with checkpoint_run_lock(_output_root(), run), branch_scope(run, selected):
                     active, stale = CheckpointGraphManager(_output_root()).active_selection(run)
                     if (type(through) is not int or through < 0 or through > MAX_SHOTS or
@@ -31686,7 +31691,8 @@ async def _working_branch_command(request):
                         raise ValueError("Fork requires a coherent saved prefix of the selected branch.")
                     for i in range(1, through + 1):
                         _load_checkpoint_revision(run, i, active[i])
-                    result = store.create(selected, body.get("name"), body.get("authoring"), through)
+                    result = store.create(selected, body.get("name"), body.get("authoring"), through,
+                                          body.get("operation_id", ""))
             elif action == "default":
                 result = store.make_default(selected)
             else:
@@ -31694,7 +31700,11 @@ async def _working_branch_command(request):
         return web.json_response(result)
     except ProjectOwnershipError as exc:
         return web.json_response({"error": str(exc), "code": "h3_project_read_only"}, status=423)
-    except (OSError, ValueError, TypeError, KeyError) as exc:
+    except OSError as exc:
+        # Includes uncertain post-rename durability failures; replay the same
+        # operation id before deciding that the mutation did not commit.
+        return web.json_response({"error": str(exc)}, status=500)
+    except (ValueError, TypeError, KeyError) as exc:
         return web.json_response({"error": str(exc)}, status=400)
 
 

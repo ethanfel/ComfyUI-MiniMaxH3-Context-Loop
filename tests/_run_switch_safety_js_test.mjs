@@ -85,6 +85,7 @@ function studioContext() {
     const timers = new Map(); const writes = []; let id = 0;
     const context = vm.createContext({
         ...core, console, structuredClone,
+        branches:{ready:true, conflict:"", draftRecovery:null},
         state:{plan:{shots:[{id:"scene_a", prompt:["A"], length:345}], chapters:[]},
             editorial:{}, checkpoints:new Map()},
         node:{properties:{}}, alternateTakeWidget:{value:"stale"},

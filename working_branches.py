@@ -2,6 +2,7 @@
 
 import copy
 from datetime import datetime, timezone
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -13,9 +14,11 @@ import uuid
 if __package__:
     from .branch_scope import branch_id, working_directory
     from .checkpoint_manager import checkpoint_run_lock
+    from .processing_persistence import atomic_json, sync_directory
 else:
     from branch_scope import branch_id, working_directory
     from checkpoint_manager import checkpoint_run_lock
+    from processing_persistence import atomic_json, sync_directory
 
 
 class WorkingBranches:
@@ -43,17 +46,18 @@ class WorkingBranches:
 
     @staticmethod
     def _write(path, value):
-        path = Path(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
-        try:
-            with temporary.open("x", encoding="utf-8") as handle:
-                json.dump(value, handle, ensure_ascii=False, indent=2)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temporary, path)
-        finally:
-            temporary.unlink(missing_ok=True)
+        atomic_json(path, value)
+
+    @staticmethod
+    def _operation(value):
+        if value and not re.fullmatch(r"[0-9a-f]{32}", str(value)):
+            raise ValueError("Invalid branch operation id.")
+        return str(value or "")
+
+    @staticmethod
+    def _digest(value):
+        return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False,
+                                         separators=(",", ":")).encode()).hexdigest()
 
     def load(self, selected="main"):
         selected = branch_id(selected)
@@ -95,7 +99,7 @@ class WorkingBranches:
             raise ValueError("Working branch authoring snapshot is too large.")
         return copy.deepcopy(value)
 
-    def save(self, selected, authoring, expected_revision):
+    def save(self, selected, authoring, expected_revision, operation_id=""):
         authoring = self.authoring(authoring)
         selected = branch_id(selected)
         plan = json.loads(authoring["plan_json"])
@@ -104,15 +108,39 @@ class WorkingBranches:
         else:
             plan["_branch_id"] = selected
         authoring["plan_json"] = json.dumps(plan, ensure_ascii=False, indent=2)
+        operation_id = self._operation(operation_id)
+        request_hash = self._digest([authoring, str(expected_revision or "")])
         with checkpoint_run_lock(str(self.output), self.run):
             record = self.load(selected)
+            receipt = record.get("last_save_operation", {})
+            if operation_id and receipt.get("id") == operation_id:
+                if receipt.get("hash") != request_hash:
+                    raise ValueError("Branch operation id was reused with different settings.")
+                sync_directory(self._path(selected).parent)
+                return record
             if record.get("revision", "") != str(expected_revision or ""):
                 raise ValueError("This branch was edited in another workflow. Reload before saving.")
             record.update(authoring=authoring, revision=uuid.uuid4().hex)
+            if operation_id:
+                record["last_save_operation"] = {"id": operation_id, "hash": request_hash}
+            else:
+                record.pop("last_save_operation", None)
             self._write(self._path(selected), record)
             return record
 
-    def create(self, source, name, authoring, through_scene=0):
+    def retry_create(self, source, name, authoring, through_scene=0, operation_id=""):
+        """Resolve an uncertain create before inspecting today's mutable prefix."""
+        operation_id = self._operation(operation_id)
+        if not operation_id or not self._path(operation_id).exists():
+            return None
+        record = self.load(operation_id)
+        digest = self._digest([source, str(name or "").strip(), authoring, through_scene])
+        if record.get("create_operation_hash") != digest:
+            raise ValueError("Branch operation id was reused with different settings.")
+        sync_directory(self.folder)
+        return record
+
+    def create(self, source, name, authoring, through_scene=0, operation_id=""):
         authoring = self.authoring(authoring)
         name = str(name or "").strip()
         plan = json.loads(authoring["plan_json"])
@@ -121,7 +149,12 @@ class WorkingBranches:
             raise ValueError("Choose a branch name of 1–120 characters.")
         if type(through_scene) is not int or not 0 <= through_scene <= 10000:
             raise ValueError("Fork scene must be a nonnegative integer.")
+        operation_id = self._operation(operation_id)
+        request_hash = self._digest([source, name, authoring, through_scene])
         with checkpoint_run_lock(str(self.output), self.run):
+            recovered = self.retry_create(source, name, authoring, through_scene, operation_id)
+            if recovered is not None:
+                return recovered
             self.load(source)
             source_dir = Path(working_directory(str(self.root), self.run, source))
             pointers = []
@@ -138,13 +171,14 @@ class WorkingBranches:
                     raise ValueError("Fork scene order differs from the saved clips. Restore the matching Plan or create an empty branch.")
                 pointers.append((path.name, metadata))
             self.folder.mkdir(parents=True, exist_ok=True)
-            selected = uuid.uuid4().hex
+            selected = operation_id or uuid.uuid4().hex
             plan["_branch_id"] = selected
             authoring["plan_json"] = json.dumps(plan, ensure_ascii=False, indent=2)
             record = {"format": "h3_working_branch_v1", "run_name": self.run,
                       "id": selected, "name": name, "revision": uuid.uuid4().hex,
                       "created_at": datetime.now(timezone.utc).isoformat(),
                       "source_branch": source, "fork_scene": through_scene,
+                      "create_operation_hash": request_hash,
                       "authoring": authoring}
             stage = Path(tempfile.mkdtemp(prefix=".branch-", dir=self.folder))
             try:
@@ -172,6 +206,7 @@ class WorkingBranches:
                                                       if item in retained_ids]
                     self._write(stage / "editorial.json", editorial)
                 os.replace(stage, self.folder / selected)
+                sync_directory(self.folder)
             finally:
                 if stage.exists():
                     shutil.rmtree(stage)  # Only this unpublished temporary directory.

@@ -16,7 +16,7 @@ It does not have to become the project default before generation or upscaling.
   request fresh seeds.
 - **Save branch** saves an authoring snapshot. Switching, forking and changing
   the default also save the current snapshot first. Save your workflow normally
-  to retain its graph, model/reference connections and unswitched edits.
+  to retain its graph, model/reference connections and branch revision binding.
 - **Make project default** changes only the preferred-branch pointer.
   **Open project default** explicitly opens that branch. Existing workflows and
   already queued jobs keep their explicit selection.
@@ -26,6 +26,33 @@ save is rejected rather than overwriting another workflow's newer snapshot.
 External model/reference/policy nodes remain part of the workflow graph; branch
 switching does not replace their connections.
 
+### Safe switching and recovery
+
+- Studio checks the saved revision against the snapshot loaded by this workflow.
+  Reopening an older workflow does not grant it permission to overwrite newer
+  branch settings. If they differ, choose **Reload saved branch** or preserve
+  the current settings with **+ Empty branch**. No generated clips are deleted.
+- Studio controls are temporarily disabled during a switch. If an external
+  prompt/JSON editor changes the Plan while a request is pending, the switch
+  stops and leaves those edits in the current view. Widget callback failures
+  roll back the branch ID, Plan widgets and connected prompt-editor widgets.
+- **Recovery drafts are browser-local**, separate from shared branch saves.
+  Studio captures edits and polls external Plan changes every 500 ms, with a
+  final capture on page hide. **Restore local draft** explicitly restores a
+  draft after reopening; it never silently replaces saved branch settings.
+  Drafts remain tied to the browser/workflow node, project and branch. Clearing
+  browser storage removes them; an abrupt crash can lose the last uncaptured
+  edit. Draft storage/quota errors are shown and do not prevent **Save branch**.
+- Saves and branch creation use persistent operation IDs. A lost response can
+  be retried without another commit or duplicate branch. If both automatic
+  attempts fail, use **Retry pending operation** to reconcile the exact request
+  before making another change. A newer intervening save still wins: an old
+  retry cannot overwrite it.
+- **Refresh branches** rechecks availability without adopting a newer revision
+  for stale local settings. Reloading saved settings preserves the current
+  local draft where browser storage is available. Local drafts are a recovery
+  convenience, not a substitute for saving the branch and workflow.
+
 ## Checkpoint Manager: assignment is retained
 
 Choose a working branch in the manager's new dropdown. The existing saved take
@@ -33,6 +60,16 @@ inventory, independent-clip **assign/reuse** controls and predecessor/context
 checks remain available. **Assign to working branch** changes only that branch's
 selection. It does not promote it to project default or change another branch.
 **Use branch locally** remains an output-only pin.
+
+The revision display is a fork graph: shared clips appear once and arrows follow
+the saved paths, including processing histories. The bright **Output path** is
+the manager's serialized output selection; a clip preview does not move it.
+Branch headings still select a whole original path (or preview a processed
+path), and **reuse saved clip** remains available at eligible branch tips.
+The separate **In Plan Studio** / **In connected Plan** badge marks the saved
+path of the connected Plan's working branch. If the Plan is on a different
+branch or project, the note above the graph says so rather than marking the
+manager's output as active in the Plan. No connection means no guessed marker.
 
 Old revision histories are still available in Checkpoint Manager. They are not
 automatically converted into named working branches. To continue one separately,

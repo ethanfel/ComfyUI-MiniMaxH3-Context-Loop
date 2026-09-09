@@ -1,6 +1,6 @@
 import {app} from "/scripts/app.js";
 import {api} from "/scripts/api.js";
-import {StudioBranches, branchRequestPath, workingBranchId} from "./h3_working_branches.mjs?v=0.7.0";
+import {StudioBranches, BranchDrafts, branchOperationId, branchWidgetTransaction, branchRequestPath, workingBranchId} from "./h3_working_branches.mjs?v=0.7.11";
 import {
     CONTINUATION_MODES,
     FPS,
@@ -708,6 +708,20 @@ function mount(node) {
     };
     node._h3PlanStudioState = state;
     let branches = null;
+    const branchBindingProperty = "h3_working_branch_binding_v1";
+    const branchDraftClientProperty = "h3_working_branch_draft_client_v1";
+    let branchDrafts = null, branchDraftError = "";
+    try {
+        // Recover the draft namespace even if the first workflow save after
+        // installing this feature never happened before a browser crash.
+        const workflow = app.extensionManager?.workflow?.activeWorkflow;
+        const identity = workflow?.path ?? workflow?.activeState?.id ?? workflow?.filename;
+        const index = identity ? `h3-branch-client-v1:${encodeURIComponent(identity)}:${node.id}` : null;
+        node.properties[branchDraftClientProperty] ||= (index && window.localStorage.getItem(index)) || branchOperationId();
+        if (index) window.localStorage.setItem(index, node.properties[branchDraftClientProperty]);
+        branchDrafts = new BranchDrafts(window.localStorage, node.properties[branchDraftClientProperty]);
+    }
+    catch (error) { branchDraftError = `Browser recovery unavailable: ${error.message}`; }
     function currentBranch() { return workingBranchId(branchWidget?.value); }
     function scopedPath(path, selected = currentBranch()) { return branchRequestPath(path, selected); }
     function captureBranchAuthoring() {
@@ -717,42 +731,76 @@ function mount(node) {
         for (const name of PLAN_SETTING_WIDGETS) {
             if (name !== "run_name" && widget(owner, name)) result[name] = widget(owner, name).value;
         }
-        result.plan_json = planToJson(state.plan);
+        const liveText = state.planWidget ? String(state.planWidget.value) : null;
+        // Polling is paused while switching, but external JSON editors may
+        // still publish either prompt-only or non-prompt changes.
+        result.plan_json = planToJson(liveText !== null && liveText !== state.lastValue
+            ? parsePlanJson(liveText) : state.plan);
         return result;
     }
     async function applyWorkingBranch(record) {
         if (!branchWidget) throw new Error("Restart ComfyUI to load the working-branch input.");
         // Validate before replacing widgets or clearing media.
         parsePlanJson(record.authoring.plan_json);
-        disposePlayer();
-        state.checkpointToken += 1; state.presentationToken += 1;
-        state.history.loadToken += 1;
-        state.history.data = null; state.history.sceneKey = "";
-        state.checkpoints = new Map(); state.checkpointSignature = "";
-        node.properties[CHECKPOINT_CACHE_PROPERTY] = null;
-        branchWidget.value = record.id;
-        for (const [name, value] of Object.entries(record.authoring)) {
-            if (PLAN_SETTING_WIDGETS.includes(name) && name !== "run_name") {
-                writePlanSetting(name, value, false);
-            }
+        workingBranchId(record.id);
+        const previous = {...state, history:{...state.history}};
+        const previousSelection = branches.selected;
+        try {
+            branchWidgetTransaction([node, state.planNode, ...state.promptEditors], () => {
+                disposePlayer();
+                state.checkpointToken += 1; state.presentationToken += 1;
+                state.history.loadToken += 1;
+                state.history.data = null; state.history.sceneKey = "";
+                state.checkpoints = new Map(); state.checkpointSignature = "";
+                node.properties[CHECKPOINT_CACHE_PROPERTY] = null;
+                branchWidget.value = record.id;
+                for (const [name, value] of Object.entries(record.authoring)) {
+                    if (PLAN_SETTING_WIDGETS.includes(name) && name !== "run_name") {
+                        writePlanSetting(name, value, false);
+                    }
+                }
+                const savedPlan = parsePlanJson(record.authoring.plan_json);
+                if (record.id === "main") delete savedPlan._branch_id;
+                else savedPlan._branch_id = record.id;
+                writePlanSetting("plan_json", planToJson(savedPlan), false);
+                if (state.planNode) for (let index = 0; index < savedPlan.shots.length; index++) {
+                    publishCompanionPrompt(node, state.planNode, index,
+                        promptValueToText(savedPlan.shots[index].prompt));
+                }
+                const alternate = widget(node, "alternate_take_json");
+                if (alternate) alternate.value = "";
+                state.lastRunName = "";
+                state.lastBranchId = record.id;
+                loadPlan(true, true);
+                branchWidget.callback?.(record.id);
+                dirty();
+            });
+        } catch (error) {
+            // Roll back editor state without reviving responses from the failed view.
+            const checkpointToken = state.checkpointToken + 1;
+            const presentationToken = state.presentationToken + 1;
+            const historyToken = state.history.loadToken + 1;
+            Object.assign(state, previous, {checkpointToken, presentationToken});
+            state.history.loadToken = historyToken;
+            branches.selected = previousSelection;
+            try { renderShell(); } catch { /* Preserve the callback failure. */ }
+            throw error;
         }
-        const savedPlan = parsePlanJson(record.authoring.plan_json);
-        if (record.id === "main") delete savedPlan._branch_id;
-        else savedPlan._branch_id = record.id;
-        writePlanSetting("plan_json", planToJson(savedPlan), false);
-        if (state.planNode) for (let index = 0; index < savedPlan.shots.length; index++) {
-            publishCompanionPrompt(node, state.planNode, index,
-                promptValueToText(savedPlan.shots[index].prompt));
-        }
-        const alternate = widget(node, "alternate_take_json");
-        if (alternate) alternate.value = "";
-        state.lastRunName = ""; // Reset all per-branch editorial/preview caches.
-        state.lastBranchId = record.id;
-        loadPlan(true);
-        branchWidget.callback?.(record.id);
-        dirty();
     }
     branches = new StudioBranches({
+        isCurrent:(run, selected) => !state.disposed && runName() === run && currentBranch() === selected
+            && (upstreamPlanNode(node) ?? node) === (state.planOwner ?? node),
+        binding:node.properties[branchBindingProperty] ?? null,
+        rememberBinding:value => { node.properties[branchBindingProperty] = value; dirty(); },
+        drafts:branchDrafts,
+        settle:async () => {
+            // Reload/recovery must not publish an unsent stale editorial edit.
+            if (state.editorialTimer != null) clearTimeout(state.editorialTimer);
+            state.editorialTimer = null; state.editorialPending = null;
+            if (state.history.saveTimer != null) clearTimeout(state.history.saveTimer);
+            state.history.saveTimer = null; state.history.pendingDraft = null;
+            await Promise.allSettled([state.editorialSavePromise, state.history.savePromise].filter(Boolean));
+        },
         selected:currentBranch(), capture:captureBranchAuthoring,
         apply:applyWorkingBranch, flush:() => flushProjectWrites(),
         changed:() => { if (state.plan) renderShell(); },
@@ -764,7 +812,11 @@ function mount(node) {
                     method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body),
                 }));
             const data = await response.json();
-            if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+            if (!response.ok) {
+                const error = new Error(data.error || `HTTP ${response.status}`);
+                error.status = response.status;
+                throw error;
+            }
             return data;
         },
     });
@@ -793,6 +845,7 @@ function mount(node) {
         const empty = button("+ Empty branch", "Copy the complete Plan and references; no generated videos", () => create(false));
         const fork = button("Fork here", "Keep saved scenes through the selected scene; copy the full Plan", () => create(true));
         empty.disabled = fork.disabled = branches.busy || !records.length || !branchWidget;
+        fork.disabled ||= Boolean(branches.conflict || branches.draftRecovery);
         const makeDefault = button("Make project default", "Change the preferred branch without changing any saved clips or queued jobs", () => void branches.makeDefault());
         makeDefault.disabled = branches.busy || !records.length || currentBranch() === branches.defaultBranch;
         const defaultName = records.find(item => item.id === branches.defaultBranch)?.name ?? "Original";
@@ -803,6 +856,28 @@ function mount(node) {
         bar.append(saveBranch, useDefault);
         bar.append(previous, select, next, empty, fork, makeDefault,
             element("span", "h3studio-message", `Project default: ${defaultName}`));
+        const reload = button("Reload saved branch", "Load the saved prompts/settings; keep local edits in browser recovery", () => {
+            if (confirm("Reload this branch's saved prompts/settings? Local edits are kept in browser recovery; generated files are unchanged.")) {
+                void branches.reloadSaved();
+            }
+        });
+        reload.disabled = !branches.ready;
+        const recover = button("Restore local draft", "Recover this browser's last unsaved branch settings", () => {
+            branches.readDraft();
+            if (branches.draftRecovery && confirm("Replace the currently displayed prompts/settings with this browser's recovery draft? Saved branch settings and generated files are unchanged.")) {
+                void branches.restoreDraft();
+            }
+        });
+        recover.disabled = !branchDrafts || !branches.ready;
+        bar.append(reload, recover);
+        bar.append(button("Refresh branches", "Recheck branch availability without overwriting local settings", () => {
+            void branches.refresh(runName()).catch(error => { branches.error = error.message; renderShell(); });
+        }));
+        if (branches.pending) {
+            bar.append(button("Retry pending operation", "Reconcile the exact previous request without duplicating a branch", () => void branches.retryPending()));
+        }
+        if (branches.conflict) bar.append(element("span", "h3studio-error", branches.conflict));
+        bar.append(element("span", "h3studio-message h3studio-branch-draft", branchDraftError || branches.draftStatus));
         if (branches.error) bar.append(element("span", "h3studio-error", branches.error));
         return bar;
     }
@@ -1416,6 +1491,9 @@ function mount(node) {
     function scheduleEditorialSave(delay = 250) {
         syncAlternateTakeWidget();
         if (!state.plan) return;
+        // A stale workflow is a recoverable local draft, not authority to
+        // update this branch's saved editorial document.
+        if (branches && (!branches.ready || branches.conflict || branches.draftRecovery)) return;
         if (!state.editorialReady || state.editorialRun !== runName()) return;
         if (state.editorialBindingError) { renderStatus(); return; }
         const local = editorialPayload();
@@ -6176,6 +6254,8 @@ function mount(node) {
         }
         const panelHost = element("div", "h3studio-panel"); state.panelHost = panelHost;
         root.append(head, branchToolbar(), toolbar, status, shell, panelHost);
+        root.inert = Boolean(branches?.busy);
+        root.setAttribute("aria-busy", String(Boolean(branches?.busy)));
         renderToolbarState(); renderStatus();
         renderTimeline({
             revealActive:revealTimelineActive,
@@ -6191,7 +6271,8 @@ function mount(node) {
             element("div", "h3studio-message", "Repair the JSON tab or connect a valid H3 Chain Plan. Studio can operate in either mode."));
     }
 
-    function loadPlan(force = false) {
+    function loadPlan(force = false, throwOnError = false) {
+        if (branches?.busy && !force) return;
         const planNode = upstreamPlanNode(node);
         if (planNode) mirrorConnectedPlan(planNode);
         const planOwner = planNode ?? node;
@@ -6285,11 +6366,12 @@ function mount(node) {
             if (runChanged && currentRun) {
                 void restoreSourcePresentation();
                 void loadSubtitleAssets();
-                if (branches.run !== currentRun) void branches.refresh(currentRun).catch(error => {
+                if (branches.run !== currentRun || (!branches.busy && branches.binding?.branch_id !== currentBranch())) void branches.refresh(currentRun).catch(error => {
                     branches.error = error.message; renderShell();
                 });
             }
         } catch (error) {
+            if (throwOnError) throw error;
             showFailure(`${planNode ? "Connected Plan" : "Standalone Plan Studio"} JSON is invalid:\n${error.message}`);
         }
     }
@@ -6377,6 +6459,8 @@ function mount(node) {
     const unsubscribeOwnership = subscribeProjectOwnership(node, onProjectOwnershipChanged);
     const removed = node.onRemoved;
     node.onRemoved = function () {
+        saveLocalBranchDraft();
+        window.removeEventListener("pagehide", onBranchPageHide);
         const finalFlush = flushProjectWrites(runName());
         state.disposed = true;
         unsubscribeOwnership();
@@ -6447,7 +6531,17 @@ function mount(node) {
         loadPlan(true);
         publishActiveScene();
     };
-    state.pollTimer = setInterval(() => loadPlan(false), 500);
+    const saveLocalBranchDraft = () => {
+        if (state.disposed || !state.plan) return;
+        branches.observe();
+        const status = root.querySelector(".h3studio-branch-draft");
+        if (status) status.textContent = branchDraftError || branches.draftStatus;
+    };
+    const onBranchPageHide = () => saveLocalBranchDraft();
+    window.addEventListener("pagehide", onBranchPageHide);
+    root.addEventListener("input", saveLocalBranchDraft);
+    root.addEventListener("change", saveLocalBranchDraft);
+    state.pollTimer = setInterval(() => { loadPlan(false); saveLocalBranchDraft(); }, 500);
     state.checkpointTimer = setInterval(() => {
         if (state.executionPromptIds.size === 0) void refreshCheckpoints();
     }, 5000);

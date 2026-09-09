@@ -3,6 +3,7 @@ import fs from "node:fs";
 import vm from "node:vm";
 import * as core from "../web/h3_checkpoint_manager_core.mjs";
 import * as workingBranches from "../web/h3_working_branches.mjs";
+import * as checkpointGraph from "../web/h3_checkpoint_graph.mjs";
 
 const a = "a".repeat(32), b = "b".repeat(32), c = "c".repeat(32), d = "d".repeat(32);
 const payload = {
@@ -80,7 +81,7 @@ const confirmations = [];
 let extension;
 const requests = [];
 const context = vm.createContext({
-    ...core, ...workingBranches, URLSearchParams, console,
+    ...core, ...workingBranches, ...checkpointGraph, URLSearchParams, console,
     document:{head:new Element("head"), getElementById:() => null, createElement:tag => new Element(tag)},
     app:{registerExtension(value){ extension = value; }, graph:{setDirtyCanvas(){}}},
     api:{apiURL:path => path, fetchApi:async (path, options={}) => {
@@ -602,7 +603,7 @@ await settle();
 assert.equal(value(repair), partialPin, "never guess which descendant of an old shared pin was intended");
 assert.match(byClass(repair, "h3cm-output-summary").textContent, /old partial selection/);
 const activeHeading = elements(repair).find(item => item.className.includes("h3cm-branch-head")
-    && item.children.some(child => child.textContent === "Project active branch"));
+    && item.children.some(child => child.textContent === "Saved path · Original"));
 activeHeading.click(); await settle();
 select(repair, 8, a); await settle();
 byText(repair, "Use branch locally").click();
@@ -658,12 +659,11 @@ const outputBeforePreview = value(branchView), mutationsBeforePreview = mutation
 byText(branchView, "Pixel Upscale · 4").click();
 byText(branchView, "Chapter 1").click();
 const processingRows = () => elements(branchView).filter(item => item.className.split(" ").includes("h3cm-branch"));
-const cardNames = row => row.children.at(-1).children.filter(item => item.tag === "button").map(item => item.textContent);
+const cardNames = () => elements(branchView).filter(item => item.className.split(" ").includes("h3cm-processing-variant")).map(item => item.textContent);
 let displayed = processingRows();
 assert.equal(displayed.length, 2, "Source branches are not duplicated into stacks");
-assert.deepEqual(cardNames(displayed[0]), ["S1 · 11111111", "S2 · 33333333"]);
-assert.deepEqual(cardNames(displayed[1]), ["S1 · 11111111", "S2 · 22222222"]);
-assert.equal(elements(branchView).filter(item => item.textContent === "shared ×2").length, 2);
+assert.deepEqual(cardNames(), ["S1 · 11111111", "S2 · 33333333", "S2 · 22222222"]);
+assert.equal(elements(branchView).filter(item => item.textContent === "shared ×2").length, 1, "Shared prefix is rendered once");
 assert.ok(displayed[0].children[0].children.some(item => item.textContent === "Latest save"));
 assert.ok(!displayed[1].children[0].children.some(item => item.textContent === "Latest save"));
 assert.ok(elements(branchView).some(item => item.textContent.startsWith("Created: ")));
@@ -678,7 +678,7 @@ assert.equal(value(branchView), outputBeforePreview, "Keyboard heading selection
 assert.ok(byText(branchView, "Assign to working branch").disabled);
 byText(branchView, "Chapter 2").click();
 assert.equal(processingRows().length, 1);
-assert.deepEqual(cardNames(processingRows()[0]), ["S3 · 44444444"]);
+assert.deepEqual(cardNames(), ["S3 · 44444444"]);
 byText(branchView, "Chapter 1").click();
 currentGraph.processing_variants = [p1, p2, p3];
 branchView._h3CheckpointManagerRefresh(); await settle();
@@ -686,11 +686,11 @@ displayed = processingRows();
 assert.equal(displayed.length, 2);
 assert.ok(elements(branchView).some(item => item.textContent === "Missing saved take"));
 assert.ok(elements(branchView).some(item => /history incomplete/.test(item.textContent)));
-assert.equal(displayed.flatMap(row => cardNames(row)).filter(name => name === "S2 · 22222222").length, 1,
+assert.equal(cardNames().filter(name => name === "S2 · 22222222").length, 1,
     "Another take never fills a deleted branch member");
 assert.equal(value(branchView), outputBeforePreview);
 assert.equal(mutations, mutationsBeforePreview, "Rendering, headings and chapter tabs never mutate saved projects");
-console.log("Processing branch UI: shared colors, latest dates, real paths, missing slots, keyboard previews and output isolation pass");
+console.log("Processing branch UI: shared forks, latest dates, real paths, missing slots, keyboard previews and output isolation pass");
 
 // Named branch selection preserves the original assign/reuse feature and
 // scopes both its mutation and the source manifest serialized for execution.
@@ -711,3 +711,41 @@ assert.deepEqual(JSON.parse(assignment.options.body).revisions, [{scene:1,revisi
 assert.equal(JSON.parse(value(workingManager))._branch_id, namedWorkingBranch);
 assert.equal(value(branchView), otherOutput, "Assignment must not change another manager's output");
 console.log("Named working branch UI: selector, output identity and retained assign/reuse action pass");
+
+// The used path follows the execution widget, not preview clicks. Plan/Studio
+// gets a separate marker and may point to a different named working branch.
+currentGraph = structuredClone(payload);
+allowWorkingAssignment = false;
+const forkView = makeNode(); await settle();
+const studio = {type:"MiniMaxH3ChainPlanStudio", inputs:[], outputs:[], widgets:[
+    {name:"run_name",value:"demo"}, {name:"plan_json",value:'{"shots":[{"id":"one"}]}'},
+    {name:"working_branch_id",value:"main"},
+]};
+forkView.inputs = [{link:11}];
+forkView.graph.links = {11:{origin_id:12}};
+forkView.graph.getNodeById = () => studio;
+const beforeMarker = value(forkView), beforeMarkerRequests = requests.length;
+forkView._h3CheckpointManagerPlanMarkerRefresh();
+const highlighted = () => elements(forkView).filter(item => item.className.split(" ").includes("h3cm-output-path")).map(item => item.textContent);
+assert.deepEqual(highlighted(), ["S1 · aaaaaaaa","S2 · bbbbbbbb","S3 · dddddddd"]);
+assert.equal(elements(forkView).filter(item => item.textContent === "S1 · aaaaaaaa").length,1);
+assert.equal(byClass(forkView,"h3cm-plan-marker").textContent,"In Plan Studio");
+assert.equal(requests.length,beforeMarkerRequests,"Marker refresh must not request or mutate project data");
+select(forkView,2,c); await settle();
+assert.deepEqual(highlighted(), ["S1 · aaaaaaaa","S2 · bbbbbbbb","S3 · dddddddd"]);
+assert.equal(value(forkView),beforeMarker);
+byText(forkView,"Use branch locally").click();
+assert.deepEqual(highlighted(), ["S1 · aaaaaaaa","S2 · cccccccc"]);
+assert.equal(byClass(forkView,"h3cm-plan-marker").textContent,"In Plan Studio","Output pin does not move the Plan marker");
+studio.widgets[2].value=namedWorkingBranch;
+const pinnedFork=value(forkView), beforeSwitchRequests=requests.length;
+forkView._h3CheckpointManagerPlanMarkerRefresh();
+assert.equal(byClass(forkView,"h3cm-plan-marker"),undefined);
+assert.match(byClass(forkView,"h3cm-plan-context").textContent,/different from the branch shown/);
+assert.ok(elements(forkView).some(item=>item.tag==='option' && item.value===namedWorkingBranch && item.textContent.includes('In Plan Studio')));
+assert.equal(value(forkView),pinnedFork);assert.equal(requests.length,beforeSwitchRequests);
+studio.widgets[0].value='other';forkView._h3CheckpointManagerPlanMarkerRefresh();
+assert.equal(byClass(forkView,"h3cm-plan-marker"),undefined);
+assert.match(byClass(forkView,"h3cm-plan-context").textContent,/other/);
+forkView.onRemoved();assert.equal(forkView._h3CheckpointManagerPlanMarkerRefresh,undefined);
+console.log("Fork presentation: one shared prefix, independent output/preview/Plan markers, named branches and read-only live refresh pass");

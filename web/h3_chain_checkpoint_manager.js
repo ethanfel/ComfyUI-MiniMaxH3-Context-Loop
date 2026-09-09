@@ -1,6 +1,7 @@
 import {app} from "/scripts/app.js";
 import {api} from "/scripts/api.js";
-import {branchRequestPath, branchSelectionJson} from "./h3_working_branches.mjs?v=0.7.0";
+import {branchRequestPath, branchSelectionJson} from "./h3_working_branches.mjs?v=0.7.11";
+import {checkpointForkGraph, checkpointGraphOutput, mountCheckpointGraphEdges} from "./h3_checkpoint_graph.mjs?v=0.7.15";
 import {
     CHECKPOINT_STAGES,
     checkpointStageVariants,
@@ -52,7 +53,6 @@ const PREVIEW_HEIGHT_PROPERTY = "h3_checkpoint_manager_preview_height";
 const DEFAULT_PREVIEW_HEIGHT = 280;
 const MIN_PREVIEW_HEIGHT = 120;
 const MAX_PREVIEW_HEIGHT = 720;
-const SHARED_COLORS = ["#6ea8ff", "#58c99d", "#bd8cff", "#e8a84f", "#f07f8c", "#55bfd0"];
 
 function previewHeight(value) {
     const number = Number(value);
@@ -65,14 +65,15 @@ function nodeType(node) {
     return node?.comfyClass ?? node?.type ?? "";
 }
 
-function upstreamPlanNode(start) {
+function upstreamPlanNode(start, includeStudio = false) {
     const queue = [start];
     const seen = new Set();
     while (queue.length) {
         const current = queue.shift();
         if (!current || seen.has(current)) continue;
         seen.add(current);
-        if (current !== start && PLAN_NAMES.has(nodeType(current))) return current;
+        if (current !== start && (PLAN_NAMES.has(nodeType(current))
+                || (includeStudio && nodeType(current) === "MiniMaxH3ChainPlanStudio"))) return current;
         for (const input of current.inputs ?? []) {
             if (input.link == null) continue;
             const link = graphLink(current.graph, input.link);
@@ -153,14 +154,6 @@ function localTime(value) {
     return Number.isNaN(date.getTime()) ? String(value || "unknown") : date.toLocaleString();
 }
 
-function sharedColor(key) {
-    let hash = 0;
-    for (const character of String(key ?? "")) {
-        hash = ((hash * 31) + character.codePointAt(0)) >>> 0;
-    }
-    return SHARED_COLORS[hash % SHARED_COLORS.length];
-}
-
 async function jsonRequest(path, options = {}) {
     const response = await api.fetchApi(path, options);
     const payload = await response.json();
@@ -191,7 +184,7 @@ function injectStyles() {
         gap:8px; overflow:hidden; padding:10px; border:1px solid var(--h3cm-border); border-radius:9px;
         background:var(--h3cm-bg); color:var(--h3cm-text); font:12px/1.4 system-ui,sans-serif; }
       .h3cm-root *, .h3cm-root *::before, .h3cm-root *::after { box-sizing:border-box; }
-      .h3cm-head,.h3cm-run-row,.h3cm-chapter-tabs,.h3cm-scenes,.h3cm-branch-head,.h3cm-branch-path,.h3cm-delete-actions {
+      .h3cm-head,.h3cm-run-row,.h3cm-chapter-tabs,.h3cm-scenes,.h3cm-branch-head,.h3cm-delete-actions {
         display:flex; align-items:center; gap:6px; }
       .h3cm-head { justify-content:space-between; }
       .h3cm-title { font-size:15px; font-weight:760; color:var(--h3cm-accent); }
@@ -212,9 +205,7 @@ function injectStyles() {
       .h3cm-stage-tab { white-space:nowrap; }
       .h3cm-stage-tab[aria-selected="true"] { color:var(--h3cm-accent); border-color:var(--h3cm-accent); }
       .h3cm-stage-note { flex:0 0 auto; color:var(--h3cm-muted); overflow-wrap:anywhere; }
-      .h3cm-processing-head { flex-wrap:wrap; }
       .h3cm-latest-label { color:var(--h3cm-chapter); font-weight:750; }
-      .h3cm-processing-source { margin-bottom:5px; }
       .h3cm-chapter-tabs { flex:0 0 auto; overflow:auto; padding:2px 0; }
       .h3cm-chapter-tab { white-space:nowrap; border-radius:999px !important; }
       .h3cm-chapter-selected { color:var(--h3cm-chapter) !important; border-color:#d6a650 !important;
@@ -249,8 +240,6 @@ function injectStyles() {
         color:var(--h3cm-accent); outline:1px solid var(--h3cm-accent); outline-offset:2px; }
       .h3cm-branch-selected { border-color:var(--h3cm-accent) !important; }
       .h3cm-branch-active { color:var(--h3cm-accent); font-weight:700; }
-      .h3cm-branch-path { position:relative; z-index:3; align-items:stretch; overflow:auto; padding-bottom:2px; }
-      .h3cm-arrow { align-self:center; color:var(--h3cm-muted); }
       .h3cm-revision { position:relative; min-width:112px; text-align:left; white-space:nowrap; }
       .h3cm-revision small { display:block; color:var(--h3cm-muted); font-size:10px; }
       .h3cm-alternates { display:flex; flex-direction:column; gap:3px; min-width:104px;
@@ -264,11 +253,26 @@ function injectStyles() {
       div.h3cm-revision-empty { padding:5px 8px; border:1px dashed var(--h3cm-border); border-radius:6px; }
       .h3cm-revision-empty-selected { border-color:var(--h3cm-accent) !important;
         color:var(--h3cm-accent) !important; }
-      .h3cm-revision-shared { border-color:var(--h3cm-shared-color) !important;
-        box-shadow:inset 3px 0 0 var(--h3cm-shared-color); }
-      .h3cm-shared-label { display:block; width:max-content; margin:2px 0; padding:1px 5px;
-        border-radius:999px; background:color-mix(in srgb,var(--h3cm-shared-color) 23%,transparent);
-        color:color-mix(in srgb,var(--h3cm-shared-color) 72%,var(--h3cm-text)); font-size:9px; font-weight:750; }
+      .h3cm-fork-scroll { overflow:auto; padding:5px 3px 10px; }
+      .h3cm-fork-graph { display:grid; position:relative; width:max-content; gap:28px 48px; align-items:start; }
+      .h3cm-fork-node { width:180px; min-width:0; position:relative; z-index:1; }
+      .h3cm-fork-node > .h3cm-revision { width:100%; min-height:74px; white-space:normal; overflow-wrap:anywhere; }
+      .h3cm-fork-node .h3cm-revision small { margin-top:2px; }
+      .h3cm-fork-node .h3cm-alternates { margin-top:5px; }
+      .h3cm-fork-node .h3cm-alternate small { display:block; }
+      .h3cm-fork-node .h3cm-branch { margin:6px 0 0; padding:5px; }
+      .h3cm-fork-node .h3cm-branch-head { flex-wrap:wrap; justify-content:flex-start; font-size:10px; gap:4px; margin:0; }
+      .h3cm-fork-node .h3cm-branch-head > span { overflow-wrap:anywhere; }
+      .h3cm-fork-node .h3cm-revision-empty { width:100%; margin-top:6px; }
+      .h3cm-fork-edges { position:absolute; inset:0; overflow:visible; pointer-events:none; z-index:0; }
+      .h3cm-fork-edge { fill:none; stroke:var(--h3cm-muted); stroke-width:1.5; stroke-linecap:round; stroke-linejoin:round; }
+      .h3cm-fork-edge-output { stroke:var(--h3cm-accent); stroke-width:3.5; }
+      .h3cm-output-path { border-color:var(--h3cm-accent) !important;
+        box-shadow:0 0 0 2px color-mix(in srgb,var(--h3cm-accent) 55%,transparent) !important; }
+      .h3cm-output-path-label { color:var(--h3cm-accent) !important; font-weight:700; }
+      .h3cm-plan-marker { display:inline-block; border:1px dashed currentColor; border-radius:4px;
+        padding:1px 4px; color:var(--h3cm-chapter); font-size:10px; font-weight:700; }
+      .h3cm-plan-context { font-size:11px; color:var(--h3cm-muted); margin-bottom:6px; }
       .h3cm-detail { display:flex; flex-direction:column; gap:8px; }
       .h3cm-preview-frame { width:100%; height:280px; min-height:120px; max-height:720px;
         flex:0 0 auto; display:flex; flex-direction:column; overflow:hidden; border-radius:6px;
@@ -335,6 +339,7 @@ function mount(node) {
         previewHeight:previewHeight(node.properties[PREVIEW_HEIGHT_PROPERTY]),
         selected:null, outputTip:null, previewTip:null, deletion:null, busy:false, requestToken:0,
         initialRefresh:true, attribution:null, attributionButton:null,
+        workingBranches:[], defaultWorkingBranch:"main", graphCleanups:[], planMarkerSignature:"",
     };
     const root = element("div", "h3cm-root");
     const head = element("div", "h3cm-head");
@@ -402,10 +407,11 @@ function mount(node) {
     const main = element("div", "h3cm-main");
     const branchesPanel = element("section", "h3cm-panel");
     const branchesTitle = element("div", "h3cm-panel-title", "Revision branches");
-    const branchLegend = element("span", "h3cm-shared-legend", "matching color = same saved clip");
+    const branchLegend = element("span", "h3cm-shared-legend", "shared clips shown once · bright line = output path · dashed badge = Plan");
     branchesTitle.append(branchLegend);
+    const planContext = element("div", "h3cm-plan-context");
     const branches = element("div", "h3cm-branches");
-    branchesPanel.append(branchesTitle, branches);
+    branchesPanel.append(branchesTitle, planContext, branches);
     const detail = element("section", "h3cm-panel h3cm-detail");
     const previewFrame = element("div", "h3cm-preview-frame");
     const preview = element("video", "h3cm-preview");
@@ -505,6 +511,46 @@ function mount(node) {
     function activePlanRun() {
         const plan = upstreamPlanNode(node);
         return String(widget(plan, "run_name")?.value ?? "").trim();
+    }
+
+    function currentPlanMarker() {
+        const plan = upstreamPlanNode(node, true);
+        if (!plan) return null; // Never guess from an unrelated workflow/tab.
+        try {
+            const authored = JSON.parse(String(widget(plan, "plan_json")?.value ?? ""));
+            const branch = nodeType(plan) === "MiniMaxH3ChainPlanStudio"
+                ? widget(plan, "working_branch_id")?.value ?? authored._branch_id ?? "main"
+                : authored._branch_id ?? "main";
+            if (!/^(main|[0-9a-f]{32})$/.test(branch)) return null;
+            const studio = nodeType(plan) === "MiniMaxH3ChainPlanStudio" ? plan
+                : connectedNode(plan, "MiniMaxH3ChainPlanStudio");
+            return {run:String(widget(plan, "run_name")?.value ?? "").trim(), branch,
+                label:studio && (studio === plan || upstreamPlanNode(studio) === plan) ? "In Plan Studio" : "In connected Plan"};
+        } catch { return null; }
+    }
+
+    function workingBranchName(id = selectedWorkingBranch()) {
+        return state.workingBranches.find(item => item.id === id)?.name
+            ?? (id === "main" ? "Original" : String(id).slice(0, 8));
+    }
+
+    function renderPlanContext() {
+        const marker = currentPlanMarker();
+        planContext.textContent = marker
+            ? `${marker.label}: ${marker.run} / ${workingBranchName(marker.branch)}`
+                + (marker.run !== state.runName || marker.branch !== selectedWorkingBranch()
+                    ? " · different from the branch shown here" : state.stage === "original"
+                        ? (state.payload?.revisions?.some(item => item.active)
+                            ? " · saved path marked below" : " · no saved active path yet")
+                        : " · saved path marked on the Original tab")
+            : "Connect a Plan or Plan Studio to show its working-branch marker.";
+        workingSelect.replaceChildren();
+        for (const item of state.workingBranches) {
+            const isPlan = marker?.run === state.runName && marker.branch === item.id;
+            const option = element("option", "", `${item.name}${item.id === state.defaultWorkingBranch ? " · project default" : ""}${isPlan ? " · " + marker.label : ""}`);
+            option.value = item.id; workingSelect.append(option);
+        }
+        workingSelect.value = selectedWorkingBranch();
     }
 
     function restoreOutputScope() {
@@ -771,14 +817,13 @@ function mount(node) {
             tab.disabled = state.busy;
             stageTabs.append(tab);
         }
-        stageNote.textContent = state.stage === "original" ? ""
-            : `${stageLabel()} saved branches, newest save first. Each row follows its recorded processing history; shared clips have matching colors. Browsing does not change output.`
+        stageNote.textContent = state.stage === "original" ? "Shared clips appear once; forks follow saved revisions. Clip clicks preview only. Use a branch heading to choose the output path."
+            : `${stageLabel()} saved branches, newest save first. Forks follow recorded processing history; shared clips appear once. Browsing does not change output.`
                 + (state.stage === "derope" ? " Select a saved take, then Use DeRoPE branch locally for deferred upscaling. Unsaved scenes use their original take." : "");
         const warnings = state.payload?.processing_variant_warnings ?? [];
         if (warnings.length) stageNote.textContent += ` ${warnings.length} processing metadata warning(s): ${warnings[0]}`;
         stageNote.hidden = !stageNote.textContent;
-        branchLegend.textContent = state.stage === "original" ? "matching color = same saved clip"
-            : "saved processing branches · newest save first";
+        branchLegend.textContent = "shared clips shown once · bright line = output path · dashed badge = Plan";
     }
 
     function selectAttribution(parent, slot) {
@@ -936,70 +981,55 @@ function mount(node) {
     }
 
     function renderBranchRows(container, rows) {
-        if (state.stage !== "original") {
-            renderVariantBranchRows(container, rows);
-            return;
-        }
+        const original = state.stage === "original";
+        const model = checkpointForkGraph(rows, state.stage);
+        const output = checkpointGraphOutput(outputSelectionForScope(selectionWidget?.value),
+            state.runName, selectedWorkingBranch(), state.stage);
+        const marker = currentPlanMarker();
+        const inPlan = marker?.run === state.runName && marker.branch === selectedWorkingBranch();
+        const scroll = element("div", "h3cm-fork-scroll");
+        const graph = element("div", "h3cm-fork-graph");
+        graph.style.gridTemplateColumns = `repeat(${model.columns}, 180px)`;
+        graph.setAttribute("aria-label", `${stageLabel()} saved revision forks`);
+        const cards = new Map();
         const localKeys = localRevisionKeys();
-        const occurrences = new Map();
-        for (const branch of rows) {
-            for (const revision of branch.revisions) {
-                const key = checkpointRevisionKey(revision.scene, revision.revision);
-                occurrences.set(key, (occurrences.get(key) ?? 0) + 1);
-            }
-        }
-        for (const branch of rows) {
-            const row = element("div", "h3cm-branch");
-            const header = element("div", "h3cm-branch-head");
-            const tip = branch.revisions.at(-1) ?? null;
-            const selectedTip = Boolean(tip &&
-                Number(state.previewTip?.scene) === Number(tip.scene) &&
-                String(state.previewTip?.revision) === String(tip.revision));
-            if (selectedTip) row.classList.add("h3cm-branch-selected");
-            if (tip) {
-                header.role = "button";
-                header.tabIndex = 0;
-                header.title = `Select this whole branch (ends at scene ${tip.scene}); set start/end downstream`;
-                header.addEventListener("click", () => selectOutputBranch(tip));
-                header.addEventListener("keydown", (event) => {
-                    if (event.key !== "Enter" && event.key !== " ") return;
-                    event.preventDefault();
-                    selectOutputBranch(tip);
-                });
-            }
-            const name = element("span", branch.active ? "h3cm-branch-active" : "", branch.active ? "Project active branch" : branch.label);
-            const count = element("span", "h3cm-muted", `${branch.revisions.length} visible scene${branch.revisions.length === 1 ? "" : "s"}`);
-            header.append(name, count);
-            const path = element("div", "h3cm-branch-path");
-            branch.revisions.forEach((revision, index) => {
-                if (index) path.append(element("span", "h3cm-arrow", "→"));
-                const key = checkpointRevisionKey(revision.scene, revision.revision);
-                const sharedCount = occurrences.get(key) ?? 1;
-                const card = button(
+        for (const item of model.nodes) {
+            const cell = element("div", "h3cm-fork-node");
+            cell.style.gridColumn = String(item.column + 1);
+            cell.style.gridRow = String(item.lane + 1);
+            cell.dataset.graphKey = item.key;
+            const revision = original ? item.entry : item.entry.record;
+            let card;
+            if (original) {
+                card = button(
                     `S${revision.scene} · ${revision.revision.slice(0, 8)}`,
                     revision.prompt_preview || revision.scene_id,
-                    () => selectRevision(revision, true, "", tip), "h3cm-revision",
+                    () => selectRevision(revision), "h3cm-revision",
                 );
                 const selected = state.selected?.scene === revision.scene &&
                     state.selected?.revision === revision.revision;
-                if (sharedCount > 1) {
-                    card.classList.add("h3cm-revision-shared");
-                    card.dataset.sharedKey = key;
-                    card.style.setProperty("--h3cm-shared-color", sharedColor(key));
-                    card.append(element(
-                        "span", "h3cm-shared-label",
-                        `shared ×${sharedCount}`,
-                    ));
-                }
                 card.append(element("small", "", `${selected ? "selected · " : ""}${revision.active ? "saved active" : "saved inactive"}${revision.ready ? "" : " · broken"}`));
-                if (localKeys.has(key)) card.append(element("small", "h3cm-local-label", "local output"));
-                if (selected) {
-                    card.classList.add("h3cm-revision-selected");
-                }
-                path.append(card);
-                const alternates = (revision.alternates ?? []).filter(
-                    (alternate) => alternate.ready,
-                );
+                if (localKeys.has(item.key)) card.append(element("small", "h3cm-local-label", "local output"));
+                if (selected) card.classList.add("h3cm-revision-selected");
+            } else if (revision) card = variantCard(revision);
+            else {
+                card = element("div", "h3cm-revision h3cm-revision-empty",
+                    `S${item.scene} · ${String(item.entry.revision).slice(0, 8)}`);
+                card.append(element("small", "", "Missing saved take"));
+                card.title = "This exact take is missing or its identity does not match. No other version is substituted.";
+            }
+            const sharedCount = item.paths.length;
+            if (sharedCount > 1) {
+                card.dataset.sharedKey = item.key;
+                card.append(element("small", "h3cm-muted", `shared ×${sharedCount}`));
+            }
+            if (output.nodes.has(item.key)) {
+                card.classList.add("h3cm-output-path");
+                card.append(element("small", "h3cm-output-path-label", output.tip === item.key ? "Output path · end" : "Output path"));
+            }
+            cell.append(card); cards.set(item.key, card);
+            if (original) {
+                const alternates = (revision.alternates ?? []).filter(alternate => alternate.ready);
                 if (alternates.length) {
                     const group = element("span", "h3cm-alternates");
                     for (const alternate of alternates) {
@@ -1022,45 +1052,63 @@ function mount(node) {
                         }
                         group.append(alt);
                     }
-                    path.append(group);
+                    cell.append(group);
                 }
-            });
-            const slot = branch.attribution_slot;
-            if ((slot?.candidates?.length || slot?.blocked_candidates?.length)
-                    && tip && sceneVisible(slot.scene)) {
-                path.append(element("span", "h3cm-arrow", "→"));
-                const count = slot.candidates.length;
-                const empty = button(
-                    `S${slot.scene} · reuse saved clip`,
-                    `${count} independent saved candidate${count === 1 ? "" : "s"} can be attributed here`,
-                    () => selectAttribution(tip, slot),
-                    "h3cm-revision h3cm-revision-empty",
-                );
-                empty.append(element(
-                    "small", "", count ? `${count} available candidate${count === 1 ? "" : "s"}`
-                        : "Check saved context requirements",
-                ));
-                if (state.attribution &&
-                        state.attribution.parent.revision === tip.revision) {
-                    empty.classList.add("h3cm-revision-empty-selected");
-                }
-                path.append(empty);
             }
-            row.append(header, path);
-            container.append(row);
+            for (const {row:branch} of item.ends) {
+                const end = element("div", "h3cm-branch");
+                const header = element("div", "h3cm-branch-head");
+                const tip = original ? branch.revisions.at(-1) : branch.entries.at(-1);
+                const label = original
+                    ? branch.active ? `Saved path · ${workingBranchName()}` : branch.label
+                    : `${branch.history_known ? "Branch" : "Take"} ${String(tip.revision).slice(0, 8)}`;
+                header.append(element("span", branch.active ? "h3cm-branch-active" : "", label));
+                const selected = original ? state.previewTip?.scene === tip.scene && state.previewTip?.revision === tip.revision
+                    : state.variantKey === tip.metadata_path;
+                if (selected) end.classList.add("h3cm-branch-selected");
+                if (original || tip.record) {
+                    const choose = () => original ? selectOutputBranch(tip) : selectVariant(tip.record);
+                    header.role = "button"; header.tabIndex = 0;
+                    header.title = original ? `Select this whole branch (ends at scene ${tip.scene}); set start/end downstream`
+                        : "Preview this saved processing branch tip; output stays unchanged";
+                    header.addEventListener("click", choose);
+                    header.addEventListener("keydown", event => {
+                        if (!["Enter", " "].includes(event.key)) return;
+                        event.preventDefault(); choose();
+                    });
+                }
+                if (original && branch.active && inPlan) header.append(element("span", "h3cm-plan-marker", marker.label));
+                if (!original && branch.latest) header.append(element("span", "h3cm-latest-label", "Latest save"));
+                end.append(header);
+                if (!original) {
+                    const description = branch.history_known
+                        ? `Scenes ${branch.entries[0].scene}–${tip.scene} · ${branch.entries.length - branch.missing_count} saved`
+                            + (branch.missing_count ? ` · ${branch.missing_count} missing — history incomplete` : "")
+                        : "Branch history unavailable — standalone saved take";
+                    end.append(element("small", "h3cm-muted", `${branch.profile} · ${description}`));
+                }
+                const slot = branch.attribution_slot;
+                if (original && (slot?.candidates?.length || slot?.blocked_candidates?.length) && sceneVisible(slot.scene)) {
+                    const count = slot.candidates.length;
+                    const empty = button(`S${slot.scene} · reuse saved clip`,
+                        `${count} independent saved candidate${count === 1 ? "" : "s"} can be attributed here`,
+                        () => selectAttribution(tip, slot), "h3cm-revision h3cm-revision-empty");
+                    empty.append(element("small", "", count ? `${count} available candidate${count === 1 ? "" : "s"}` : "Check saved context requirements"));
+                    if (state.attribution?.parent.revision === tip.revision) empty.classList.add("h3cm-revision-empty-selected");
+                    end.append(empty);
+                }
+                cell.append(end);
+            }
+            graph.append(cell);
         }
+        scroll.append(graph); container.append(scroll);
+        state.graphCleanups.push(mountCheckpointGraphEdges(graph, model, cards, output, document, window));
     }
 
-    function variantCard(record, entry = null) {
+    function variantCard(record) {
         const card = button(`S${record.scene} · ${record.revision.slice(0, 8)}`,
             `${record.profile_path}\nCreated: ${localTime(record.created_at)}\n${checkpointVariantLatentStatus(record)}`,
             () => selectVariant(record), "h3cm-revision h3cm-processing-variant");
-        if (entry?.shared_count > 1) {
-            card.classList.add("h3cm-revision-shared");
-            card.dataset.sharedKey = entry.shared_key;
-            card.style.setProperty("--h3cm-shared-color", sharedColor(entry.shared_key));
-            card.append(element("span", "h3cm-shared-label", `shared ×${entry.shared_count}`));
-        }
         card.append(element("small", "", `Created: ${localTime(record.created_at)}`));
         card.append(element("small", "", record.profile));
         card.append(element("small", "", `${record.width || "?"}×${record.height || "?"} · ${record.ready ? "saved" : "missing artifacts"}`));
@@ -1072,54 +1120,10 @@ function mount(node) {
         return card;
     }
 
-    function renderVariantBranchRows(container, rows) {
-        for (const branch of rows) {
-            const row = element("div", "h3cm-branch");
-            const header = element("div", "h3cm-branch-head h3cm-processing-head");
-            const tip = branch.entries.at(-1);
-            header.append(element("span", "h3cm-branch-active",
-                `${branch.history_known ? "Branch" : "Take"} ${String(tip.revision).slice(0, 8)}`));
-            if (branch.latest) header.append(element("span", "h3cm-latest-label", "Latest save"));
-            header.append(element("span", "h3cm-muted", `Last saved: ${localTime(branch.created_at)}`));
-            const description = branch.history_known
-                ? `Scenes ${branch.entries[0].scene}–${tip.scene} · ${branch.entries.length - branch.missing_count} saved`
-                    + (branch.missing_count ? ` · ${branch.missing_count} missing — history incomplete` : "")
-                : "Branch history unavailable — standalone saved take";
-            const source = element("div", "h3cm-muted h3cm-processing-source", `${branch.profile} · ${description}`);
-            source.title = branch.profile_path;
-            // Heading clicks preview the saved tip only; they never activate
-            // an original branch or alter the workflow's output selection.
-            if (tip.record) {
-                header.role = "button";
-                header.tabIndex = 0;
-                header.title = "Preview this saved processing branch tip; output stays unchanged";
-                header.addEventListener("click", () => selectVariant(tip.record));
-                header.addEventListener("keydown", event => {
-                    if (!["Enter", " "].includes(event.key)) return;
-                    event.preventDefault();
-                    selectVariant(tip.record);
-                });
-            }
-            if (state.variantKey === tip.metadata_path) row.classList.add("h3cm-branch-selected");
-            const path = element("div", "h3cm-branch-path");
-            branch.entries.forEach((entry, index) => {
-                if (index) path.append(element("span", "h3cm-arrow", "→"));
-                if (entry.record) {
-                    path.append(variantCard(entry.record, entry));
-                } else {
-                    const gap = element("div", "h3cm-revision h3cm-revision-empty",
-                        `S${entry.scene} · ${String(entry.revision).slice(0, 8)}`);
-                    gap.append(element("small", "", "Missing saved take"));
-                    gap.title = "This exact take is missing or its identity does not match. No other version is substituted.";
-                    path.append(gap);
-                }
-            });
-            row.append(header, source, path);
-            container.append(row);
-        }
-    }
-
     function renderBranches() {
+        for (const cleanup of state.graphCleanups) cleanup();
+        state.graphCleanups = [];
+        renderPlanContext();
         branches.replaceChildren();
         const ranges = chapterRanges();
         if (!ranges.length) {
@@ -1479,12 +1483,9 @@ function mount(node) {
         try {
             const branchList = await jsonRequest(`/minimax_h3_context_loop/working-branches?${new URLSearchParams({run_name:state.runName})}`);
             if (!current()) return;
-            workingSelect.replaceChildren();
-            for (const item of branchList.branches ?? []) {
-                const option = element("option", "", `${item.name}${item.id === branchList.default_branch ? " · project default" : ""}`);
-                option.value = item.id; workingSelect.append(option);
-            }
-            workingSelect.value = selectedWorkingBranch();
+            state.workingBranches = branchList.branches ?? [];
+            state.defaultWorkingBranch = branchList.default_branch;
+            renderPlanContext();
             const query = new URLSearchParams({
                 run_name:state.runName,
                 branch_id:selectedWorkingBranch(),
@@ -2116,7 +2117,20 @@ function mount(node) {
         return result;
     };
     const removed = node.onRemoved;
+    const refreshPlanMarker = () => {
+        const signature = JSON.stringify(currentPlanMarker());
+        if (signature === state.planMarkerSignature || state.busy) return;
+        state.planMarkerSignature = signature;
+        // Read-only refresh: no selection serialization or server mutation.
+        renderBranches();
+    };
+    node._h3CheckpointManagerPlanMarkerRefresh = refreshPlanMarker;
+    const markerTimer = window.setInterval?.(refreshPlanMarker, 500);
     node.onRemoved = function () {
+        if (markerTimer != null) window.clearInterval(markerTimer);
+        for (const cleanup of state.graphCleanups) cleanup();
+        state.graphCleanups = [];
+        delete this._h3CheckpointManagerPlanMarkerRefresh;
         return removed?.apply(this, arguments);
     };
     void refreshRuns();
