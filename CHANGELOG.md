@@ -5,6 +5,12 @@ this file records the detailed changes.
 
 ## Unreleased — Reference reconstruction and Windows save durability
 
+- Allow H3 Chain Assemble to deliver a verified partial upscale (for example,
+  scene 1 of 2) without requiring the unfinished tail. Preserve resume
+  manifests, chapter numbering/audio offsets and generated audio sidecars;
+  label partial deliveries with completed/planned counts. Still reject
+  noncontiguous scenes, inconsistent metadata and missing or changed files.
+
 - PR #48 integration refreshes browser helper cache tokens for the current
   package, including the new completion identity and requeue coordinator.
 
