@@ -215,9 +215,29 @@ The output row flags this. Choose the intended branch heading and click
 can lead to multiple branches, so reopening a workflow never guesses which
 descendant you intended or silently switches an existing snapshot.
 
-**Make branch active (project)**, **Roll active branch back (project)** and
-**Load selected branch** remain project-wide actions. Local selection neither
-restores connected Plan settings nor arms generation/resume. It does not require
+**Assign to working branch**, **Roll working branch back** and
+**Load selected branch** write the working branch being browsed in the manager.
+That can differ from the branch being edited in Plan Studio. To assign a saved
+path to the connected Plan's branch instead, select its final scene and use
+**Assign to Plan: <branch name>**. This also works when the path is already
+active in another working branch. Only the selected chapter's pointers change;
+saved clips, other working branches and the manager's output pin are kept.
+
+For example, after rerendering scene 1 of a seven-scene branch, the old path
+remains recoverable: select its scene 7 and assign it to the Plan branch. The
+isolated rerender then becomes deletable if no other saved dependency pins it.
+An ordinary rerender is not a picture-only ALT; that requires enabling the
+alternate-take control before queuing.
+
+If Plan Studio cannot switch because saving the current branch fails, its
+**Open saved <branch name>** recovery action switches without overwriting the
+saved branch. Local prompts/settings and pending cut edits are kept in browser
+recovery; return to the branch and use **Restore local draft** to retrieve them.
+An uncertain in-flight write must still be reconciled using **Retry pending
+operation** first. Recovery refuses to discard edits if browser storage fails.
+
+Local output selection neither restores connected Plan settings nor arms
+generation/resume. It does not require
 project ownership; downstream nodes retain their own write protections. Use the
 manager's manifest output for the experiment, not Manifest Load (which reads the
 project's active checkpoints).

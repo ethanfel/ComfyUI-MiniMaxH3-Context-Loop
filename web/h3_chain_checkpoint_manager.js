@@ -1,6 +1,6 @@
 import {app} from "/scripts/app.js";
 import {api} from "/scripts/api.js";
-import {branchRequestPath, branchSelectionJson} from "./h3_working_branches.mjs?v=0.7.11";
+import {branchRequestPath, branchSelectionJson} from "./h3_working_branches.mjs?v=0.7.18";
 import {checkpointForkGraph, checkpointGraphKey, checkpointSaveOrder, checkpointGraphOutput, mountCheckpointGraphEdges} from "./h3_checkpoint_graph.mjs?v=0.7.16";
 import {
     CHECKPOINT_STAGES,
@@ -163,9 +163,9 @@ async function jsonRequest(path, options = {}) {
     return payload;
 }
 
-async function mutationRequest(node, runName, path, options = {}) {
+async function mutationRequest(node, runName, path, options = {}, branch = node.properties?.h3_working_branch_id ?? "main") {
     return await jsonRequest(
-        branchRequestPath(path, node.properties?.h3_working_branch_id ?? "main"),
+        branchRequestPath(path, branch),
         await projectMutationOptions(node, runName, options),
     );
 }
@@ -443,13 +443,15 @@ function mount(node) {
     const deletionActions = element("div", "h3cm-delete-actions");
     let retireButtons = [];
     const status = element("div", "h3cm-status");
-    const load = button("Load selected branch", "Project-wide: activate this chapter lineage and restore the connected Plan for generation", () => void loadSelected());
-    const activate = button("Make branch active (project)", "Project-wide: promote this chapter for all workflows using this Run", () => void activateSelected());
+    const load = button("Load selected branch", "Assign this chapter lineage to the branch being browsed and load it into the connected Plan", () => void loadSelected());
+    const activate = button("Make branch active", "Assign this chapter lineage to the branch being browsed; other working branches are unchanged", () => void activateSelected());
+    const assignPlan = button("Assign to Plan Studio branch", "Assign this saved path to the connected Plan's branch, even when it is already active in the branch being browsed", () => void assignSelectedToPlan());
     const remove = button("Delete selected revision", "Delete an inactive leaf or roll back the active branch tip after confirmation", () => void deleteSelected(), "h3cm-delete-button");
     load.disabled = true;
     activate.disabled = true;
     remove.disabled = true;
-    deletionActions.append(load, activate, status, remove);
+    assignPlan.disabled = true;
+    deletionActions.append(load, activate, assignPlan, status, remove);
     deletion.append(deletionTitle, deletionBody, deletionActions);
     root.append(head, runRow, workingSelect, outputRow, stageTabs, stageNote, chapterTabs, scenes, main, deletion);
 
@@ -714,6 +716,7 @@ function mount(node) {
         deleteRun.disabled = state.busy || !state.runName;
         load.disabled = state.busy || Boolean(state.attribution) || !canLoadSelected();
         activate.disabled = state.busy || Boolean(state.attribution) || !canActivateSelected();
+        assignPlan.disabled = state.busy || Boolean(state.attribution) || !canAssignSelectedToPlan();
         remove.disabled = state.busy || Boolean(state.attribution) || !state.deletion?.allowed;
         for (const control of retireButtons) control.disabled = state.busy || Boolean(state.attribution);
         if (state.attributionButton) {
@@ -739,6 +742,13 @@ function mount(node) {
 
     function canActivateSelected() {
         return ["activate", "rollback"].includes(selectedActivationMode());
+    }
+
+    function canAssignSelectedToPlan() {
+        const marker = currentPlanMarker();
+        // "Active" belongs to the manager's browsing namespace, not necessarily
+        // to the Plan being edited. Never use that flag to block cross-branch assignment.
+        return Boolean(marker && marker.run === state.runName && canLoadSelected());
     }
 
     function selectedActivationMode() {
@@ -1356,13 +1366,17 @@ function mount(node) {
             activate.textContent = rollsBack
                 ? "Roll working branch back" : "Assign to working branch";
             activate.title = rollsBack
-                ? "Project-wide: retire later active scene pointers in this chapter without deleting saved revisions"
-                : "Project-wide: promote this chapter for all workflows using this Run";
+                ? "Clear later active scene pointers in this chapter of the branch being browsed; saved clips are kept"
+                : "Assign this chapter to the branch being browsed; other working branches are unchanged";
             deletionTitle.textContent = checkpointDeletionTitle(state.deletion);
             load.disabled = state.busy || !canLoadSelected();
             activate.disabled = state.busy || !canActivateSelected();
         }
         remove.disabled = state.busy || !state.deletion?.allowed;
+        const planMarker = currentPlanMarker();
+        assignPlan.textContent = planMarker
+            ? `Assign to Plan: ${workingBranchName(planMarker.branch)}` : "Assign to Plan branch";
+        assignPlan.disabled = state.busy || Boolean(state.attribution) || !canAssignSelectedToPlan();
         if (state.attribution) {
             load.disabled = true;
             activate.disabled = true;
@@ -1741,10 +1755,10 @@ function mount(node) {
         return plan;
     }
 
-    function applyActivatedRevisions(planNode, revisions) {
+    function applyActivatedRevisions(planNode, revisions, targetBranch = selectedWorkingBranch()) {
         const target = widget(planNode, "plan_json");
         if (!target) return false;
-        if ((parsePlanJson(String(target.value ?? ""))._branch_id ?? "main") !== selectedWorkingBranch()) return false;
+        if ((parsePlanJson(String(target.value ?? ""))._branch_id ?? "main") !== targetBranch) return false;
         const plan = applyCheckpointRevisionSet(
             parsePlanJson(String(target.value ?? "")), revisions, {
                 useEffectivePrompts: true,
@@ -1955,6 +1969,40 @@ function mount(node) {
         } finally {
             setBusy(false);
         }
+    }
+
+    async function assignSelectedToPlan() {
+        if (state.busy || state.attribution || !canAssignSelectedToPlan()) return;
+        const marker = currentPlanMarker(), planNode = upstreamPlanNode(node) ?? upstreamPlanNode(node, true);
+        const record = state.selected, scope = selectedChapterRange();
+        const lineage = selectedLineage();
+        const targetName = workingBranchName(marker.branch);
+        if (!window.confirm(
+            `Assign ${scope.title} through scene ${record.scene} to Plan branch "${targetName}" (${marker.branch.slice(0, 8)})?\n\n` +
+            `This replaces that branch's active pointers in scenes ${scope.start}–${scope.end} with the selected saved path, clearing later pointers in this chapter. ` +
+            "The connected Plan's scene settings will be restored. Other branches, other chapters, the manager's output selection, and all saved clips are kept."
+        )) return;
+        setBusy(true, `Assigning saved path to ${targetName}…`);
+        try {
+            const payload = await mutationRequest(node, marker.run,
+                "/minimax_h3_context_loop/checkpoint-revisions/restore", {
+                    method:"POST", headers:{"Content-Type":"application/json"},
+                    body:JSON.stringify({run_name:marker.run, branch_id:marker.branch,
+                        resume_scene:Number(record.scene) + 1, revisions:lineage, activate_only:true,
+                        scope_start_scene:scope.start, scope_end_scene:scope.end}),
+                }, marker.branch);
+            const current = currentPlanMarker();
+            const planUpdated = Boolean(current?.run === marker.run && current.branch === marker.branch
+                && planNode && (upstreamPlanNode(node) ?? upstreamPlanNode(node, true)) === planNode
+                && applyActivatedRevisions(planNode, payload.restored ?? [], marker.branch));
+            await refreshCheckpoints();
+            status.className = "h3cm-status";
+            status.textContent = `Saved path through scene ${record.scene} assigned to ${targetName}. All saved clips were kept. ` +
+                (planUpdated ? "Connected Plan scene settings restored." : "Plan view changed; its widgets were not modified.");
+        } catch (error) {
+            status.className = "h3cm-status h3cm-error";
+            status.textContent = error.message;
+        } finally { setBusy(false); }
     }
 
     async function retireChapterSnapshot(reference) {

@@ -11,6 +11,32 @@ const memoryStorage = () => {
     const values = new Map();
     return {getItem:key=>values.get(key) ?? null, setItem:(key,value)=>values.set(key,value), removeItem:key=>values.delete(key)};
 };
+{
+    // Exercise the real Studio serialization, not only the controller fixture.
+    const source=fs.readFileSync(new URL('../web/h3_chain_plan_studio.js',import.meta.url),'utf8');
+    const capture=source.match(/^        captureRecovery:\(\) => \{[^]*?^        },$/m)[0];
+    const restore=source.match(/^        restoreRecovery:async recovery => \{[^]*?^        },$/m)[0];
+    const normalize=source.match(/^    function normalizedEditorial\([^]*?^    }$/m)[0];
+    const value={revision:'f'.repeat(32),placements:[],locked_scene_ids:[],replacements:[],
+        trims:[{scene_id:'one',out_frame:81}],subtitles:{mode:'off',asset_id:'',offset_seconds:0},
+        alternate_draft:{enabled:true,scene:1,scene_id:'one',base_revision:'b'.repeat(32),
+            prompt:'alternate words',seed:'99',media_mode:'picture_only'}};
+    const state={plan:{shots:[{id:'one'}]},editorial:structuredClone(value),editorialBaseline:{base:'old'},
+        editorialStored:{revision:'f'.repeat(32)},editorialPending:{},editorialReady:true,
+        editorialEditEpoch:4,history:{pendingDraft:{sceneId:'one',prompt:'local words'}}};
+    let synced=0;
+    const context=vm.createContext({state,structuredClone,MAX_SEED:2n**64n-1n,MAX_H3_FRAMES:1000,
+        safeShotId:(id,fallback)=>id||fallback,runName:()=> 'demo',renderShell(){},syncAlternateTakeWidget(){synced++;}});
+    vm.runInContext(`${normalize}\nvar recoveryCallbacks = {${capture}\n${restore}};`,context);
+    const draft=context.recoveryCallbacks.captureRecovery();
+    state.editorial={};state.editorialPending=null;state.history.pendingDraft=null;
+    await context.recoveryCallbacks.restoreRecovery(draft);
+    assert.deepEqual(JSON.parse(JSON.stringify(state.editorial)),value);
+    assert.deepEqual(state.history.pendingDraft,{sceneId:'one',prompt:'local words'});
+    assert.equal(state.editorialEditEpoch,5);
+    assert.match(state.editorialSaveError,/recovered/);
+    assert.equal(synced,1,'armed ALT must be restored into the serialized queue widget');
+}
 function fixture({live = authoring("18446744073709551614"), storage = memoryStorage(), binding = null} = {}) {
     const events = [], receipts = new Map();
     const disk = new Map([['main',{id:'main',revision:'1',authoring:authoring("18446744073709551614")}],
@@ -47,6 +73,70 @@ async function delayedLoad(t) {
     return {ready,finish:()=>finish(),original};
 }
 {
+    // A stale authoring/cut snapshot must not trap the user on a named branch.
+    const t=fixture(); await t.controller.refresh('demo');
+    await t.controller.switchTo(id);
+    t.setLive(authoring('unsaved scene-one edit'));
+    const cut={editorial:{trims:[{scene:1,out_frame:81}]},history:{sceneId:'one',prompt:'local prompt'}};
+    t.controller.captureRecovery=()=>structuredClone(cut);
+    t.controller.flush=async()=>{throw Error('Editorial conflict');};
+    await t.controller.switchTo('main');
+    assert.equal(t.controller.selected,id);
+    assert.equal(t.controller.switchTarget,'main');
+    assert.match(t.controller.error,/Editorial conflict/);
+    const before=JSON.stringify([...t.disk]);
+    t.events.length=0;
+    t.controller.settle=async()=>t.events.push('settle');
+    await t.controller.switchTo('main',{save:false});
+    assert.equal(t.controller.selected,'main');
+    assert.equal(t.controller.switchTarget,null);
+    assert.deepEqual(t.events,['settle','load','apply:main']);
+    assert.equal(JSON.stringify([...t.disk]),before,'navigation must not rewrite either saved branch');
+    const draft=t.drafts.read('demo',id);
+    assert.equal(JSON.parse(draft.authoring.plan_json).shots[0].seed,'unsaved scene-one edit');
+    assert.deepEqual(draft.recovery,cut,'pending cut/history edits must survive settling');
+    t.controller.captureRecovery=()=>null;
+    await t.controller.switchTo(id,{save:false});
+    assert.ok(t.controller.draftRecovery);
+    let restored;
+    t.controller.restoreRecovery=async value=>restored=value;
+    await t.controller.restoreDraft();
+    assert.deepEqual(restored,cut);
+    assert.equal(JSON.parse(t.getLive().plan_json).shots[0].seed,'unsaved scene-one edit');
+    assert.equal(t.drafts.read('demo',id).recovery,null,'consumed cut recovery must not reappear as unsaved');
+}
+{
+    const t=fixture({live:authoring('stale widgets')}); await t.controller.refresh('demo');
+    assert.ok(t.controller.conflict);
+    t.drafts.save('demo','main',{authoring:authoring('older crash draft'),revision:'1'});
+    t.controller.readDraft();
+    await t.controller.switchTo(id,{save:false});
+    assert.equal(t.controller.selected,id,'explicit recovery switch bypasses only the failed save');
+    const draft=t.drafts.read('demo','main');
+    assert.equal(JSON.parse(draft.authoring.plan_json).shots[0].seed,'stale widgets');
+    assert.equal(JSON.parse(draft.older[0].authoring.plan_json).shots[0].seed,'older crash draft');
+}
+{
+    const t=fixture(); await t.controller.refresh('demo');
+    t.controller.pending={action:'save'};
+    await t.controller.switchTo(id,{save:false});
+    assert.equal(t.controller.selected,'main'); assert.match(t.controller.error,/Retry pending/);
+    t.controller.pending=null;
+    t.storage.setItem=()=>{throw Error('quota exceeded');};
+    let settled=false;
+    t.controller.settle=async()=>settled=true;
+    await t.controller.switchTo(id,{save:false});
+    assert.equal(t.controller.selected,'main'); assert.match(t.controller.error,/quota/);
+    assert.equal(settled,false,'storage failure must not discard pending edits');
+}
+{
+    const t=fixture(); await t.controller.refresh('demo');
+    const load=await delayedLoad(t); const switching=t.controller.switchTo(id,{save:false}); await load.ready;
+    t.controller.isCurrent=()=>false;
+    load.finish(); await switching;
+    assert.equal(t.controller.selected,'main'); assert.match(t.controller.error,/Project or branch changed/);
+}
+{
     const t=fixture(); await t.controller.refresh('demo');
     const load=await delayedLoad(t); const switching=t.controller.switchTo(id); await load.ready;
     // The run widget/connection can change before the paused 500 ms poll
@@ -72,6 +162,17 @@ for(const binding of [null,{run_name:'demo',branch_id:'main',revision:'old'}]) {
     assert.notEqual(t.controller.selected,'main');
     assert.equal(JSON.parse(t.disk.get(t.controller.selected).authoring.plan_json).shots[0].seed,'stale');
     assert.equal(JSON.parse(t.disk.get('main').authoring.plan_json).shots[0].seed,'18446744073709551614');
+}
+{
+    const t=fixture(); await t.controller.refresh('demo');
+    let epoch=0, cut=null;
+    t.controller.editStamp=()=>epoch;
+    t.controller.captureRecovery=()=>cut;
+    const load=await delayedLoad(t); const switching=t.controller.switchTo(id,{save:false}); await load.ready;
+    epoch++; cut={editorial:{trims:[{scene:1,out_frame:81}]}};
+    load.finish(); await switching;
+    assert.equal(t.controller.selected,'main'); assert.match(t.controller.error,/Edits arrived/);
+    assert.deepEqual(t.drafts.read('demo','main').recovery,cut,'cut edits arriving during navigation must be kept');
 }
 {
     const t=fixture({live:authoring('intentional edit'),binding:{run_name:'demo',branch_id:'main',revision:'1'}});

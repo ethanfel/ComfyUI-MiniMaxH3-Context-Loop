@@ -1,6 +1,6 @@
 import {app} from "/scripts/app.js";
 import {api} from "/scripts/api.js";
-import {StudioBranches, BranchDrafts, branchOperationId, branchWidgetTransaction, branchRequestPath, workingBranchId} from "./h3_working_branches.mjs?v=0.7.11";
+import {StudioBranches, BranchDrafts, branchOperationId, branchWidgetTransaction, branchRequestPath, workingBranchId} from "./h3_working_branches.mjs?v=0.7.18";
 import {
     CONTINUATION_MODES,
     FPS,
@@ -793,9 +793,37 @@ function mount(node) {
         binding:node.properties[branchBindingProperty] ?? null,
         rememberBinding:value => { node.properties[branchBindingProperty] = value; dirty(); },
         drafts:branchDrafts,
+        editStamp:() => state.editorialEditEpoch ?? 0,
+        captureRecovery:() => {
+            const editorial = state.editorialPending || state.editorialSavePromise || state.editorialSaveError
+                ? {value:structuredClone(state.editorial), baseline:structuredClone(state.editorialBaseline),
+                    stored:structuredClone(state.editorialStored), ready:state.editorialReady} : null;
+            const history = structuredClone(state.history.pendingDraft);
+            return editorial || history ? {editorial, history} : null;
+        },
+        restoreRecovery:async recovery => {
+            if (!recovery) return;
+            if (recovery.editorial) {
+                state.editorial = normalizedEditorial(recovery.editorial.value);
+                state.editorialBaseline = recovery.editorial.baseline;
+                state.editorialStored = recovery.editorial.stored;
+                state.editorialRun = runName();
+                state.editorialReady = recovery.editorial.ready;
+                state.editorialEditEpoch = (state.editorialEditEpoch ?? 0) + 1;
+                // Don't let the in-flight saved-cut read overwrite this recovered
+                // draft, and don't publish it until the user explicitly retries.
+                state.editorialSaveError = "Local cut edits recovered; use Retry save or Reload saved cut.";
+                syncAlternateTakeWidget();
+            }
+            if (recovery.history) state.history.pendingDraft = recovery.history;
+            renderShell();
+        },
         settle:async () => {
             // Reload/recovery must not publish an unsent stale editorial edit.
             if (state.editorialTimer != null) clearTimeout(state.editorialTimer);
+            if (state.editorialPending) {
+                state.editorialSaveError = "Pending cut edits kept locally; use Retry save if you stay on this branch.";
+            }
             state.editorialTimer = null; state.editorialPending = null;
             if (state.history.saveTimer != null) clearTimeout(state.history.saveTimer);
             state.history.saveTimer = null; state.history.pendingDraft = null;
@@ -870,6 +898,17 @@ function mount(node) {
         });
         recover.disabled = !branchDrafts || !branches.ready;
         bar.append(reload, recover);
+        if (branches.switchTarget && branches.switchTarget !== currentBranch()) {
+            const target = branches.switchTarget;
+            const name = records.find(item => item.id === target)?.name ?? target.slice(0, 8);
+            const openSaved = button(`Open saved ${name}`, "Switch without publishing the current branch's edits; keep prompts, settings and pending cut edits in browser recovery", () => {
+                if (confirm(`Open branch "${name}" using its saved settings?\n\nCurrent local prompts, settings and pending edits will be kept in browser recovery, not written over the saved branch. Return to this branch and use Restore local draft to recover them. No generated clips are deleted.`)) {
+                    void branches.switchTo(target, {save:false});
+                }
+            });
+            openSaved.disabled = branches.busy || !branches.ready || Boolean(branches.pending);
+            bar.append(openSaved);
+        }
         bar.append(button("Refresh branches", "Recheck branch availability without overwriting local settings", () => {
             void branches.refresh(runName()).catch(error => { branches.error = error.message; renderShell(); });
         }));
