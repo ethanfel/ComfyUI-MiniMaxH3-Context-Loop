@@ -475,6 +475,12 @@ const routeStart = reviewSource.indexOf("function routeReview(data)");
 const routeSource = reviewSource.slice(routeStart, reviewSource.indexOf("function routeReviewResolved", routeStart));
 assert.match(routeSource, /data\?\.durable !== true[\s\S]*Pending token/,
     "expected unrelated durable inventory must not warn on every poll");
+assert.match(routeSource, /deliverReview\(fallback, data, \{verifyRun: false\}\)/,
+    "reviewFallbackNode already applied its own run_name/id/singleton " +
+    "matching before returning a node; deliverReview must not re-reject " +
+    "that same node via a second strict run_name check, or a Review Gate " +
+    "with a stale/reset Plan run_name widget can never route at all even " +
+    "when it is the only gate in the graph");
 const reviewHandlerStart = reviewSource.indexOf("node._h3ReviewHandler =");
 const reviewHandlerSource = reviewSource.slice(reviewHandlerStart);
 assert.match(reviewHandlerSource, /const candidateBatchComplete = Boolean\(current\?\.candidate_generation_complete\) \|\|[\s\S]*current\.candidates\.length >=[\s\S]*candidate_count/);

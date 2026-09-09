@@ -739,7 +739,7 @@ function reviewRunName(planNode) {
     return String(widgetByName(planNode, "run_name")?.value ?? "").trim();
 }
 
-function deliverReview(node, data) {
+function deliverReview(node, data, {verifyRun = true} = {}) {
     if (!node) return false;
     if (nodeType(node) !== NODE_NAME) {
         console.warn(
@@ -749,7 +749,13 @@ function deliverReview(node, data) {
         );
         return false;
     }
-    const expectedRun = String(data?.run_name ?? "").trim();
+    // reviewFallbackNode() already applied its own run_name/id matching (or
+    // explicitly trusted a lone candidate gate) before returning a node; a
+    // second strict re-check here would just reject that same node again
+    // whenever the Plan's run_name widget has since changed or reset (e.g.
+    // a node was recreated, or the widget shows a stale/default value) even
+    // though it is demonstrably the only Review Gate in the graph.
+    const expectedRun = verifyRun ? String(data?.run_name ?? "").trim() : "";
     if (expectedRun) {
         const planNode = findUpstreamNode(node, PLAN_NAMES);
         const actualRun = reviewRunName(planNode);
@@ -800,7 +806,7 @@ function routeReview(data) {
     const exact = findNodeByQualifiedId(data?.node_id);
     if (deliverReview(exact, data)) return true;
     const fallback = reviewFallbackNode(data);
-    if (deliverReview(fallback, data)) {
+    if (deliverReview(fallback, data, {verifyRun: false})) {
         console.warn(
             `[H3 Chain Review] Display node ${data?.node_id} was not directly ` +
             "resolvable; routed the pending review to the only matching gate.",
