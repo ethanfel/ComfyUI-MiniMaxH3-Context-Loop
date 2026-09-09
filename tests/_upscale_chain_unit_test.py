@@ -7,6 +7,7 @@ import pathlib
 import os
 import sys
 import tempfile
+from unittest import TestCase
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -72,6 +73,90 @@ def legacy_cache_fixture(chain, metadata, version="h3_reference_cache_v2"):
     legacy["tensors_sha256"] = chain._file_sha256(str(path))
     chain._atomic_json(chain._absolute_output_path(legacy["metadata"]), legacy)
     return legacy
+
+
+def check_partial_assembly(chain, upscale, partial):
+    """Scene 1/2 is deliverable, without turning its resume manifest complete."""
+    case = TestCase()
+    before = chain._json_document(partial)
+    partial_path = pathlib.Path(upscale._profile_paths(
+        partial["run_name"], partial["profile"], 1,
+        partial["source_manifest"])["partial"])
+    saved_partial = partial_path.read_bytes()
+    assert partial["clip_count"] == 2 and partial["completed_clip_count"] == 1
+    assert upscale._validate_upscale_manifest(partial) == partial["segments"]
+    converted = upscale._assembly_manifest(partial, partial["segments"])
+    assert converted["format"] == "h3_chain_partial_manifest_v3"
+    assert converted["clip_count"] == 1 and converted["planned_clip_count"] == 2
+    assert converted["last_completed_clip"] == 1
+    assert converted["upscale"]["complete"] is False
+
+    result = chain.MiniMaxH3ChainAssemble().assemble(
+        partial, "none", "partial", 96)
+    output = pathlib.Path(result["result"][0])
+    assert output.is_file() and output.stat().st_size > 0
+    assert "partial upscale 1/2 scenes" in result["ui"]["text"][0]
+    # Even a silent partial keeps the generated sound for later delivery.
+    assert output.with_suffix(".generated.wav").is_file()
+    record = json.loads(output.with_suffix(".json").read_text(encoding="utf-8"))
+    assert record["complete"] is False
+    assert (record["completed_clip_count"], record["planned_clip_count"]) == (1, 2)
+    assert (record["scene_start"], record["scene_end"]) == (1, 1)
+    assert record["frame_count"] == partial["total_delivered_frames"]
+    assert partial == before and partial_path.read_bytes() == saved_partial
+
+    # Accept unfinished tails, never holes, forged completion, or damaged saves.
+    for update, message in (
+            ({"segments": [], "total_delivered_frames": 0}, "contains 0/2"),
+            ({"format": "h3_chain_upscale_manifest_v1"}, "contains 1/2"),
+            ({"format": "h3_chain_upscale_unknown"}, "complete or partial"),
+            ({"completed_clip_count": 2}, "completed scene count"),
+            ({"planned_clip_count": 3}, "planned scene count"),
+            ({"clip_count": 3, "planned_clip_count": 3}, "selected source"),
+            ({"last_completed_clip": 2}, "last completed"),
+            ({"scene_end": 2}, "scene bounds"),
+            ({"total_delivered_frames": 999}, "delivered-frame total")):
+        with case.assertRaisesRegex(ValueError, message):
+            upscale._validate_upscale_manifest({**partial, **update})
+    for update, error, message in (
+            ({"index": 2}, ValueError, "wrong scene index"),
+            ({"segment": "missing-upscale.mp4"}, FileNotFoundError, "missing"),
+            ({"checkpoint": "missing-upscale.safetensors"}, FileNotFoundError, "missing"),
+            ({"segment_sha256": "0" * 64}, ValueError, "SHA-256"),
+            ({"checkpoint_sha256": "0" * 64}, ValueError, "SHA-256")):
+        broken = {**partial, "segments": [{**partial["segments"][0], **update}]}
+        with case.assertRaisesRegex(error, message):
+            upscale._validate_upscale_manifest(broken)
+
+    # Reuse the saved media to exercise a chapter at global scenes 8-9.
+    # No source/processed files are relabelled or rewritten on disk.
+    chapter = chain._json_document(partial)
+    source = chapter["source_manifest"]
+    for index, segment in enumerate(source["segments"], start=8):
+        segment["index"] = index
+    source.update(
+        scene_start=8, scene_end=9, source_scene_count=13,
+        chapter={"number": 2, "id": "second", "start_scene": 8,
+                 "end_scene": 9, "planned_end_scene": 9, "complete": True,
+                 "source_start_frame": 5})
+    chapter["segments"][0]["index"] = 8
+    chapter.update(scene_start=8, scene_end=8, last_completed_clip=8)
+    converted = upscale._assembly_manifest(
+        chapter, upscale._validate_upscale_manifest(chapter))
+    assert converted["format"] == chain.CHAPTER_MANIFEST_FORMAT
+    assert (converted["scene_start"], converted["scene_end"]) == (8, 8)
+    assert converted["chapter"]["end_scene"] == 8
+    assert converted["chapter"]["planned_end_scene"] == 9
+    assert converted["chapter"]["complete"] is False
+    assert converted["chapter"]["source_start_frame"] == 5
+    assert converted["source_scene_count"] == 13
+    assert source["chapter"]["end_scene"] == 9 and source["chapter"]["complete"]
+    chain._validate_manifest(converted)
+    result = chain.MiniMaxH3ChainAssemble().assemble(
+        chapter, "generated", "partial_chapter", 96)
+    assert pathlib.Path(result["result"][0]).is_file()
+    assert "/chapters/02_second/" in result["result"][0].replace("\\", "/")
+    assert partial == before and partial_path.read_bytes() == saved_partial
 
 
 def main():
@@ -883,6 +968,7 @@ def main():
         partial = upscale.MiniMaxH3ChainUpscaleLoopEnd().end(
             flow, upscale_state, hq_images, hq_segment)[0]
         assert partial["format"] == "h3_chain_upscale_partial_manifest_v1"
+        check_partial_assembly(chain, upscale, partial)
 
         flow, upscale_state, source_manifest, _status = adapter.adapt(
             selected_manifest, "quality", "h3_latent", '{"scale":2}',
@@ -915,8 +1001,10 @@ def main():
                        merged_path.name)
         assert output_copy.is_file() and output_copy.stat().st_size > 0
         final_record = merged_path.with_suffix(".json")
-        assert json.loads(final_record.read_text(encoding="utf-8"))[
-            "format"] == "h3_chain_upscale_final_v1"
+        completed_record = json.loads(final_record.read_text(encoding="utf-8"))
+        assert completed_record["format"] == "h3_chain_upscale_final_v1"
+        assert completed_record["complete"] is True
+        assert completed_record["completed_clip_count"] == completed_record["planned_clip_count"] == 2
         legacy_merged = upscale.MiniMaxH3ChainUpscaleMerge().merge(
             manifest, "none", "legacy_wrapper", 96)["result"][0]
         assert pathlib.Path(legacy_merged).parent == merged_path.parent

@@ -937,6 +937,14 @@ tokens such as `%date:yyyy-MM-dd%`, `%year%`, `%month%`, `%day%`, `%hour%`,
 `%minute%`, and `%second%`. Existing files are never overwritten; numbered
 suffixes are added automatically.
 
+Deferred upscale partials are accepted too: stopping after scene 1 of a
+two-scene source assembles that saved scene without requiring scene 2.
+Only a contiguous saved prefix is accepted; missing or changed artifacts
+inside that prefix still fail verification. Assembly leaves the upscale
+resume manifest untouched. The final JSON and status identify a partial
+delivery and its completed/planned scene counts. Chapter partials retain
+their original scene numbers and source-audio offset.
+
 When Assemble receives a Chapter Delivery or Chapter Recovery Load manifest,
 it writes under that chapter's `final/` folder and includes only the selected
 scene range. Source audio and timed subtitles are shifted to the chapter's

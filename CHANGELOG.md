@@ -4,6 +4,12 @@ Newest first. This file keeps release history out of the onboarding README.
 
 ## Unreleased — Deferred checkpoint upscaling
 
+- Allow H3 Chain Assemble to deliver a verified partial upscale (for example,
+  scene 1 of 2) without requiring the unfinished tail. Preserve resume
+  manifests, chapter numbering/audio offsets and generated audio sidecars;
+  label partial deliveries with completed/planned counts. Still reject
+  noncontiguous scenes, inconsistent metadata and missing or changed files.
+
 - Integrate PR #48's opt-in top-level scene requeue and durable review
   inventory. Preserve nightly deferred-review controls and fence handoff
   mutations with workflow ownership, including takeovers during a write.

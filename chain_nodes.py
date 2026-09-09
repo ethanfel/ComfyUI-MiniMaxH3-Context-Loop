@@ -27422,8 +27422,10 @@ class MiniMaxH3ChainAssemble:
         return {
             "required": {
                 "manifest": (MANIFEST_TYPE, {
-                    "tooltip": "Completed source or upscale manifest from "
-                               "Loop End or Manifest Load. Its format selects "
+                    "tooltip": "Complete or partial source/upscale manifest from "
+                               "Loop End or Manifest Load. Assembles the saved "
+                               "contiguous scenes; later unfinished scenes are not required. "
+                               "Its format selects "
                                "the correct verified segments and canonical "
                                "final folder automatically."}),
                 "audio_source": (["plan", "source", "generated", "none"],
@@ -27599,7 +27601,7 @@ class MiniMaxH3ChainAssemble:
         selected = audio_source
         if selected == "plan":
             selected = _audio_policy_final(manifest)
-        preserve_generated = manifest.get("format") in (
+        preserve_generated = upscale_manifest is not None or manifest.get("format") in (
             "h3_chain_manifest_v3", CHAPTER_MANIFEST_FORMAT)
         generated_track = None
         generated_warning = ""
@@ -27930,6 +27932,10 @@ class MiniMaxH3ChainAssemble:
             backend, blend_status, tone_status, color_status, trim_status,
             gap_status, order_status,
             final_path, sidecar_status, copy_status, subtitle_status)
+        if upscale_manifest is not None and upscale_manifest.get("format") == (
+                "h3_chain_upscale_partial_manifest_v1"):
+            status += "; partial upscale %d/%d scenes; remaining scenes can be resumed" % (
+                len(segments), int(upscale_manifest["clip_count"]))
         _LOG.info("H3 Chain %s", status)
         published_video = output_copy or final_path
         _publish_final_review_preview(manifest, published_video, status)
