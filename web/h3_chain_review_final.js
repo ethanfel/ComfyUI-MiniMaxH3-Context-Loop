@@ -802,11 +802,27 @@ function reviewFallbackNode(data) {
     return gates.length === 1 ? gates[0] : null;
 }
 
+// One token can arrive many times (candidate/preview ticks, reconnect
+// polling) while a review stays pending. Once a token has been routed once,
+// reuse that decision silently instead of repeating the same exact-match
+// attempt, run_name mismatch warning, and fallback notice on every message.
+const routedReviewNodes = new Map();
+
 function routeReview(data) {
+    const token = String(data?.token ?? "");
+    const remembered = token ? routedReviewNodes.get(token) : null;
+    if (remembered) {
+        if (deliverReview(remembered, data, {verifyRun: false})) return true;
+        routedReviewNodes.delete(token);
+    }
     const exact = findNodeByQualifiedId(data?.node_id);
-    if (deliverReview(exact, data)) return true;
+    if (deliverReview(exact, data)) {
+        if (token) routedReviewNodes.set(token, exact);
+        return true;
+    }
     const fallback = reviewFallbackNode(data);
     if (deliverReview(fallback, data, {verifyRun: false})) {
+        if (token) routedReviewNodes.set(token, fallback);
         console.warn(
             `[H3 Chain Review] Display node ${data?.node_id} was not directly ` +
             "resolvable; routed the pending review to the only matching gate.",
@@ -830,8 +846,11 @@ function routeReview(data) {
 }
 
 function routeReviewResolved(data) {
-    const exact = findNodeByQualifiedId(data?.node_id);
+    const token = String(data?.token ?? "");
+    const remembered = token ? routedReviewNodes.get(token) : null;
+    const exact = remembered ?? findNodeByQualifiedId(data?.node_id);
     const node = nodeType(exact) === NODE_NAME ? exact : reviewFallbackNode(data);
+    if (token) routedReviewNodes.delete(token);
     node?._h3ReviewResolvedHandler?.(data);
 }
 
