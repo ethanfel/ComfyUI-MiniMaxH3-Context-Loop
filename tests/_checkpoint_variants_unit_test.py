@@ -205,7 +205,34 @@ class VariantTests(unittest.TestCase):
         surviving = next(v for v in self.scan()["variants"] if v["revision"] == "d" * 32)
         self.assertTrue(surviving["ready"])
         self.assertIsNone(surviving["processing_branch"])
+        history = self.scan()["branches"]
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history[0]["stage"], "pixel_upscale")
+        self.assertEqual(history[0]["profile_path"], surviving["profile_path"])
+        self.assertEqual(history[0]["lineage"], second["processing_lineage"])
+        self.assertEqual(history[0]["lineage"][0]["revision"], "c" * 32)
         self.assertEqual(second_path.read_bytes(), before)
+
+    def test_display_histories_include_exact_forks_without_full_latents(self):
+        first_path, first = self.save(backend="pixel", scene=8)
+        second_path, second = self.save(backend="pixel", scene=9, revision="d" * 32)
+        fork_path, fork = self.save(backend="pixel", scene=9, revision="e" * 32)
+        for path, saved, prefix in ((first_path, first, []),
+                                    (second_path, second, [first["segment"]]),
+                                    (fork_path, fork, [first["segment"]])):
+            saved["segment"]["latent_saved"] = False
+            saved["processing_lineage"] = module.processing_lineage(prefix + [saved["segment"]])
+            self.write(path, saved)
+        before = {str(p): p.stat().st_mtime_ns for p in self.root.rglob("*")}
+        result = self.scan()
+        self.assertEqual(len(result["branches"]), 3)
+        self.assertTrue(all(b["stage"] == "pixel_upscale" for b in result["branches"]))
+        shared = next(v for v in result["variants"] if v["revision"] == "c" * 32)
+        self.assertIsNone(shared["processing_branch"], "Ambiguous execution selection stays guarded")
+        self.assertEqual({tuple(ref["revision"] for ref in b["lineage"])
+                          for b in result["branches"]},
+                         {("c" * 32,), ("c" * 32, "d" * 32), ("c" * 32, "e" * 32)})
+        self.assertEqual(before, {str(p): p.stat().st_mtime_ns for p in self.root.rglob("*")})
 
 
 if __name__ == "__main__":

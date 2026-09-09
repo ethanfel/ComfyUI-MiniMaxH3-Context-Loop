@@ -3,6 +3,7 @@ import {api} from "/scripts/api.js";
 import {
     CHECKPOINT_STAGES,
     checkpointStageVariants,
+    checkpointProcessingBranchRows,
     checkpointVariantLatentStatus,
     checkpointBranchRows,
     checkpointChapterBranchRows,
@@ -20,7 +21,7 @@ import {
     checkpointOutputSummary,
     formatCheckpointBytes,
     selectedCheckpointRevision,
-} from "./h3_checkpoint_manager_core.mjs?v=0.7.13";
+} from "./h3_checkpoint_manager_core.mjs?v=0.7.14";
 import {
     parsePlanJson,
     planToJson,
@@ -209,7 +210,9 @@ function injectStyles() {
       .h3cm-stage-tab { white-space:nowrap; }
       .h3cm-stage-tab[aria-selected="true"] { color:var(--h3cm-accent); border-color:var(--h3cm-accent); }
       .h3cm-stage-note { flex:0 0 auto; color:var(--h3cm-muted); overflow-wrap:anywhere; }
-      .h3cm-variant-group { display:flex; flex-direction:column; gap:5px; }
+      .h3cm-processing-head { flex-wrap:wrap; }
+      .h3cm-latest-label { color:var(--h3cm-chapter); font-weight:750; }
+      .h3cm-processing-source { margin-bottom:5px; }
       .h3cm-chapter-tabs { flex:0 0 auto; overflow:auto; padding:2px 0; }
       .h3cm-chapter-tab { white-space:nowrap; border-radius:999px !important; }
       .h3cm-chapter-selected { color:var(--h3cm-chapter) !important; border-color:#d6a650 !important;
@@ -256,6 +259,7 @@ function injectStyles() {
         box-shadow:inset 3px 0 0 #b493f0; }
       .h3cm-revision-empty { border-style:dashed !important; color:var(--h3cm-muted) !important;
         background:color-mix(in srgb,var(--h3cm-panel) 72%,transparent) !important; }
+      div.h3cm-revision-empty { padding:5px 8px; border:1px dashed var(--h3cm-border); border-radius:6px; }
       .h3cm-revision-empty-selected { border-color:var(--h3cm-accent) !important;
         color:var(--h3cm-accent) !important; }
       .h3cm-revision-shared { border-color:var(--h3cm-shared-color) !important;
@@ -747,13 +751,13 @@ function mount(node) {
             stageTabs.append(tab);
         }
         stageNote.textContent = state.stage === "original" ? ""
-            : `${stageLabel()} versions grouped by their original source branch. Browsing does not change output.`
+            : `${stageLabel()} saved branches, newest save first. Each row follows its recorded processing history; shared clips have matching colors. Browsing does not change output.`
                 + (state.stage === "derope" ? " Select a saved take, then Use DeRoPE branch locally for deferred upscaling. Unsaved scenes use their original take." : "");
         const warnings = state.payload?.processing_variant_warnings ?? [];
         if (warnings.length) stageNote.textContent += ` ${warnings.length} processing metadata warning(s): ${warnings[0]}`;
         stageNote.hidden = !stageNote.textContent;
         branchLegend.textContent = state.stage === "original" ? "matching color = same saved clip"
-            : "saved versions per source clip";
+            : "saved processing branches · newest save first";
     }
 
     function selectAttribution(parent, slot) {
@@ -782,6 +786,7 @@ function mount(node) {
         const maximum = Math.max(
             0,
             ...(state.payload?.scenes ?? []).map((scene) => Number(scene.scene) || 0),
+            ...(state.payload?.processing_variants ?? []).map((scene) => Number(scene.scene) || 0),
             ...(state.payload?.editorial?.scene_order ?? []).map(
                 (scene) => Number(scene.scene) || 0,
             ),
@@ -1025,13 +1030,23 @@ function mount(node) {
         }
     }
 
-    function variantCard(record, original = null, branchTip = null) {
+    function variantCard(record, entry = null) {
         const card = button(`S${record.scene} · ${record.revision.slice(0, 8)}`,
-            `${record.profile_path}\n${checkpointVariantLatentStatus(record)}`,
-            () => selectVariant(record, original, branchTip), "h3cm-revision h3cm-processing-variant");
+            `${record.profile_path}\nCreated: ${localTime(record.created_at)}\n${checkpointVariantLatentStatus(record)}`,
+            () => selectVariant(record), "h3cm-revision h3cm-processing-variant");
+        if (entry?.shared_count > 1) {
+            card.classList.add("h3cm-revision-shared");
+            card.dataset.sharedKey = entry.shared_key;
+            card.style.setProperty("--h3cm-shared-color", sharedColor(entry.shared_key));
+            card.append(element("span", "h3cm-shared-label", `shared ×${entry.shared_count}`));
+        }
+        card.append(element("small", "", `Created: ${localTime(record.created_at)}`));
         card.append(element("small", "", record.profile));
         card.append(element("small", "", `${record.width || "?"}×${record.height || "?"} · ${record.ready ? "saved" : "missing artifacts"}`));
         card.append(element("small", "", record.latent_saved ? "full latent saved" : "full latent not saved"));
+        card.append(element("small", "h3cm-muted", (record.originals ?? []).length
+            ? `Original: ${(record.originals ?? []).map(item => String(item.revision).slice(0, 8)).join(" / ")}`
+            : "Original unavailable or mismatched"));
         if (currentVariant()?.key === record.key) card.classList.add("h3cm-revision-selected");
         return card;
     }
@@ -1039,42 +1054,56 @@ function mount(node) {
     function renderVariantBranchRows(container, rows) {
         for (const branch of rows) {
             const row = element("div", "h3cm-branch");
-            const header = element("div", "h3cm-branch-head");
-            header.append(element("span", branch.active ? "h3cm-branch-active" : "",
-                `Source: ${branch.active ? "Project active branch" : branch.label}`));
+            const header = element("div", "h3cm-branch-head h3cm-processing-head");
+            const tip = branch.entries.at(-1);
+            header.append(element("span", "h3cm-branch-active",
+                `${branch.history_known ? "Branch" : "Take"} ${String(tip.revision).slice(0, 8)}`));
+            if (branch.latest) header.append(element("span", "h3cm-latest-label", "Latest save"));
+            header.append(element("span", "h3cm-muted", `Last saved: ${localTime(branch.created_at)}`));
+            const description = branch.history_known
+                ? `Scenes ${branch.entries[0].scene}–${tip.scene} · ${branch.entries.length - branch.missing_count} saved`
+                    + (branch.missing_count ? ` · ${branch.missing_count} missing — history incomplete` : "")
+                : "Branch history unavailable — standalone saved take";
+            const source = element("div", "h3cm-muted h3cm-processing-source", `${branch.profile} · ${description}`);
+            source.title = branch.profile_path;
+            // Heading clicks preview the saved tip only; they never activate
+            // an original branch or alter the workflow's output selection.
+            if (tip.record) {
+                header.role = "button";
+                header.tabIndex = 0;
+                header.title = "Preview this saved processing branch tip; output stays unchanged";
+                header.addEventListener("click", () => selectVariant(tip.record));
+                header.addEventListener("keydown", event => {
+                    if (!["Enter", " "].includes(event.key)) return;
+                    event.preventDefault();
+                    selectVariant(tip.record);
+                });
+            }
+            if (state.variantKey === tip.metadata_path) row.classList.add("h3cm-branch-selected");
             const path = element("div", "h3cm-branch-path");
-            branch.revisions.forEach((original, index) => {
+            branch.entries.forEach((entry, index) => {
                 if (index) path.append(element("span", "h3cm-arrow", "→"));
-                const group = element("div", "h3cm-variant-group");
-                group.append(element("small", "h3cm-muted", `Original S${original.scene} · ${original.revision.slice(0, 8)}`));
-                const records = checkpointStageVariants(state.payload, state.stage, original);
-                for (const record of records) group.append(variantCard(record, original, branch.revisions.at(-1)));
-                if (!records.length) group.append(button(`S${original.scene} · not saved`,
-                    `No saved ${stageLabel()} version of this source revision`,
-                    () => selectRevision(original, false), "h3cm-revision h3cm-revision-empty"));
-                path.append(group);
+                if (entry.record) {
+                    path.append(variantCard(entry.record, entry));
+                } else {
+                    const gap = element("div", "h3cm-revision h3cm-revision-empty",
+                        `S${entry.scene} · ${String(entry.revision).slice(0, 8)}`);
+                    gap.append(element("small", "", "Missing saved take"));
+                    gap.title = "This exact take is missing or its identity does not match. No other version is substituted.";
+                    path.append(gap);
+                }
             });
-            row.append(header, path);
+            row.append(header, source, path);
             container.append(row);
         }
-    }
-
-    function renderUnlinkedVariants() {
-        if (state.stage === "original") return;
-        const records = checkpointStageVariants(state.payload, state.stage, null, activeChapterRange())
-            .filter(item => !(item.originals ?? []).length);
-        if (!records.length) return;
-        branches.append(element("div", "h3cm-muted", "Saved versions with an unavailable or mismatched original (not attached to another take)"));
-        const row = element("div", "h3cm-branch-path");
-        for (const record of records) row.append(variantCard(record));
-        branches.append(row);
     }
 
     function renderBranches() {
         branches.replaceChildren();
         const ranges = chapterRanges();
         if (!ranges.length) {
-            const rows = checkpointBranchRows(state.payload);
+            const rows = state.stage === "original" ? checkpointBranchRows(state.payload)
+                : checkpointProcessingBranchRows(state.payload, state.stage);
             if (rows.length) renderBranchRows(branches, rows);
             else branches.append(element(
                 "div", "h3cm-muted", "No versioned checkpoints were found.",
@@ -1085,7 +1114,8 @@ function mount(node) {
             ? ranges : ranges.filter((range) => range.id === state.chapterTab);
         let rendered = 0;
         for (const range of visibleRanges) {
-            const rows = checkpointChapterBranchRows(state.payload, range);
+            const rows = state.stage === "original" ? checkpointChapterBranchRows(state.payload, range)
+                : checkpointProcessingBranchRows(state.payload, state.stage, range);
             if (!rows.length) continue;
             if (state.chapterTab === "all") {
                 const section = element("section", "h3cm-branch-chapter");
@@ -1385,7 +1415,6 @@ function mount(node) {
         renderStageTabs();
         renderScenes();
         renderBranches();
-        renderUnlinkedVariants();
         renderDetail();
         renderDeletion();
     }

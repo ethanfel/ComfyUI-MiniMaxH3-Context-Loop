@@ -103,6 +103,8 @@ def saved_checkpoint_variants(output_root, run_name, originals):
                         saved.get("run_name") != run_name or saved.get("profile") != profile.name):
                     raise ValueError("Invalid processing branch manifest.")
                 branches.append({"path": path.relative_to(root).as_posix(), "kind": "manifest",
+                                 "stage": "derope", "profile": profile.name,
+                                 "profile_path": profile.relative_to(root).as_posix(),
                                  "lineage": validate_processing_lineage(processing_lineage(saved["segments"]))})
             except (OSError, ValueError, TypeError, KeyError) as exc:
                 warnings.append("%s: %s" % (path.name, exc))
@@ -201,6 +203,8 @@ def saved_checkpoint_variants(output_root, run_name, originals):
                     records.append(record)
                     if metadata.get("processing_lineage"):
                         branches.append({"path": identity, "kind": "metadata",
+                                         "stage": stage, "profile": profile.name,
+                                         "profile_path": record["profile_path"],
                                          "lineage": validate_processing_lineage(metadata["processing_lineage"])})
                     elif record["stage"] == "derope":
                         legacy_branches(profile)
@@ -255,6 +259,10 @@ def saved_checkpoint_variants(output_root, run_name, originals):
                                for scene, revision in sorted(matches)]
         record["source_status"] = "linked" if matches else "original unavailable or source mismatch"
     records.sort(key=lambda item: (item["scene"], item["created_at"], item["key"]), reverse=True)
+    # Presentation retains the exact history, including deleted/missing takes.
+    # It must not reuse the execution-ready subset below or fill its holes
+    # with unrelated newer versions of the same scene.
+    display_branches = branches
     # Independent pixel cleanup can leave a hole in an immutable historical
     # lineage. Keep every surviving take visible, but don't offer that history
     # as an executable complete branch or silently substitute a newer take.
@@ -279,4 +287,5 @@ def saved_checkpoint_variants(output_root, run_name, originals):
                 if key not in leaves or branch["kind"] == "metadata":
                     leaves[key] = branch
         record["processing_branch"] = next(iter(leaves.values())) if len(leaves) == 1 else None
-    return {"variants": records, "warnings": warnings}
+    return {"variants": records, "warnings": warnings,
+            "branches": display_branches}

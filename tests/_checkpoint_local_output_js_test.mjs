@@ -437,7 +437,7 @@ assert.equal(byClass(reopenedVariant, "h3cm-preview").dataset.source, "/view?fil
 assert.equal(reopenedVariant.properties.h3_checkpoint_manager_scene, 2,
     "restoring a processing view must not promote its source selection to the deepest original tip");
 assert.equal(value(reopenedVariant), originalOutput, "reopening a processing tab never rewrites original output");
-byText(variants, "S1 · not saved").click();
+byClass(variants, "h3cm-scenes").children[0].click();
 assert.equal(byClass(variants, "h3cm-preview").src, undefined, "missing stage does not impersonate original preview");
 assert.equal(value(variants), originalOutput, "even browsing another scene in a derivative tab leaves output unchanged");
 byText(variants, "Latent Upscale · 1").click();
@@ -614,3 +614,67 @@ assert.equal(JSON.parse(value(following)).lineage.at(-1).revision, c);
 select(following, 8, a); await settle();
 assert.equal(JSON.parse(value(following)).lineage.at(-1).revision, c);
 console.log("Checkpoint branch range: previews never trim output; explicit full-branch selection repairs legacy scene-8 pins");
+
+// Render actual processing histories, not source-branch stacks. Exercise the
+// real mounted renderer and handlers with shared prefixes, chapter tabs and
+// a deleted intermediate take, without changing execution selection.
+currentGraph = structuredClone(payload);
+currentGraph.editorial = {chapters:[{id:"first", title:"Chapter 1", start_scene:1},
+    {id:"second", title:"Chapter 2", start_scene:3}]};
+function processingTake(scene, id, hour) {
+    return {scene, key:`demo/pixel/${id}`, revision:id.repeat(32),
+        checkpoint_sha256:id.repeat(64), profile:"pixel", profile_path:"demo/pixel",
+        stage:"pixel_upscale", ready:true, latent_saved:false,
+        created_at:`2026-09-08T${hour}:00:00Z`,
+        originals:[{scene, revision:({1:a, 2:b, 3:d})[scene]}],
+        video:{filename:`${id}.mp4`}};
+}
+const p1 = processingTake(1, "1", "10"), p2 = processingTake(2, "2", "11"),
+    p2new = processingTake(2, "3", "12"), p3 = processingTake(3, "4", "13");
+function processingHistory(...items) {
+    return {path:items.at(-1).key, kind:"metadata", stage:"pixel_upscale",
+        profile:"pixel", profile_path:"demo/pixel",
+        lineage:items.map(item => ({scene:item.scene, revision:item.revision,
+            checkpoint_sha256:item.checkpoint_sha256, metadata_path:item.key}))};
+}
+currentGraph.processing_variants = [p3, p2new, p2, p1];
+currentGraph.processing_branches = [processingHistory(p1), processingHistory(p1, p2),
+    processingHistory(p1, p2new), processingHistory(p1, p2new, p3)];
+const branchView = makeNode(); await settle();
+const outputBeforePreview = value(branchView), mutationsBeforePreview = mutations;
+byText(branchView, "Pixel Upscale · 4").click();
+byText(branchView, "Chapter 1").click();
+const processingRows = () => elements(branchView).filter(item => item.className.split(" ").includes("h3cm-branch"));
+const cardNames = row => row.children.at(-1).children.filter(item => item.tag === "button").map(item => item.textContent);
+let displayed = processingRows();
+assert.equal(displayed.length, 2, "Source branches are not duplicated into stacks");
+assert.deepEqual(cardNames(displayed[0]), ["S1 · 11111111", "S2 · 33333333"]);
+assert.deepEqual(cardNames(displayed[1]), ["S1 · 11111111", "S2 · 22222222"]);
+assert.equal(elements(branchView).filter(item => item.textContent === "shared ×2").length, 2);
+assert.ok(displayed[0].children[0].children.some(item => item.textContent === "Latest save"));
+assert.ok(!displayed[1].children[0].children.some(item => item.textContent === "Latest save"));
+assert.ok(elements(branchView).some(item => item.textContent.startsWith("Created: ")));
+assert.ok(!elements(branchView).some(item => item.className.includes("h3cm-variant-group")));
+displayed[1].children[0].click(); await settle();
+assert.equal(byClass(branchView, "h3cm-preview").dataset.source, "/view?filename=2.mp4&subfolder=&type=output");
+assert.equal(value(branchView), outputBeforePreview, "Branch heading is preview only");
+processingRows()[0].children[0].listeners.keydown({key:"Enter", preventDefault(){}});
+await settle();
+assert.equal(byClass(branchView, "h3cm-preview").dataset.source, "/view?filename=3.mp4&subfolder=&type=output");
+assert.equal(value(branchView), outputBeforePreview, "Keyboard heading selection is preview only");
+assert.ok(byText(branchView, "Make branch active (project)").disabled);
+byText(branchView, "Chapter 2").click();
+assert.equal(processingRows().length, 1);
+assert.deepEqual(cardNames(processingRows()[0]), ["S3 · 44444444"]);
+byText(branchView, "Chapter 1").click();
+currentGraph.processing_variants = [p1, p2, p3];
+branchView._h3CheckpointManagerRefresh(); await settle();
+displayed = processingRows();
+assert.equal(displayed.length, 2);
+assert.ok(elements(branchView).some(item => item.textContent === "Missing saved take"));
+assert.ok(elements(branchView).some(item => /history incomplete/.test(item.textContent)));
+assert.equal(displayed.flatMap(row => cardNames(row)).filter(name => name === "S2 · 22222222").length, 1,
+    "Another take never fills a deleted branch member");
+assert.equal(value(branchView), outputBeforePreview);
+assert.equal(mutations, mutationsBeforePreview, "Rendering, headings and chapter tabs never mutate saved projects");
+console.log("Processing branch UI: shared colors, latest dates, real paths, missing slots, keyboard previews and output isolation pass");

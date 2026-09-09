@@ -34,6 +34,81 @@ export function checkpointVariantLatentStatus(record) {
     return `Full latent saved (${record.latent_layout || "unknown layout"}); not yet execution-validated`;
 }
 
+// Presentation only: never infer a processing run from per-scene timestamps,
+// original branch membership, or mutable current-take pointers.
+export function checkpointProcessingBranchRows(payload, stage, range = null) {
+    const records = checkpointStageVariants(payload, stage);
+    const byKey = new Map(records.map(record => [record.key, record]));
+    const visible = scene => !range || (Number(scene) >= range.start && Number(scene) <= range.end);
+    const addressKey = item => JSON.stringify([
+        Number(item.scene), item.metadata_path, item.revision, item.checkpoint_sha256,
+    ]);
+    const snapshots = payload?.processing_branches
+        // Older servers only expose unambiguous, intact histories.
+        ?? records.map(record => record.processing_branch && ({
+            ...record.processing_branch, stage:record.stage,
+            profile:record.profile, profile_path:record.profile_path,
+        })).filter(Boolean);
+    const grouped = new Map();
+    for (const snapshot of snapshots) {
+        if (snapshot.stage !== stage || !snapshot.lineage?.length) continue;
+        const lineage = snapshot.lineage.filter(item => visible(item.scene));
+        if (!lineage.length) continue;
+        const keys = lineage.map(addressKey);
+        const id = JSON.stringify([snapshot.profile_path, keys]);
+        if (grouped.has(id)) continue;
+        const entries = lineage.map(item => {
+            const candidate = byKey.get(item.metadata_path);
+            const record = candidate && candidate.profile_path === snapshot.profile_path
+                && Number(candidate.scene) === Number(item.scene)
+                && candidate.revision === item.revision
+                && candidate.checkpoint_sha256 === item.checkpoint_sha256 ? candidate : null;
+            return {...item, record};
+        });
+        grouped.set(id, {id, keys, entries, profile:snapshot.profile,
+            profile_path:snapshot.profile_path, history_known:true});
+    }
+    const candidates = [...grouped.values()];
+    const rows = candidates.filter(row => !candidates.some(other =>
+        other.profile_path === row.profile_path && other.keys.length > row.keys.length
+        && row.keys.every((key, index) => key === other.keys[index])));
+    const represented = new Set(rows.flatMap(row => row.entries
+        .filter(item => item.record).map(item => item.record.key)));
+    // Legacy takes and surviving orphans stay visible, but are never invented
+    // into a complete processing sequence just because their scenes match.
+    for (const record of records) {
+        if (!visible(record.scene) || represented.has(record.key)) continue;
+        rows.push({id:`take:${record.key}`, profile:record.profile,
+            profile_path:record.profile_path, history_known:false,
+            entries:[{scene:record.scene, revision:record.revision,
+                metadata_path:record.key, checkpoint_sha256:record.checkpoint_sha256, record}]});
+    }
+    for (const row of rows) {
+        const dated = row.entries.map(item => item.record).filter(record =>
+            record?.created_at && Number.isFinite(Date.parse(record.created_at)));
+        const newest = dated.sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at))[0];
+        row.created_at = newest?.created_at ?? "";
+        row.timestamp = newest ? Date.parse(newest.created_at) : -Infinity;
+        row.missing_count = row.entries.filter(item => !item.record?.ready).length;
+    }
+    rows.sort((a, b) => (a.timestamp === b.timestamp ? 0 : a.timestamp > b.timestamp ? -1 : 1)
+        || a.id.localeCompare(b.id));
+    const newestTime = rows[0]?.timestamp;
+    const occurrences = new Map();
+    for (const row of rows) {
+        for (const item of row.entries) {
+            const key = addressKey(item);
+            occurrences.set(key, (occurrences.get(key) ?? 0) + 1);
+        }
+    }
+    return rows.map(row => ({...row,
+        latest:Number.isFinite(newestTime) && row.timestamp === newestTime,
+        entries:row.entries.map(item => ({...item,
+            shared_key:addressKey(item), shared_count:occurrences.get(addressKey(item)),
+        })),
+    }));
+}
+
 export function checkpointRevisionMap(payload) {
     return new Map((payload?.revisions ?? []).map((item) => [
         checkpointRevisionKey(item.scene, item.revision), item,
