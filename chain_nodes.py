@@ -9464,7 +9464,7 @@ def _editorial_context_tail(
 def _editorial_timeline_records(
         run_name: Any, segments: list[dict[str, Any]],
         editorial: dict[str, Any] | None = None,
-        natural_start_frame: int = 0) -> tuple[
+        natural_start_frame: int = 0, *, validate_dependencies: bool = True) -> tuple[
             dict[str, Any], list[dict[str, Any]], int]:
     """Resolve editorial clip positions without changing the chain manifest."""
     editorial = editorial or _load_run_editorial(run_name)
@@ -9480,8 +9480,9 @@ def _editorial_timeline_records(
             _editorial_trimmed_segment(segment, editorial)
         for offset, segment in enumerate(segments, start=1)
     }
-    _require_current_editorial_dependencies(
-        base_editorial_segments, "H3 editorial assembly")
+    if validate_dependencies:
+        _require_current_editorial_dependencies(
+            base_editorial_segments, "H3 editorial assembly")
     presentation_segments = _editorial_presentation_segments(
         run_name, segments, editorial)
     editorial_segments = {
@@ -9606,7 +9607,7 @@ def _parse_timed_lyrics(value: Any) -> list[dict[str, Any]]:
 
 def _editorial_subtitle_cues(
         run_name: str, editorial: dict[str, Any], total_frames: int,
-        timeline_origin_frames: int = 0
+        timeline_origin_frames: int = 0, *, catalog: dict[str, Any] | None = None
         ) -> list[dict[str, Any]]:
     settings = editorial.get("subtitles") or {}
     if settings.get("mode") != "preview_srt":
@@ -9615,7 +9616,8 @@ def _editorial_subtitle_cues(
     if not asset_id:
         raise ValueError(
             "Editorial subtitles are enabled but no lyrics asset is selected.")
-    catalog = ProjectAssetStore(_input_root(), _output_root()).load(run_name)
+    if catalog is None:
+        catalog = ProjectAssetStore(_input_root(), _output_root()).load(run_name)
     asset = next((item for item in catalog.get("assets", [])
                   if str(item.get("id") or "") == asset_id), None)
     if asset is None or asset.get("kind") != "audio":
@@ -30002,12 +30004,13 @@ async def _inspect_project_storage(request):
     return web.json_response(payload, headers={"Cache-Control": "no-store"})
 
 
-def _save_run_editorial_document_unlocked(body: Any) -> dict[str, Any]:
+def _save_run_editorial_document_unlocked(body: Any, *, persist: bool = True) -> dict[str, Any]:
     if not isinstance(body, dict):
         raise ValueError("H3 run editorial data must be a JSON object.")
     document = dict(body)
-    document["updated_at"] = datetime.now(timezone.utc).isoformat(
-        timespec="seconds").replace("+00:00", "Z")
+    if persist:
+        document["updated_at"] = datetime.now(timezone.utc).isoformat(
+            timespec="seconds").replace("+00:00", "Z")
     normalized = _normalize_run_editorial(document, body.get("run_name"))
     checkpoint_dir = os.path.join(_run_dir({"run_name": normalized["run_name"]}), "checkpoints")
     draft = normalized.get("alternate_draft")
@@ -30084,8 +30087,9 @@ def _save_run_editorial_document_unlocked(body: Any) -> dict[str, Any]:
                 (scene, str(segment.get("id") or ""),
                  str(trim["scene_id"])))
         _editorial_trimmed_segment(segment, normalized)
-    normalized["revision"] = uuid.uuid4().hex
-    _atomic_json(_run_editorial_path(normalized["run_name"]), normalized)
+    if persist:
+        normalized["revision"] = uuid.uuid4().hex
+        _atomic_json(_run_editorial_path(normalized["run_name"]), normalized)
     return normalized
 
 
@@ -30115,6 +30119,27 @@ def _save_run_editorial_document(
                     "Refresh Plan Studio before editing again; the newer "
                     "editorial data was not overwritten.")
         return _save_run_editorial_document_unlocked(body)
+
+
+async def _editorial_command(request):
+    from .editorial_commands import command
+    try:
+        body = await request.json()
+        proof = None
+        if isinstance(body, dict) and body.get("action") == "apply":
+            run_name = _strict_run_name(body.get("run_name"))
+            rejection = _project_write_rejection(request, run_name, "update the saved sequence")
+            if rejection is not None:
+                return rejection
+            proof = _request_project_ownership(request)
+        result = await asyncio.to_thread(command, sys.modules[__name__], body, proof)
+        return web.json_response(result, headers={"Cache-Control": "no-store"})
+    except ProjectOwnershipError as exc:
+        return web.json_response({"error": str(exc)}, status=423)
+    except EditorialConflictError as exc:
+        return web.json_response({"error": str(exc)}, status=409)
+    except (OSError, TypeError, ValueError, KeyError) as exc:
+        return web.json_response({"error": str(exc)}, status=400)
 
 
 async def _update_run_editorial(request):
@@ -31802,6 +31827,8 @@ _submit_candidate_batch_command = scoped_review(_submit_candidate_batch_command,
 
 if (PromptServer is not None and web is not None and
         getattr(PromptServer, "instance", None) is not None):
+    PromptServer.instance.routes.post(
+        "/minimax_h3_context_loop/editorial/command")(_editorial_command)
     PromptServer.instance.routes.get(
         "/minimax_h3_context_loop/working-branches")(_working_branch_command)
     PromptServer.instance.routes.post(

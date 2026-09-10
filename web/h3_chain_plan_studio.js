@@ -1,5 +1,6 @@
 import {app} from "/scripts/app.js";
 import {api} from "/scripts/api.js";
+export {EDITORIAL_COMMAND_VERSION, editorialCommand} from "./h3_editorial_commands.mjs";
 import {StudioBranches, BranchDrafts, branchOperationId, branchWidgetTransaction, branchRequestPath, workingBranchId} from "./h3_working_branches.mjs?v=0.7.19";
 import {branchPolicyNodes, captureBranchPolicyInputs, restoreBranchPolicyInputs} from "./h3_plan_restore_core.mjs?v=0.7.19";
 import {
