@@ -7,8 +7,10 @@ import re
 
 if __package__:
     from .project_assets import ProjectAssetConflictError, _project_mutation
+    from .asset_copy import command_copy, pending_copy, finish_copy
 else:
     from project_assets import ProjectAssetConflictError, _project_mutation
+    from asset_copy import command_copy, pending_copy, finish_copy
 
 MAX_COMMANDS = 1024
 ACTIONS = frozenset(("folder_create", "folder_update", "folder_delete",
@@ -30,12 +32,21 @@ def inspect_library(store, project, operation_id=""):
         # Finish cleanup for the already committed deletion before confirming
         # it. Current catalog references still protect any reused media.
         store._delete_asset_files(project, receipt["cleanup_asset"], catalog)
+    if receipt:
+        finish_copy(store, project, receipt)
     return {"catalog": store.public_catalog(project, create=False),
-            "receipt": _receipt(receipt) if receipt else None}
+            "receipt": _receipt(receipt) if receipt else None,
+            "pending_copy": pending_copy(store, project, operation_id) if operation_id and not receipt else None}
+
+
+def command_library(store, project, body):
+    if isinstance(body, dict) and body.get("action") == "asset_copy":
+        return command_copy(store, project, body)
+    return _command_library(store, project, body)
 
 
 @_project_mutation
-def command_library(store, project, body):
+def _command_library(store, project, body):
     if not isinstance(body, dict) or body.get("command_version") != 1:
         raise ValueError("Unsupported asset library command version.")
     action = body.get("action")

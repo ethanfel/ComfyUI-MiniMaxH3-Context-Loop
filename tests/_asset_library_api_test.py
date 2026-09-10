@@ -50,9 +50,23 @@ async def main():
             module._atomic_json = atomic
         status = json.loads((await chain._project_asset_catalog(Request(project="film", operation_id=second["operation_id"]))).text)
         assert status["receipt"]["operation_id"] == second["operation_id"] and len(status["catalog"]["folders"]) == 2
+        from PIL import Image
+        image = root / "picture.png"; Image.new("RGB", (24, 16)).save(image)
+        source = chain._project_asset_store().import_file("source", image)["asset"]
+        preview_response = await chain._project_asset_catalog(Request(project="film", copy_source="source", copy_asset=source["id"], enabled="false"))
+        assert preview_response.status == 200, preview_response.text
+        preview = json.loads(preview_response.text)
+        copy_request = {"command_version": 1, "project": "film", "action": "asset_copy", "operation_id": uuid.uuid4().hex,
+            "source_project": "source", "asset_id": source["id"], "enabled": False, "folder_id": "",
+            "base_revision": preview["base_revision"], "preview_revision": preview["preview_revision"]}
+        copied = await chain._project_asset_library(Request(copy_request))
+        assert copied.status == 200, copied.text
+        assert json.loads(copied.text)["catalog"]["assets"][0]["source_origin"]["project"] == "source"
+        assert json.loads((await chain._project_asset_library(Request(copy_request))).text)["replayed"]
         chain.claim_project_ownership(str(root / "output"), "film", "workflow-owner-a-1234567890", "Owner")
         denied = await chain._project_asset_library(Request({**command, "operation_id": uuid.uuid4().hex}))
         assert denied.status == 423, denied.text
+        assert (await chain._project_asset_library(Request({**copy_request, "operation_id": uuid.uuid4().hex}))).status == 423
         assert len(chain._project_asset_store().load("film")["folders"]) == 2
     print("Asset library HTTP: read without creation, native commands, receipts, 409/500 recovery and 423 ownership passed")
 

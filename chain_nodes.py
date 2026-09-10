@@ -110,6 +110,7 @@ from .review_inventory import (
 )
 from .prompt_history import PromptHistoryStore
 from .asset_library import command_library, inspect_library
+from .asset_copy import preview_copy
 from .prompt_optimizer import optimize_prompt_payload
 from .run_manager import RunArchiveManager, archive_policy_inputs
 from .asset_store import MAX_DIRECT_ASSET_BINDINGS, RunAssetStore
@@ -30991,6 +30992,14 @@ def _project_asset_error_response(exc: Exception):
 async def _project_asset_catalog(request):
     try:
         project = request.query.get("project", "")
+        if request.query.get("copy_source"):
+            enabled = request.query.get("enabled", "true")
+            if enabled not in ("true", "false"):
+                raise ValueError("Copy enabled must be true or false.")
+            result = await asyncio.to_thread(preview_copy, _project_asset_store(), project,
+                request.query["copy_source"], request.query.get("copy_asset", ""),
+                enabled == "true", request.query.get("folder_id", ""))
+            return web.json_response(result)
         if request.query.get("operation_id"):
             result = await asyncio.to_thread(inspect_library, _project_asset_store(),
                 project, request.query["operation_id"])
