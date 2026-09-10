@@ -57,11 +57,17 @@ const plan = {
         {id: "two", prompt: ["Old two."], seed: "2"},
     ],
 };
-applyReviewEdit(plan, 2, "New two.\n\nCAMERA: Close-up.", "9007199254740993", 56);
+applyReviewEdit(
+    plan, 2, "New two.\n\nCAMERA: Close-up.", "9007199254740993", 56,
+    "a simple plain-language idea",
+);
 assert.deepEqual(plan.shots[0].prompt, ["Old one."]);
 assert.deepEqual(plan.shots[1].prompt, ["New two.", "", "CAMERA: Close-up."]);
 assert.equal(plan.shots[1].seed, "9007199254740993");
 assert.equal(plan.shots[1].length, 56);
+assert.equal(plan.shots[1].basic_prompt, "a simple plain-language idea");
+assert.equal(plan.shots[0].basic_prompt, undefined,
+    "an untouched scene must not gain a basic_prompt field");
 applyReviewEdit(plan, 1, "", "3");
 assert.deepEqual(plan.shots[0].prompt, [""]);
 assert.equal(plan.shots[0].seed, "3");
@@ -381,10 +387,13 @@ assert.doesNotMatch(submitSource, /processRequeue\(/,
     "Review approval must not bypass Loop End; top-level requeue is driven by the Loop End terminal coordinator");
 assert.match(
     submitSource,
-    /updatePlan\(\s*node, submittedIndex, acceptedPrompt, body\.seed, body\.length\)/,
+    /updatePlan\(\s*node, submittedIndex, acceptedPrompt, body\.seed, body\.length,\s*acceptedBasicPrompt\)/,
 );
 assert.match(reviewSource, /publishCompanionPrompt/);
+assert.match(reviewSource, /publishCompanionBasicPrompt/);
 assert.match(reviewSource, /publishPlanCompanionScene/);
+assert.match(reviewSource, /basic_prompt: submittedBasicPrompt/);
+assert.match(reviewSource, /_h3PromptCompanionSetBasicPrompt/);
 assert.match(reviewSource, /_h3PromptCompanionSetScenePrompt/);
 assert.match(reviewSource, /reviewDurationText\(data\.raw_frames\)/);
 assert.match(reviewSource, /h3r-video-panel/);
@@ -448,10 +457,30 @@ const fallbackStart = reviewSource.indexOf("function reviewFallbackNode");
 const fallbackSource = reviewSource.slice(fallbackStart, reviewSource.indexOf("function routeReview", fallbackStart));
 assert.match(fallbackSource, /matchingRun\.length === 1\) return matchingRun\[0\];[\s\S]*data\?\.durable === true\) return null;[\s\S]*matchingLeaf[\s\S]*gates\.length === 1/,
     "durable recovery may use only an authoritative run match, not leaf or singleton fallback");
+assert.match(reviewSource, /function appRootGraph\(\)/);
+assert.match(reviewSource, /app\.graph\?\.rootGraph \?\? app\.graph/);
+for (const fn of [
+    "findNodeByQualifiedId", "upstreamPlanNode", "prepareResume",
+    "reviewFallbackNode",
+]) {
+    const start = reviewSource.indexOf(`function ${fn}(`);
+    const body = reviewSource.slice(start, reviewSource.indexOf("\n}", start));
+    assert.doesNotMatch(body, /allNodes\(app\.graph\)|= app\.graph;/,
+        `${fn} must traverse from appRootGraph(), not app.graph directly - ` +
+        "app.graph can be a subgraph's own graph rather than the true root, " +
+        "which breaks node_id-based review routing (found in production as " +
+        "\"could not be routed to display node\")");
+}
 const routeStart = reviewSource.indexOf("function routeReview(data)");
 const routeSource = reviewSource.slice(routeStart, reviewSource.indexOf("function routeReviewResolved", routeStart));
 assert.match(routeSource, /data\?\.durable !== true[\s\S]*Pending token/,
     "expected unrelated durable inventory must not warn on every poll");
+assert.match(routeSource, /deliverReview\(fallback, data, \{verifyRun: false\}\)/,
+    "reviewFallbackNode already applied its own run_name/id/singleton " +
+    "matching before returning a node; deliverReview must not re-reject " +
+    "that same node via a second strict run_name check, or a Review Gate " +
+    "with a stale/reset Plan run_name widget can never route at all even " +
+    "when it is the only gate in the graph");
 const reviewHandlerStart = reviewSource.indexOf("node._h3ReviewHandler =");
 const reviewHandlerSource = reviewSource.slice(reviewHandlerStart);
 assert.match(reviewHandlerSource, /const candidateBatchComplete = Boolean\(current\?\.candidate_generation_complete\) \|\|[\s\S]*current\.candidates\.length >=[\s\S]*candidate_count/);

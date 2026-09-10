@@ -203,6 +203,7 @@ function injectStyles() {
         .h3c-timing { color: var(--h3c-muted); white-space: nowrap; }
         .h3c-length-row { display: grid; grid-template-columns: 115px minmax(120px, 1fr) 190px; gap: 7px; align-items: center; margin-bottom: 7px; }
         .h3c-prompt { min-height: 112px; }
+        .h3c-basic-prompt { min-height: 72px; }
         .h3c-prompt-tools { position: relative; margin: 5px 0 2px; }
         .h3c-prompt-tools .h3c-hint { color: var(--h3c-muted); margin-left: auto; }
         .h3c-ref-menu {
@@ -954,6 +955,19 @@ function mountEditor(node) {
         refreshLengthControl();
         lengthRow.append(mode, value, lengthHelp);
 
+        const basicPrompt = element("textarea", "h3c-basic-prompt");
+        basicPrompt.value = String(shot.basic_prompt ?? "");
+        basicPrompt.placeholder = "Optional plain-language scene idea, not H3-formatted. Optimize it into the scene prompt from Rich Scene Prompt Editor.";
+        basicPrompt.title = "A simple draft description kept separately from the H3-formatted scene prompt below. It is never used for generation by itself; Rich Scene Prompt Editor's Optimize turns it into the scene prompt.";
+        basicPrompt.spellcheck = true;
+        basicPrompt.addEventListener("input", () => {
+            shot.basic_prompt = basicPrompt.value;
+            syncPlan();
+        });
+        bindTextareaHeight(
+            basicPrompt, `scene-basic:${sceneColorKey(shot, index)}`, 72,
+        );
+
         const prompt = element("textarea", "h3c-prompt");
         prompt.value = promptValueToText(shot.prompt, `Scene ${index + 1} prompt`);
         prompt.placeholder = "Optional with a shared prompt; otherwise describe this scene…";
@@ -1584,6 +1598,7 @@ function mountEditor(node) {
         card.append(
             head,
             lengthRow,
+            field("Basic prompt (plain language, optimized separately)", basicPrompt),
             field("Scene prompt (optional with shared prompt)", prompt),
             promptTools(prompt, index + 1),
             field("Prompt alternatives", promptSeedControl),

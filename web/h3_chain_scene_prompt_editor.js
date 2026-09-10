@@ -158,6 +158,16 @@ function injectStyles() {
         }
         .h3sp-textarea:focus { border-color:var(--h3sp-accent);
             box-shadow:0 0 0 1px color-mix(in srgb,var(--h3sp-accent) 45%,transparent); }
+        .h3sp-basic-prompt-label { display:flex; flex-direction:column; gap:4px;
+            color:var(--h3sp-muted); font-size:12px; }
+        .h3sp-basic-prompt {
+            width:100%; min-height:64px; resize:vertical; padding:8px 10px;
+            border:1px solid var(--h3sp-border); border-radius:7px;
+            outline:none; background:var(--comfy-input-bg,#11141a); color:var(--h3sp-text);
+            font:13px/1.4 inherit;
+        }
+        .h3sp-basic-prompt:focus { border-color:var(--h3sp-accent);
+            box-shadow:0 0 0 1px color-mix(in srgb,var(--h3sp-accent) 45%,transparent); }
         .h3sp-hidden { display:none !important; }
         .h3sp-editor-shell { position:relative; width:100%; min-height:240px;
             flex:1 1 auto; overflow:hidden; border:1px solid var(--h3sp-border);
@@ -2608,6 +2618,14 @@ function mount(node) {
         font.append(smaller, fontValue, larger);
         nav.append(previous, sceneSelect, next, add, font);
 
+        const basicPromptLabel = element("label", "h3sp-basic-prompt-label", "Basic prompt (plain language)");
+        const basicPromptTextarea = element("textarea", "h3sp-basic-prompt");
+        basicPromptTextarea.value = String(shot.basic_prompt ?? "");
+        basicPromptTextarea.placeholder = "Optional plain-language scene idea, kept separate from the H3-formatted prompt below. Optimize it into the scene prompt from Rich Scene Prompt Editor.";
+        basicPromptTextarea.title = "A simple draft description, not H3-formatted. It is never used for generation by itself.";
+        basicPromptTextarea.spellcheck = true;
+        basicPromptLabel.append(basicPromptTextarea);
+
         const textarea = element("textarea", "h3sp-textarea");
         textarea.value = promptValueToText(shot.prompt, `Scene ${state.active + 1} prompt`);
         textarea.placeholder = "Write this scene's action, camera, performance, dialogue, and ending continuity…";
@@ -2687,6 +2705,10 @@ function mount(node) {
             "span", "", `Scene ${state.active + 1}/${state.plan.shots.length} · ${shotId}`,
         );
         const status = element("span", "h3sp-footer-status", "Synchronized with Plan");
+        basicPromptTextarea.addEventListener("input", () => {
+            shot.basic_prompt = basicPromptTextarea.value;
+            writePlan(status, {deferEffects:true});
+        });
         const historyHost = element("div", "h3sp-history");
         footer.append(identity, historyHost, status);
         state.history.host = historyHost;
@@ -2907,7 +2929,7 @@ function mount(node) {
             beforeOpen:() => hidePopover(true),
         });
 
-        root.append(head, nav, tools);
+        root.append(head, nav, basicPromptLabel, tools);
         if (state.schema) root.append(state.schema.panel);
         root.append(refs, textarea, editorShell);
         if (PROMPT_ASSISTANT_ENABLED) {
@@ -3076,6 +3098,7 @@ function mount(node) {
         state.completion = null;
         delete node._h3PromptCompanionSetActiveScene;
         delete node._h3PromptCompanionSetScenePrompt;
+        delete node._h3PromptCompanionSetBasicPrompt;
         return removed?.apply(this, arguments);
     };
     node._h3PromptCompanionSetActiveScene = (planNode, index) => {
@@ -3127,6 +3150,17 @@ function mount(node) {
             }
         }
         if (livePlanParsed) state.lastValue = liveValue;
+        return true;
+    };
+    node._h3PromptCompanionSetBasicPrompt = (planNode, index, text) => {
+        if (planNode !== state.planNode || !state.plan?.shots?.[index]) return false;
+        state.plan.shots[index].basic_prompt = text;
+        if (index === state.active) {
+            const basicPromptTextarea = root.querySelector(".h3sp-basic-prompt");
+            if (basicPromptTextarea && basicPromptTextarea.value !== text) {
+                basicPromptTextarea.value = text;
+            }
+        }
         return true;
     };
     node._h3ScenePromptEditorRefresh = () => loadPlan(true);

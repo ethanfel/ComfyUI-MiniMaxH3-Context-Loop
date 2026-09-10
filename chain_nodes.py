@@ -7084,7 +7084,8 @@ def _retime_review_plan(plan: dict[str, Any]) -> None:
 
 def _plan_with_review_revision(plan: dict[str, Any], index: int,
                                scene_prompt: str, seed: int,
-                               raw_frames: int | None = None) -> dict[str, Any]:
+                               raw_frames: int | None = None,
+                               basic_prompt: str | None = None) -> dict[str, Any]:
     """Revise the current scene while preserving the accepted history contract."""
     index = int(index)
     if index < 1 or index > len(plan["shots"]):
@@ -7125,6 +7126,13 @@ def _plan_with_review_revision(plan: dict[str, Any], index: int,
     shot["prompt"] = full_prompt
     shot["prompt_hash"] = hashlib.sha256(
         full_prompt.encode("utf-8")).hexdigest()
+    if basic_prompt is not None:
+        basic_prompt = str(basic_prompt).replace(
+            "\r\n", "\n").replace("\r", "\n").strip()
+        if basic_prompt:
+            shot["basic_prompt"] = basic_prompt
+        else:
+            shot.pop("basic_prompt", None)
     shot["seed"] = seed
     if raw_frames is not None:
         shot["raw_frames"] = _validate_h3_length(
@@ -7398,6 +7406,12 @@ def _normalize_plan(
             raise ValueError(
                 "Shot %d (%s) requires a scene prompt or shared prompt." %
                 (index, shot_id))
+        basic_prompt = _prompt_text(
+            item.get("basic_prompt", ""),
+            "Shot %d (%s) basic prompt" % (index, shot_id))
+        if len(basic_prompt) > 200000:
+            raise ValueError(
+                "Shot %d (%s) basic prompt is too long." % (index, shot_id))
 
         explicit_length = item.get("length", item.get("frames"))
         if explicit_length is None:
@@ -7464,6 +7478,12 @@ def _normalize_plan(
             "audio_start_seconds": generation_start_frame / float(FPS),
             "audio_duration_seconds": raw_frames / float(FPS),
         }
+        if basic_prompt:
+            # Plain-language authoring draft that produced (or could still
+            # produce, via the Rich Scene Prompt Editor's optimizer) the H3
+            # `scene_prompt` above. Decorative only: never hashed into
+            # `prompt_hash` and never read by generation.
+            shot["basic_prompt"] = basic_prompt
         if prompt_seed_mode == "fixed":
             shot["prompt_seed_mode"] = "fixed"
             shot["prompt_seed"] = scene_prompt_seed
@@ -18889,7 +18909,8 @@ class MiniMaxH3ChainCurrent:
         # from it while the Plan JSON remains compact.
         try:
             PromptHistoryStore(_output_root()).mark_executed(
-                plan["run_name"], shot["id"], shot.get("scene_prompt", ""))
+                plan["run_name"], shot["id"], shot.get("scene_prompt", ""),
+                shot.get("basic_prompt"))
         except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
             _LOG.warning("H3 prompt history could not mark scene %s executed: %s",
                          shot["id"], exc)
@@ -21050,6 +21071,7 @@ class MiniMaxH3ChainReview:
                 "end_clip": int(state.get("range_end", len(plan["shots"]))),
                 "shot_id": shot["id"],
                 "scene_prompt": shot.get("scene_prompt", shot["prompt"]),
+                "basic_prompt": shot.get("basic_prompt", ""),
                 "prompt_prefix": str(plan.get("prompt_prefix") or ""),
                 "seed": str(shot["seed"]),
                 "raw_frames": int(shot["raw_frames"]),
@@ -21137,6 +21159,7 @@ class MiniMaxH3ChainReview:
             "end_clip": int(state.get("range_end", len(plan["shots"]))),
             "shot_id": shot["id"],
             "scene_prompt": shot.get("scene_prompt", shot["prompt"]),
+            "basic_prompt": shot.get("basic_prompt", ""),
             "prompt_prefix": str(plan.get("prompt_prefix") or ""),
             "seed": str(shot["seed"]),
             "raw_frames": int(shot["raw_frames"]),
@@ -27007,6 +27030,12 @@ async def _submit_review_decision(request):
         if len(scene_prompt) > 200000:
             return web.json_response(
                 {"error": "The retry prompt is too large."}, status=400)
+        basic_prompt = body.get("basic_prompt")
+        if basic_prompt is not None:
+            basic_prompt = str(basic_prompt)
+            if len(basic_prompt) > 200000:
+                return web.json_response(
+                    {"error": "The basic prompt is too large."}, status=400)
         try:
             raw_frames = _validate_h3_length(
                 body.get("length", pending.get("current_length")),
@@ -27033,11 +27062,13 @@ async def _submit_review_decision(request):
             "seed": seed,
             "raw_frames": raw_frames,
         }
+        if basic_prompt is not None:
+            decision["basic_prompt"] = basic_prompt
         try:
             _plan_with_review_revision(
                 pending["plan"],
                 int(pending["public"]["clip_index"]),
-                scene_prompt, seed, raw_frames)
+                scene_prompt, seed, raw_frames, basic_prompt)
         except (TypeError, ValueError) as exc:
             return web.json_response({"error": str(exc)}, status=400)
     elif action in ("approve", "stop"):
@@ -28535,7 +28566,8 @@ async def _update_prompt_history(request):
             payload = await asyncio.to_thread(
                 store.save_draft,
                 body.get("run_name"), body.get("scene_id"),
-                body.get("prompt", ""), body.get("parent_revision"))
+                body.get("prompt", ""), body.get("parent_revision"),
+                body.get("basic_prompt"))
         elif action == "activate":
             payload = await asyncio.to_thread(
                 store.activate,

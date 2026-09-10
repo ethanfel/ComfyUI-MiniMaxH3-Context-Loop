@@ -66,7 +66,9 @@ export function reviewPlanScenePrompt(plan, oneBasedIndex, shotId = "") {
     return promptValueToText(shot.prompt);
 }
 
-export function applyReviewEdit(plan, oneBasedIndex, scenePrompt, seed, length = null) {
+export function applyReviewEdit(
+    plan, oneBasedIndex, scenePrompt, seed, length = null, basicPrompt = undefined,
+) {
     const index = Number(oneBasedIndex) - 1;
     if (!Array.isArray(plan?.shots) || index < 0 || index >= plan.shots.length) {
         throw new Error("The reviewed scene does not exist in the plan.");
@@ -78,6 +80,9 @@ export function applyReviewEdit(plan, oneBasedIndex, scenePrompt, seed, length =
     const normalizedSeed = reviewSeed(seed);
     plan.shots[index].prompt = promptTextToLines(prompt);
     plan.shots[index].seed = normalizedSeed;
+    if (typeof basicPrompt === "string") {
+        plan.shots[index].basic_prompt = basicPrompt.replace(/\r\n?/g, "\n");
+    }
     if (length !== null && length !== undefined) {
         const normalizedLength = Number(length);
         if (!Number.isInteger(normalizedLength) || normalizedLength < 5

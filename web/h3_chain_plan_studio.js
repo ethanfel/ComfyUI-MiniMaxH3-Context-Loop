@@ -355,6 +355,8 @@ function injectStyles() {
             grid-template-columns:minmax(0,160px) minmax(0,1fr) auto; gap:5px; }
         .h3studio-context-pair { display:grid; grid-template-columns:1fr 1fr; gap:5px; }
         .h3studio-prompt { min-height:250px; width:100%; font:15px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace !important; }
+        .h3studio-basic-prompt-label { display:flex; flex-direction:column; gap:4px; font-size:12px; }
+        .h3studio-basic-prompt { min-height:72px; }
         .h3studio-prompt-tools { display:flex; align-items:center; gap:6px; margin:7px 0; flex-wrap:wrap; }
         .h3studio-prompt-delegated { margin-top:10px; padding:12px; border:1px dashed var(--hs-border);
             border-radius:7px; color:var(--hs-muted); background:var(--hs-bg); }
@@ -3551,6 +3553,18 @@ function mount(node) {
         }
         const alternate = alternateTakePanel();
 
+        const basicPromptLabel = element("label", "h3studio-basic-prompt-label", "Basic prompt (plain language)");
+        const basicPromptTextarea = element("textarea", "h3studio-basic-prompt");
+        basicPromptTextarea.value = String(shot.basic_prompt ?? "");
+        basicPromptTextarea.placeholder = "Optional plain-language scene idea, kept separate from the H3-formatted scene prompt. Optimize it into the scene prompt from Rich Scene Prompt Editor.";
+        basicPromptTextarea.title = "A simple draft description, not H3-formatted. Never delegated: editable here even when prompt editing itself is delegated below.";
+        basicPromptTextarea.spellcheck = true;
+        basicPromptTextarea.addEventListener("input", () => {
+            shot.basic_prompt = basicPromptTextarea.value;
+            writePlan();
+        });
+        basicPromptLabel.append(basicPromptTextarea);
+
         if (state.promptEditors.length) {
             const delegated = element("div", "h3studio-prompt-delegated");
             delegated.append(
@@ -3560,7 +3574,7 @@ function mount(node) {
                     "Scene selection is synchronized in both directions; Studio keeps scene ID, length, steps, seed, timeline, and playback controls.",
                 ),
             );
-            panel.append(head, form, audioOverrides, alternate, delegated);
+            panel.append(head, form, audioOverrides, alternate, basicPromptLabel, delegated);
             return panel;
         }
 
@@ -3591,7 +3605,7 @@ function mount(node) {
         const history = element("div", "h3studio-history");
         state.history.host = history; state.history.textarea = prompt; state.history.status = message;
         panel.append(
-            head, form, audioOverrides, alternate, prompt, tools, tray, history,
+            head, form, audioOverrides, alternate, basicPromptLabel, prompt, tools, tray, history,
         );
         void loadHistory(row.id, prompt.value);
         return panel;
@@ -6245,6 +6259,7 @@ function mount(node) {
         document.removeEventListener("keydown", onPlayerKeydown, true);
         delete node._h3PromptCompanionSetActiveScene;
         delete node._h3PromptCompanionSetScenePrompt;
+        delete node._h3PromptCompanionSetBasicPrompt;
         disposePlayer();
         delete node._h3FlushProjectWrites;
         void finalFlush.catch((error) => console.warn(
@@ -6288,6 +6303,17 @@ function mount(node) {
                 text);
         }
         if (livePlanParsed) state.lastValue = liveValue;
+        return true;
+    };
+    node._h3PromptCompanionSetBasicPrompt = (planNode, index, text) => {
+        if (planNode !== state.planNode || !state.plan?.shots?.[index]) return false;
+        state.plan.shots[index].basic_prompt = text;
+        if (index === state.active) {
+            const basicPromptTextarea = root.querySelector(".h3studio-basic-prompt");
+            if (basicPromptTextarea && basicPromptTextarea.value !== text) {
+                basicPromptTextarea.value = text;
+            }
+        }
         return true;
     };
     node._h3PlanStudioRefresh = () => {

@@ -79,6 +79,9 @@ export function rebaseScenePrompt(localPlan, livePlan, sceneIndex) {
     const targetShot = livePlan.shots[targetIndex];
     targetShot.prompt = Array.isArray(editedShot.prompt)
         ? [...editedShot.prompt] : editedShot.prompt;
+    if ("basic_prompt" in editedShot) {
+        targetShot.basic_prompt = editedShot.basic_prompt;
+    }
     for (const key of Object.keys(editedShot)) delete editedShot[key];
     Object.assign(editedShot, targetShot);
     livePlan.shots[targetIndex] = editedShot;
@@ -125,6 +128,7 @@ export function planHasNonPromptChanges(previousPlan, nextPlan) {
                 }
                 const copy = {...shot};
                 delete copy.prompt;
+                delete copy.basic_prompt;
                 return copy;
             }) : plan.shots,
         };
@@ -179,6 +183,28 @@ export function publishCompanionPrompt(source, planNode, sceneIndex, prompt) {
     for (const candidate of allGraphNodes(graphRoot(source))) {
         if (!candidate || candidate === source) continue;
         const apply = candidate._h3PromptCompanionSetScenePrompt;
+        if (typeof apply !== "function") continue;
+        try {
+            if (apply.call(candidate, planNode, index, text, source) !== false) delivered += 1;
+        } catch (_error) {
+            // A companion UI must not make a Plan write fail.
+        }
+    }
+    return delivered;
+}
+
+/** Publish one already-written basic (pre-optimization) prompt to every UI
+ * bound to that exact Plan, mirroring publishCompanionPrompt. Kept as a
+ * separate broadcast (not folded into publishCompanionPrompt) since the two
+ * fields are edited and consumed independently - only Rich Scene Prompt
+ * Editor's Optimize action ever turns one into the other. */
+export function publishCompanionBasicPrompt(source, planNode, sceneIndex, basicPrompt) {
+    const index = Math.max(0, Math.trunc(Number(sceneIndex) || 0));
+    const text = String(basicPrompt ?? "").replace(/\r\n?/g, "\n");
+    let delivered = 0;
+    for (const candidate of allGraphNodes(graphRoot(source))) {
+        if (!candidate || candidate === source) continue;
+        const apply = candidate._h3PromptCompanionSetBasicPrompt;
         if (typeof apply !== "function") continue;
         try {
             if (apply.call(candidate, planNode, index, text, source) !== false) delivered += 1;
