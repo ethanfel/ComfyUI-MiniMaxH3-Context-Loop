@@ -6,6 +6,23 @@ It does not have to become the project default before generation or upscaling.
 
 ## Plan Studio
 
+Mounted Studios expose a versioned browser interface, `node._h3BranchCommands`,
+for companion applications. Its `snapshot()` returns branch labels, revision,
+save/recovery status and pending operation identity without authoring bodies.
+`command(action, options, expected, assertCurrent)` delegates to this Studio's
+existing controller for save, switch, create, refresh, reload, restore-draft,
+retry and default actions. Pass the snapshot's `run_name`, `selected` and
+`revision` as `expected`; an optional attachment guard is checked at native
+continuation boundaries. The interface's `owner` is the current authoring Plan
+node. It is removed when the Studio is removed.
+
+The caller must keep unapplied companion drafts separate and check its queue
+and workflow binding. Current branch restoration needs a direct Plan JSON
+widget; connected text sources remain unavailable. Native ownership checks,
+revision conflicts, recovery drafts and exact pending-operation retries still
+belong to Studio. A returned `warning` means the action needs review, even if
+an earlier save or branch creation already reached the server.
+
 - Use the arrows or branch dropdown to change the Plan and clips shown in Studio.
 - **Fork here** retains the selected branch's saved scenes through the current
   scene. The whole authored Plan remains available for continuing or editing.
