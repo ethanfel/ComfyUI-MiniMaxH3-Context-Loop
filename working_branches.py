@@ -12,12 +12,14 @@ import tempfile
 import uuid
 
 if __package__:
-    from .branch_scope import branch_id, working_directory
-    from .checkpoint_manager import checkpoint_run_lock
+    from .branch_scope import branch_id, working_directory, branch_scope
+    from .checkpoint_manager import checkpoint_run_lock, CheckpointGraphManager
+    from .branch_authoring_recovery import recover_authoring
     from .processing_persistence import atomic_json, sync_directory
 else:
-    from branch_scope import branch_id, working_directory
-    from checkpoint_manager import checkpoint_run_lock
+    from branch_scope import branch_id, working_directory, branch_scope
+    from checkpoint_manager import checkpoint_run_lock, CheckpointGraphManager
+    from branch_authoring_recovery import recover_authoring
     from processing_persistence import atomic_json, sync_directory
 
 
@@ -59,7 +61,7 @@ class WorkingBranches:
         return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False,
                                          separators=(",", ":")).encode()).hexdigest()
 
-    def load(self, selected="main"):
+    def _load_record(self, selected="main"):
         selected = branch_id(selected)
         path = self._path(selected)
         if selected == "main" and not path.exists():
@@ -71,18 +73,73 @@ class WorkingBranches:
             raise ValueError("Invalid saved H3 working branch.")
         return record
 
+    def _pointers(self, selected):
+        directory = Path(working_directory(str(self.root), self.run, selected)) / "checkpoints"
+        if list((directory / ".transactions").glob("restore.*.json")):
+            raise ValueError("Checkpoint assignment recovery is pending. Refresh Checkpoint Manager first.")
+        result = {}
+        for path in sorted(directory.glob("clip_????.json")):
+            if not re.fullmatch(r"clip_[0-9]{4}\.json", path.name):
+                continue
+            if not path.resolve().is_relative_to(self.root):
+                raise ValueError("Branch checkpoint metadata escapes the project.")
+            result[int(path.stem[5:])] = self._read(path)
+        return result
+
+    @staticmethod
+    def _assignments(pointers):
+        return {str(scene): item["_authoring_assignment"] for scene, item in pointers.items()
+                if item.get("_authoring_assignment")}
+
+    def load(self, selected="main"):
+        """Read-only recovery of legacy/stale assignment snapshots.
+
+        A derived revision invalidates old browser bindings, so an old tab
+        cannot save stale settings over a newly assigned path. Normal scene
+        generation has no assignment marker and never clobbers authored edits.
+        """
+        selected = branch_id(selected)
+        with checkpoint_run_lock(str(self.output), self.run), branch_scope(self.run, selected):
+            record = self._load_record(selected)
+            if not record.get("authoring"):
+                return record
+            pointers = self._pointers(selected)
+            seen = record.get("authoring_assignments", {})
+            legacy = record.get("authoring_version", 1) < 2
+            changed = {scene: item for scene, item in pointers.items() if legacy or (
+                item.get("_authoring_assignment") and
+                item["_authoring_assignment"] != seen.get(str(scene)))}
+            if not changed:
+                return record
+            active, _stale = CheckpointGraphManager(str(self.output)).active_selection(self.run)
+            changed = {scene: item for scene, item in changed.items()
+                       if active.get(scene) == item.get("segment", {}).get("revision")}
+            if not changed:
+                return record
+            raw_revision = record["revision"]
+            record["authoring"] = recover_authoring(record["authoring"], changed)
+            record["revision"] = self._digest([raw_revision, changed])
+            # An old save receipt cannot acknowledge settings invalidated by a
+            # later assignment. Its retry must take the same stale-write path.
+            record.pop("last_save_operation", None)
+            record["authoring_recovery"] = {"snapshot_revision": raw_revision,
+                "scenes": sorted(changed),
+                "message": "Recovered assigned checkpoint prompts, exact seeds and scene settings. "
+                           "The previous branch snapshot is retained until save, then backed up."}
+            return record
+
     def listing(self):
-        records = [self.load()]
+        records = [self._load_record()]
         if self.folder.is_dir():
             for path in sorted(self.folder.iterdir()):
                 if path.is_dir() and re.fullmatch(r"[0-9a-f]{32}", path.name):
-                    records.append(self.load(path.name))
+                    records.append(self._load_record(path.name))
         default_path = self.folder / "default.json"
         if not default_path.resolve().is_relative_to(self.root):
             raise ValueError("H3 branch metadata escapes the project.")
         records[1:] = sorted(records[1:], key=lambda item: (item.get("created_at", ""), item["id"]))
         default = self._read(default_path).get("branch_id") if default_path.exists() else "main"
-        self.load(default)
+        self._load_record(default)
         return {"run_name": self.run, "default_branch": default,
                 "branches": [{key: value for key, value in item.items() if key != "authoring"}
                              for item in records]}
@@ -119,7 +176,20 @@ class WorkingBranches:
                 sync_directory(self._path(selected).parent)
                 return record
             if record.get("revision", "") != str(expected_revision or ""):
-                raise ValueError("This branch was edited in another workflow. Reload before saving.")
+                raise ValueError("This branch was edited in another workflow or its assigned checkpoint "
+                                 "settings changed. Reload saved branch before saving; local edits are kept in browser recovery.")
+            recovery = record.pop("authoring_recovery", None)
+            if recovery:
+                # Keep the exact pre-recovery record, not a reconstructed copy.
+                raw = self._load_record(selected)
+                backup = self.folder / "authoring_backups" / selected / (self._digest(raw) + ".json")
+                if not backup.resolve().is_relative_to(self.root):
+                    raise ValueError("Branch authoring backup escapes the project.")
+                if not backup.exists():
+                    self._write(backup, raw)
+                record["authoring_backup"] = str(backup.relative_to(self.root))
+            record["authoring_version"] = 2
+            record["authoring_assignments"] = self._assignments(self._pointers(selected))
             record.update(authoring=authoring, revision=uuid.uuid4().hex)
             if operation_id:
                 record["last_save_operation"] = {"id": operation_id, "hash": request_hash}
@@ -179,6 +249,9 @@ class WorkingBranches:
                       "created_at": datetime.now(timezone.utc).isoformat(),
                       "source_branch": source, "fork_scene": through_scene,
                       "create_operation_hash": request_hash,
+                      "authoring_version": 2,
+                      "authoring_assignments": self._assignments({
+                          int(filename[5:9]): metadata for filename, metadata in pointers}),
                       "authoring": authoring}
             stage = Path(tempfile.mkdtemp(prefix=".branch-", dir=self.folder))
             try:

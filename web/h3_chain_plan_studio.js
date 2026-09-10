@@ -1,6 +1,7 @@
 import {app} from "/scripts/app.js";
 import {api} from "/scripts/api.js";
-import {StudioBranches, BranchDrafts, branchOperationId, branchWidgetTransaction, branchRequestPath, workingBranchId} from "./h3_working_branches.mjs?v=0.7.18";
+import {StudioBranches, BranchDrafts, branchOperationId, branchWidgetTransaction, branchRequestPath, workingBranchId} from "./h3_working_branches.mjs?v=0.7.19";
+import {branchPolicyNodes, captureBranchPolicyInputs, restoreBranchPolicyInputs} from "./h3_plan_restore_core.mjs?v=0.7.19";
 import {
     CONTINUATION_MODES,
     FPS,
@@ -736,6 +737,7 @@ function mount(node) {
         // still publish either prompt-only or non-prompt changes.
         result.plan_json = planToJson(liveText !== null && liveText !== state.lastValue
             ? parsePlanJson(liveText) : state.plan);
+        result.policy_inputs = captureBranchPolicyInputs(owner);
         return result;
     }
     async function applyWorkingBranch(record) {
@@ -746,7 +748,8 @@ function mount(node) {
         const previous = {...state, history:{...state.history}};
         const previousSelection = branches.selected;
         try {
-            branchWidgetTransaction([node, state.planNode, ...state.promptEditors], () => {
+            branchWidgetTransaction([node, state.planNode, ...state.promptEditors,
+                ...branchPolicyNodes(state.planOwner ?? node)], () => {
                 disposePlayer();
                 state.checkpointToken += 1; state.presentationToken += 1;
                 state.history.loadToken += 1;
@@ -755,10 +758,11 @@ function mount(node) {
                 node.properties[CHECKPOINT_CACHE_PROPERTY] = null;
                 branchWidget.value = record.id;
                 for (const [name, value] of Object.entries(record.authoring)) {
-                    if (PLAN_SETTING_WIDGETS.includes(name) && name !== "run_name") {
+                    if (PLAN_SETTING_WIDGETS.includes(name) && name !== "run_name" && name !== "plan_json") {
                         writePlanSetting(name, value, false);
                     }
                 }
+                restoreBranchPolicyInputs(state.planOwner ?? node, record.authoring);
                 const savedPlan = parsePlanJson(record.authoring.plan_json);
                 if (record.id === "main") delete savedPlan._branch_id;
                 else savedPlan._branch_id = record.id;
@@ -916,6 +920,8 @@ function mount(node) {
             bar.append(button("Retry pending operation", "Reconcile the exact previous request without duplicating a branch", () => void branches.retryPending()));
         }
         if (branches.conflict) bar.append(element("span", "h3studio-error", branches.conflict));
+        const recovery = branches.records.find(item => item.id === currentBranch())?.authoring_recovery;
+        if (recovery) bar.append(element("span", "h3studio-message", recovery.message));
         bar.append(element("span", "h3studio-message h3studio-branch-draft", branchDraftError || branches.draftStatus));
         if (branches.error) bar.append(element("span", "h3studio-error", branches.error));
         return bar;

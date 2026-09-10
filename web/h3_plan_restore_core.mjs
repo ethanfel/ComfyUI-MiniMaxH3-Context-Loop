@@ -7,6 +7,7 @@ import {
     transitionPreset,
     transitionPresetName,
 } from "./h3_policy_core.mjs?v=0.7.9";
+import {resolveAudioPolicy, resolveTransitionPolicy} from "./h3_socket_presentation_core.mjs?v=0.7.9";
 
 const CHAIN_POLICY_NODE = "MiniMaxH3ChainPolicy";
 const PROFILE_POLICY_NODE = "MiniMaxH3GenerationProfile";
@@ -23,6 +24,41 @@ function graphLink(graph, linkId) {
 
 function widgetByName(node, name) {
     return node?.widgets?.find((item) => item.name === name);
+}
+
+// Include only the connected policy chain in a branch widget transaction.
+export function branchPolicyNodes(planNode) {
+    const result = [], queue = [linkedInputOrigin(planNode, "chain_policy")], seen = new Set();
+    while (queue.length) {
+        const node = queue.shift();
+        if (!node || seen.has(node)) continue;
+        seen.add(node);
+        if ([CHAIN_POLICY_NODE, PROFILE_POLICY_NODE, ADVANCED_POLICY_NODE, LEGACY_POLICY_NODE].includes(nodeType(node))) result.push(node);
+        for (const input of node.inputs ?? []) queue.push(linkedInputOrigin(node, input.name));
+    }
+    return result;
+}
+
+export function captureBranchPolicyInputs(planNode) {
+    const audio = resolveAudioPolicy(planNode), transition = resolveTransitionPolicy(planNode);
+    const result = {};
+    if (audio.known) result.audio_policy = {
+        final_audio: audio.finalAudio, source_reference: audio.sourceReference,
+        generated_continuity: audio.generatedContinuity,
+        ...(audio.sourceAudioTarget === "locked" ? {source_audio_target:"locked"} : {}),
+    };
+    if (transition.known) result.transition_policy = {
+        preset: transition.preset, expert_override: transition.expertOverride,
+        expert_continuation_mode: transition.continuationMode, expert_context_length: transition.contextLength,
+    };
+    return result;
+}
+
+export function restoreBranchPolicyInputs(planNode, authoring) {
+    if (!authoring.policy_inputs || !linkedInputOrigin(planNode, "chain_policy")) return;
+    const restored = restoreConnectedPolicyInputs(planNode, authoring.policy_inputs, authoring);
+    if (restored.unavailable.length) throw new Error(
+        `Cannot restore this branch's connected policy: ${restored.unavailable.join(", ")}. No branch switch was applied.`);
 }
 
 function allNodes(graph, output = []) {

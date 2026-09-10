@@ -2,9 +2,36 @@
 
 import assert from "node:assert/strict";
 import {
+    branchPolicyNodes,
+    captureBranchPolicyInputs,
+    restoreBranchPolicyInputs,
     refreshRestoredPlanEditors,
     restoreConnectedPolicyInputs,
 } from "../web/h3_plan_restore_core.mjs";
+import {branchWidgetTransaction} from "../web/h3_working_branches.mjs";
+
+{
+    const policy = {id:2, type:"MiniMaxH3ChainPolicy", inputs:[], widgets:[
+        widget("incoming_transition", "soft_av"), widget("final_audio", "generated"),
+        widget("source_reference", "off"), widget("generated_continuity", "on"),
+        widget("lock_source_audio", false),
+    ]};
+    const plan = {id:1,type:"MiniMaxH3ChainPlanModern",inputs:[{name:"chain_policy",link:1}],widgets:[]};
+    const graph = {links:{1:{origin_id:2}},getNodeById:id=>id===2?policy:plan};
+    plan.graph=policy.graph=graph;
+    const saved = {audio_context_length:39,policy_inputs:captureBranchPolicyInputs(plan)};
+    assert.equal(saved.policy_inputs.transition_policy.expert_context_length,39);
+    policy.widgets[0].value="guide";
+    policy.widgets[1].value="source";
+    branchWidgetTransaction(branchPolicyNodes(plan),()=>restoreBranchPolicyInputs(plan,saved));
+    assert.deepEqual(captureBranchPolicyInputs(plan),saved.policy_inputs);
+    const before = policy.widgets.map(w=>w.value);
+    const unsupported = structuredClone(saved);
+    unsupported.policy_inputs.audio_policy.final_audio="source";
+    unsupported.policy_inputs.transition_policy={expert_override:true,expert_continuation_mode:"guide",expert_context_length:73};
+    assert.throws(()=>branchWidgetTransaction(branchPolicyNodes(plan),()=>restoreBranchPolicyInputs(plan,unsupported)),/Cannot restore/);
+    assert.deepEqual(policy.widgets.map(w=>w.value),before,"failed branch policy application must roll back all widgets");
+}
 
 function widget(name, value) {
     return {

@@ -137,7 +137,10 @@ export class StudioBranches {
         this.rememberBinding(structuredClone(this.binding));
         this.savedSignature = authoringSignature(record.authoring);
         const existing = this.records.find(item => item.id === record.id);
-        if (existing) Object.assign(existing, record);
+        if (existing) {
+            delete existing.authoring_recovery;
+            Object.assign(existing, record);
+        }
         else this.records.push(record);
         this.conflict = "";
     }

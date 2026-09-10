@@ -52,6 +52,10 @@ async function browserChecks(extensionSource) {
         const payload = {revisions:seven,scenes:seven.map(item=>({scene:item.scene,scene_id:`scene_${item.scene}`,revision_count:1})),
             branches:[{active:true,path:[seven[0]],attribution_slot:{scene:2,candidates:[],blocked_candidates:[seven[1]]}},
                 {active:false,path:seven}],summary:{scene_count:7,revision_count:7,branch_count:2,bytes:0}};
+        const alternate = {scene:1,scene_id:"scene_1",revision:"e".repeat(32),alternate_of_revision:seven[0].revision,
+            take_kind:"editorial_alternate",ready:true,used_in_final_cut:true,created_at:"2026-09-10T10:00:00Z"};
+        seven[0].alternates = [alternate];
+        payload.revisions = [...seven, alternate];
         const named = "a".repeat(32);
         const studio = {type:"MiniMaxH3ChainPlanStudio",inputs:[],widgets:[{name:"run_name",value:"demo"},
             {name:"plan_json",value:'{"shots":[{"id":"one"}]}'},{name:"working_branch_id",value:named}]};
@@ -99,6 +103,25 @@ async function browserChecks(extensionSource) {
         }
         await new Promise(resolve=>setTimeout(resolve,100));
         check(root.querySelectorAll(".h3cm-fork-edge").length === 6,"All six saved continuation arrows render after resize");
+        const output = node.widgets[0].value;
+        check(!root.querySelector(".h3cm-alternate"),"Original graph has no embedded ALT cards");
+        const tab = label => [...root.querySelectorAll('[role="tab"]')].find(item=>item.textContent === label);
+        check(tab("Original · 7")?.getAttribute("aria-selected") === "true","Original count excludes ALT");
+        tab("ALT · 1").click(); await new Promise(resolve=>setTimeout(resolve,100));
+        check(tab("ALT · 1")?.getAttribute("aria-selected") === "true","ALT is a separate selected tab");
+        check(root.querySelectorAll(".h3cm-alternate").length === 1,"ALT appears exactly once");
+        check(!root.querySelector(".h3cm-fork-graph"),"ALT view has no misleading generation fork graph");
+        check(Boolean(root.querySelector(".h3cm-alternate-used")),"Used ALT is marked");
+        check(root.querySelector(".h3cm-alt-title").textContent.includes("Base 11111111"),"ALT shows its original base");
+        check(!root.querySelector(".h3cm-branches [aria-expanded]"),"ALT view has no collapse controls");
+        check(root.querySelector(".h3cm-assignment").hidden,"ALT hides generation-assignment controls");
+        check(root.querySelector(".h3cm-plan-context").hidden,"ALT hides generation-path marker text");
+        check(node.widgets[0].value === output,"Switching tabs preserves output selection");
+        check(root.querySelector(".h3cm-stage-note").textContent.length < 120,"Help text stays concise");
+        for (const width of [900,1500]) {
+            document.getElementById("host").style.width = width + "px";
+            check(root.scrollWidth <= root.clientWidth + 1,`ALT has no root overflow at ${width}px`);
+        }
         node.onRemoved?.();
     } catch (error) {report.failures.push(error.stack || String(error));}
     document.body.dataset.report = btoa(JSON.stringify(report));

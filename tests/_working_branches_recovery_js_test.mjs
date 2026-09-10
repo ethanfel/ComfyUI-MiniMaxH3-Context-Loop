@@ -3,6 +3,7 @@ import fs from "node:fs";
 import vm from "node:vm";
 import {StudioBranches, BranchDrafts, authoringSignature, branchWidgetTransaction} from "../web/h3_working_branches.mjs";
 import {workingBranchId} from "../web/h3_working_branches.mjs";
+import {branchPolicyNodes, captureBranchPolicyInputs, restoreBranchPolicyInputs} from "../web/h3_plan_restore_core.mjs";
 
 const id = "a".repeat(32);
 const authoring = seed => ({plan_json:JSON.stringify({shots:[{id:"one",prompt:"keep this",seed}],
@@ -264,7 +265,7 @@ assert.equal(authoringSignature(reordered),authoringSignature(authoring('2')));
     const node={};
     const context=vm.createContext({state:{plan:JSON.parse(original),lastValue:original,
         planWidget:{value:JSON.stringify(live)},planOwner:node},node,PLAN_SETTING_WIDGETS:[],
-        preserveDelegatedPrompts(){},parsePlanJson:JSON.parse,planToJson:JSON.stringify});
+        captureBranchPolicyInputs, preserveDelegatedPrompts(){},parsePlanJson:JSON.parse,planToJson:JSON.stringify});
     vm.runInContext(handler,context);
     assert.equal(JSON.parse(context.captureBranchAuthoring().plan_json).shots[0].prompt,live.shots[0].prompt);
 }
@@ -279,7 +280,7 @@ assert.equal(authoringSignature(reordered),authoringSignature(authoring('2')));
     const state={checkpointToken:1,presentationToken:1,history:{loadToken:1,sceneKey:'old'},
         promptEditors:[],planNode:null,lastBranchId:'main'};
     const branches={selected:'main'};
-    const context=vm.createContext({branchWidgetTransaction,workingBranchId,branchWidget,state,branches,node,Map,
+    const context=vm.createContext({branchPolicyNodes,restoreBranchPolicyInputs,branchWidgetTransaction,workingBranchId,branchWidget,state,branches,node,Map,
         CHECKPOINT_CACHE_PROPERTY:'cache',parsePlanJson:JSON.parse,planToJson:JSON.stringify,
         PLAN_SETTING_WIDGETS:['width','height','plan_json'],disposePlayer(){},
         writePlanSetting(name,value){node.widgets.find(w=>w.name===name).value=value;if(name==='height')throw Error('callback failure');},
@@ -297,6 +298,13 @@ assert.equal(authoringSignature(reordered),authoringSignature(authoring('2')));
     await assert.rejects(context.applyWorkingBranch({id,authoring:{width:128,height:96,plan_json:authoring('new').plan_json}}),/render failure/);
     assert.equal(branchWidget.value,'main');assert.equal(plan.value,authoring('old').plan_json);
     assert.equal(state.history.sceneKey,'old');
+    context.loadPlan=()=>{};
+    const recovered={...authoring('17115579879135537167'),width:960,height:544};
+    await context.applyWorkingBranch({id,authoring:recovered});
+    assert.equal(branchWidget.value,id);
+    assert.equal(width.value,960);assert.equal(height.value,544);
+    assert.equal(JSON.parse(plan.value).shots[0].seed,'17115579879135537167');
+    assert.equal(JSON.parse(plan.value).shots[0].prompt,'keep this');
     assert.match(source,/if \(throwOnError\) throw error/);
     assert.match(source,/root\.inert = Boolean\(branches\?\.busy\)/);
     assert.match(source,/branches\?\.busy && !force/);

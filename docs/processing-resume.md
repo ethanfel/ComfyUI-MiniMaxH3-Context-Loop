@@ -6,10 +6,31 @@ processing keeps those scenes and the original generation checkpoints.
 
 To continue, select the same source branch and chapter/output scope, keep the
 same output profile and processing settings, and set **Upscale Adapter →
-start_clip = 3**. Resume reads scenes 1–2 from their saved checkpoints, including
+start_clip = 3**, with **start_mode = resume**. Resume reads scenes 1–2 from their saved checkpoints, including
 the compact latent context required by Drift-Control. ComfyUI does not need to
 retain the previous execution in memory. `start_clip = 1` deliberately starts
 again; it is not an automatic skip-completed switch.
+
+## Starting a fresh later range
+
+To upscale only scenes 5–7, set **start_mode = fresh_range**, **start_clip = 5**,
+and **end_clip = 7** (or `0` for the last selected source scene). Scenes 1–4
+do not need any saved HQ outputs. Scene numbers remain 5–7; the new manifest
+and assembly contain only that range, with no blank prefix. Source audio stays
+aligned to the selected scenes. The original generation is unchanged and
+previous upscale takes are retained. Use another profile to keep separate
+passes' current checkpoint pointers independent.
+
+Pixel passes need no earlier HQ latent. For a latent pass with Drift-Control,
+the first scene protects its original saved source prefix; later scenes can
+carry the newly upscaled context normally.
+
+If scene 5 saves and scene 6 is cancelled, keep the same profile and source
+selection, choose **start_mode = resume**, and set **start_clip = 6**. The saved
+checkpoint records that this pass began at scene 5, so resume verifies scene 5
+without requiring 1–4. Missing, changed, or corrupt required checkpoints still
+fail verification; resume never silently turns into a fresh pass. Existing
+workflows without `start_mode` retain their previous resume behavior.
 
 There is no sampler-step or tile checkpoint inside an unfinished scene. Its
 processing must run again. Enabling `save_latent` saves the **finished** full

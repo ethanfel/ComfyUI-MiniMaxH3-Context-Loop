@@ -161,11 +161,61 @@ def _source_bounds(manifest: dict[str, Any]) -> tuple[int, int]:
 def _source_scene_count(manifest: dict[str, Any]) -> int:
     # Reference schedules/cache slots use the original Plan's scene numbers,
     # not a chapter-relative index. Existing full-run behavior stays unchanged.
-    if manifest.get("chapter"):
+    if manifest.get("chapter") or manifest.get("upscale_range"):
         return max(_source_bounds(manifest)[1],
                    int(manifest.get("source_scene_count") or
-                       manifest["chapter"].get("planned_end_scene") or 0))
+                       (manifest.get("chapter") or {}).get("planned_end_scene") or 0))
     return len(manifest["segments"])
+
+
+def _upscale_range_source(manifest: dict[str, Any], first: int,
+                          last: int) -> dict[str, Any]:
+    """Freeze only the requested scenes, retaining their original scene clock."""
+    source_first, source_last = _source_bounds(manifest)
+    if not source_first <= first <= last <= source_last:
+        raise ValueError("Saved upscale range is outside the selected source scenes.")
+    scoped = chain._json_document(manifest)
+    selected = scoped["segments"][first - source_first:last - source_first + 1]
+    chapter = dict(scoped.get("chapter") or {})
+    source_start = int(chapter.get("source_start_frame",
+        (scoped.get("upscale_range") or {}).get("source_start_frame", 0)))
+    source_start += sum(int(item["delivered_frames"])
+                        for item in scoped["segments"][:first - source_first])
+    editorial, origin = chain._chapter_scoped_editorial(
+        scoped["run_name"], selected, chain._manifest_editorial(scoped),
+        {"id": chapter.get("id", "upscale_range"),
+         "title": chapter.get("title", "Upscale range"),
+         "text": chapter.get("text", ""), "start_scene": first},
+        timeline_segments=scoped["segments"])
+    total = sum(int(item["delivered_frames"]) for item in selected)
+    scoped.update({
+        "segments": selected, "scene_start": first, "scene_end": last,
+        "clip_count": len(selected), "total_delivered_frames": total,
+        "duration_seconds": total / float(chain.FPS), "editorial": editorial,
+        "source_scene_count": max(_source_scene_count(manifest),
+                                  int(manifest.get("planned_clip_count") or 0)),
+        "upscale_range": {"scene_start": first, "scene_end": last,
+                          "source_start_frame": source_start},
+    })
+    if "last_completed_clip" in scoped:
+        scoped["last_completed_clip"] = last
+    if chapter:
+        planned_end = int(chapter.get("planned_end_scene", source_last))
+        chapter.update({"start_scene": first, "end_scene": last,
+                        "planned_end_scene": planned_end,
+                        "complete": last == planned_end,
+                        "source_start_frame": source_start,
+                        "editorial_origin_frame": int(chapter.get(
+                            "editorial_origin_frame", 0)) + origin})
+        scoped["chapter"] = chapter
+        # This is an in-memory range view, not the original sealed snapshot.
+        for key in ("chapter_manifest_id", "chapter_manifest_path", "sealed_at"):
+            scoped.pop(key, None)
+    if scoped.get("presentation_source"):
+        scoped["presentation_source"]["scenes"] = [
+            item for item in scoped["presentation_source"].get("scenes", [])
+            if first <= int(item["scene"]) <= last]
+    return scoped
 
 
 def _state_profile_paths(state: dict[str, Any], index: int) -> dict[str, str]:
@@ -1026,7 +1076,8 @@ def _load_upscale_prefix(state: dict[str, Any], start_clip: int
         paths = _state_profile_paths(state, index)
         if not os.path.isfile(paths["metadata"]):
             raise FileNotFoundError(
-                "Cannot resume upscale scene %d: scene %d metadata is missing: %s"
+                "Cannot resume upscale scene %d: scene %d metadata is missing: %s. "
+                "To process a new range without earlier HQ outputs, choose start_mode=fresh_range."
                 % (start_clip, index, paths["metadata"]))
         metadata = chain._read_json(paths["metadata"])
         if metadata.get("format") != "h3_chain_upscale_segment_v1":
@@ -1036,6 +1087,9 @@ def _load_upscale_prefix(state: dict[str, Any], start_clip: int
             raise ValueError("Upscale scene %d belongs to a different run or profile." % index)
         if metadata.get("profile_config_hash") != state["profile_config"]["config_hash"]:
             raise ValueError("Upscale scene %d used different profile settings." % index)
+        range_start = (state["source_manifest"].get("upscale_range") or {}).get("scene_start")
+        if metadata.get("upscale_range_start") != range_start:
+            raise ValueError("Upscale scene %d belongs to a different upscale range." % index)
         segment = metadata.get("segment")
         if not isinstance(segment, dict):
             raise ValueError("Upscale scene %d metadata has no segment." % index)
@@ -1099,7 +1153,7 @@ def _upscale_manifest(state: dict[str, Any], segments: list[dict[str, Any]],
     }
     if complete and len(segments) != total:
         raise ValueError("A complete upscale manifest requires %d scenes." % total)
-    if source.get("chapter"):
+    if source.get("chapter") or source.get("upscale_range"):
         manifest["scene_start"] = first
         manifest["scene_end"] = indexes[-1] if indexes else first - 1
     if not complete:
@@ -1135,10 +1189,10 @@ class MiniMaxH3ChainUpscaleAdapter:
                                "remains authoritative."}),
                 "start_clip": ("INT", {
                     "default": 1, "min": 1, "max": chain.MAX_SHOTS,
-                    "tooltip": "Original scene number to resume. 1 starts at "
+                    "tooltip": "Original scene number to start or resume. 1 starts at "
                                "the first selected scene (also for chapter-only "
-                               "input). Later scenes verify and reuse this "
-                               "chapter/profile's saved HQ prefix."}),
+                               "input). fresh_range needs no earlier HQ outputs; "
+                               "resume verifies the saved HQ prefix of this pass."}),
                 "end_clip": ("INT", {
                     "default": 0, "min": 0, "max": chain.MAX_SHOTS,
                     "tooltip": "Last scene to upscale; 0 means the final source scene."}),
@@ -1151,6 +1205,17 @@ class MiniMaxH3ChainUpscaleAdapter:
                 "segment_crf": ("INT", {
                     "default": 18, "min": 0, "max": 51,
                     "tooltip": "H.264 quality for persisted HQ scene segments."}),
+            },
+            "optional": {
+                "start_mode": (["resume", "fresh_range"], {
+                    "default": "resume",
+                    "tooltip": "resume verifies earlier saved HQ scenes in this pass. "
+                               "fresh_range processes only start_clip through end_clip, "
+                               "without requiring earlier HQ outputs. Original scene "
+                               "numbers and source audio are retained; any initial "
+                               "Drift-Control prefix uses the saved source latent. "
+                               "Earlier takes are kept. To continue a cancelled fresh "
+                               "range, select resume and its next unfinished scene."}),
             },
             "hidden": {"initial_state": (UPSCALE_STATE_TYPE,)},
         }
@@ -1176,8 +1241,10 @@ class MiniMaxH3ChainUpscaleAdapter:
 
     def adapt(self, source_manifest, profile, backend, recipe_json,
               start_clip, end_clip, save_latent, segment_crf,
-              initial_state=None):
+              initial_state=None, start_mode="resume"):
         if initial_state is None:
+            if start_mode not in ("resume", "fresh_range"):
+                raise ValueError("Unknown upscale start_mode %r." % start_mode)
             manifest = _verified_source_manifest(source_manifest)
             if any(item.get("processing_source", {}).get("profile_path") ==
                    chain._relative_output_path(_profile_dir(
@@ -1195,6 +1262,20 @@ class MiniMaxH3ChainUpscaleAdapter:
                     "there if later scenes are missing." % (first, last, first, last))
             if stop < start or stop > last:
                 raise ValueError("end_clip must be between start_clip and %d." % last)
+            if start_mode == "fresh_range":
+                manifest = _upscale_range_source(manifest, start, stop)
+            elif start > first:
+                # A fresh range can be resumed after a restart using only its
+                # per-scene saves, even if manifest publication was interrupted.
+                previous_path = _profile_paths(manifest["run_name"], profile,
+                                               start - 1, manifest)["metadata"]
+                if os.path.isfile(previous_path):
+                    previous = chain._read_json(previous_path)
+                    range_first = previous.get("upscale_range_start")
+                    if range_first is not None:
+                        if type(range_first) is not int or not first <= range_first < start:
+                            raise ValueError("Saved upscale range start is invalid for this resume.")
+                        manifest = _upscale_range_source(manifest, range_first, stop)
             state = {
                 "run_name": str(manifest["run_name"]),
                 "profile": chain._safe_name(profile, "upscale"),
@@ -1204,6 +1285,7 @@ class MiniMaxH3ChainUpscaleAdapter:
                 "source_manifest_hash": _source_hash(manifest),
                 "index": start,
                 "range_start": start,
+                "start_mode": start_mode,
                 # Shared by every recursive scene, but fresh for each queue.
                 # PNG export uses this only for durable numbered-folder routing.
                 "png_export_session": uuid.uuid4().hex,
@@ -1212,7 +1294,8 @@ class MiniMaxH3ChainUpscaleAdapter:
                 "previous_frames": None,
                 "previous_latent": None,
             }
-            state["segments"] = _load_upscale_prefix(state, start)
+            if start_mode == "resume":
+                state["segments"] = _load_upscale_prefix(state, start)
             previous_latent, context_status = _load_previous_upscaled_context(
                 state, start)
             state["previous_latent"] = previous_latent
@@ -1234,6 +1317,8 @@ class MiniMaxH3ChainUpscaleAdapter:
         context_status = str(state.get("previous_context_status") or "")
         if context_status:
             status += "; %s" % context_status
+        if state.get("start_mode") == "fresh_range":
+            status += "; fresh range only (no earlier HQ outputs required)"
         alternates = (manifest.get("presentation_source") or {}).get("scenes") or []
         if alternates:
             status += "; final-cut ALT pictures: " + ", ".join(
@@ -2731,6 +2816,8 @@ class MiniMaxH3ChainUpscaleSegmentSave:
                 "profile_config": state["profile_config"],
                 "segment": segment,
             }
+            if state["source_manifest"].get("upscale_range"):
+                metadata["upscale_range_start"] = _source_bounds(state["source_manifest"])[0]
             from .png_export_ownership import owner_key
             segment["png_export_owner"] = owner_key(state, _upscale_source_contract(source))
             from .checkpoint_variants import processing_lineage
@@ -3144,7 +3231,9 @@ def _assembly_manifest(manifest: dict[str, Any],
             "planned_end_scene": planned_end,
             "complete": saved_last == planned_end,
         })
-    if source.get("presentation_source"):
+    if source.get("upscale_range"):
+        assembly["upscale"]["source_start_frame"] = source["upscale_range"]["source_start_frame"]
+    if source.get("presentation_source") or source.get("upscale_range"):
         # ALT pictures have already been baked into HQ. Keep the frozen cut's
         # timing but never substitute low-resolution alternates during assembly.
         assembly["editorial"] = {**chain._json_document(source["editorial"]), "replacements": []}

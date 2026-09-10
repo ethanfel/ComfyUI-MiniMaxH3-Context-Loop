@@ -27623,7 +27623,8 @@ class MiniMaxH3ChainAssemble:
         audio = None
         if selected == "source":
             chapter = manifest.get("chapter") or {}
-            source_start_frame = int(chapter.get("source_start_frame", 0))
+            source_start_frame = int(chapter.get("source_start_frame",
+                (manifest.get("upscale") or {}).get("source_start_frame", 0)))
             source_end_frame = (
                 source_start_frame + generated_extension_frames)
             if source_timeline is None:
@@ -29422,7 +29423,10 @@ async def _restore_checkpoint_revisions(request):
                 for scene, metadata, _metadata_path in loaded:
                     canonical = os.path.join(
                         checkpoint_dir, "clip_%04d.json" % scene)
-                    _atomic_json(canonical, metadata)
+                    # This marker belongs only to the mutable assignment, never
+                    # the immutable take. Branch loading uses it to recover the
+                    # matching authoring snapshot even with no Plan connected.
+                    _atomic_json(canonical, dict(metadata, _authoring_assignment=transaction))
                     committed.append(canonical)
                 journal["state"] = "committed"
                 _atomic_json(journal_path, journal)
