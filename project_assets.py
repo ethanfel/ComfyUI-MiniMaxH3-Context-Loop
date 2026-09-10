@@ -550,7 +550,7 @@ class ProjectAssetStore:
             if primary_error is not None:
                 raise primary_error
             catalog = self._empty_catalog(name)
-            if create:
+            if create and not getattr(self, "_library_command", None):
                 return self._save_catalog(catalog)
             return catalog
         if (not isinstance(catalog, dict)
@@ -578,6 +578,9 @@ class ProjectAssetStore:
         path = os.path.join(directory, "catalog.json")
         expected_storage_revision = str(
             catalog.get("storage_revision") or "")
+        pending = getattr(self, "_library_command", None)
+        if pending and (expected_storage_revision or "empty") != pending["before_revision"]:
+            raise ProjectAssetConflictError("The library changed after review; no edit was saved.")
         assets = [dict(item) for item in catalog.get("assets", [])
                   if isinstance(item, dict)]
         slots = [dict(item) for item in catalog.get("reference_slots", [])
@@ -626,6 +629,7 @@ class ProjectAssetStore:
         })
         document["storage_revision"] = uuid.uuid4().hex
         with _catalog_lock(path), _catalog_file_lock(path):
+            current = {}
             if os.path.isfile(path):
                 with open(path, "r", encoding="utf-8") as handle:
                     current = json.load(handle)
@@ -654,6 +658,24 @@ class ProjectAssetStore:
                 os.makedirs(os.path.join(directory, group), exist_ok=True)
             backup, _name = self._backup_dir(name)
             os.makedirs(backup, exist_ok=True)
+            # Conditional library receipts share the authoritative catalog
+            # commit. Keep them even when a legacy caller supplied a public
+            # catalog without internal command bookkeeping.
+            receipts = dict(current.get("library_receipts") or {})
+            pending = getattr(self, "_library_command", None)
+            if pending:
+                if pending["project"] != name:
+                    raise ValueError("Library command project changed.")
+                receipts[pending["operation_id"]] = {
+                    **{key: value for key, value in pending.items()
+                       if key not in ("asset_ids_before", "folder_ids_before")},
+                    "after_revision": document["storage_revision"],
+                    "committed_at": document["updated_at"],
+                    "created_assets": [item["id"] for item in assets if item["id"] not in pending["asset_ids_before"]],
+                    "created_folders": [item["id"] for item in folders if item["id"] not in pending["folder_ids_before"]],
+                }
+            if receipts:
+                document["library_receipts"] = receipts
             # The input-side catalog is authoritative and atomically durable.
             # Publish it first so an interrupted mirror refresh can never make
             # a speculative catalog look newer than the accepted project.
@@ -664,12 +686,14 @@ class ProjectAssetStore:
                 _LOG.warning(
                     "Project %s catalog committed, but its output recovery "
                     "mirror could not be refreshed: %s", name, exc)
-        return document
+        return {key: value for key, value in document.items() if key != "library_receipts"}
 
     def public_catalog(self, project: Any, *, create: bool = True) -> dict[str, Any]:
         catalog = self.load(project, create=create)
         return {
-            **catalog,
+            **{key: value for key, value in catalog.items() if key != "library_receipts"},
+            "library_command_version": 1,
+            "library_revision": str(catalog.get("storage_revision") or "empty"),
             "assets": [dict(item) for item in catalog["assets"]],
             "reference_slots": [
                 dict(item) for item in catalog.get("reference_slots", [])],
@@ -1354,11 +1378,16 @@ class ProjectAssetStore:
         catalog["assets"] = [
             item for item in catalog["assets"]
             if str(item.get("id") or "") != wanted]
-        remaining_paths = {
-            str(item.get("relative_path") or "")
-            for item in catalog["assets"]}
         saved = self._save_catalog(catalog)
 
+        deleted_files = self._delete_asset_files(project, removed, saved)
+        return {"catalog": saved, "asset": removed, "deleted_files": deleted_files}
+
+    def _delete_asset_files(self, project, removed, catalog):
+        wanted = str(removed["id"])
+        if any(str(item.get("id")) == wanted for item in catalog["assets"]):
+            return 0
+        remaining_paths = {str(item.get("relative_path") or "") for item in catalog["assets"]}
         deleted_files = 0
         relative = str(removed.get("relative_path") or "")
         if relative and relative not in remaining_paths:
@@ -1384,11 +1413,7 @@ class ProjectAssetStore:
                             and preview.name.startswith(preview_prefix)):
                         os.unlink(preview.path)
                         deleted_files += 1
-        return {
-            "catalog": saved,
-            "asset": removed,
-            "deleted_files": deleted_files,
-        }
+        return deleted_files
 
     def input_media(self, query: Any = "") -> list[dict[str, Any]]:
         needle = str(query or "").strip().lower()

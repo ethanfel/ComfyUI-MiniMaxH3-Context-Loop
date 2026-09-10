@@ -109,6 +109,7 @@ from .review_inventory import (
     write_review_snapshot as _write_review_snapshot,
 )
 from .prompt_history import PromptHistoryStore
+from .asset_library import command_library, inspect_library
 from .prompt_optimizer import optimize_prompt_payload
 from .run_manager import RunArchiveManager, archive_policy_inputs
 from .asset_store import MAX_DIRECT_ASSET_BINDINGS, RunAssetStore
@@ -30990,11 +30991,36 @@ def _project_asset_error_response(exc: Exception):
 async def _project_asset_catalog(request):
     try:
         project = request.query.get("project", "")
+        if request.query.get("operation_id"):
+            result = await asyncio.to_thread(inspect_library, _project_asset_store(),
+                project, request.query["operation_id"])
+            return web.json_response(result)
         catalog = await asyncio.to_thread(
             _project_asset_store().public_catalog, project,
             create=request.query.get("create", "true").lower() != "false")
         return web.json_response(catalog)
     except (OSError, TypeError, ValueError) as exc:
+        return _project_asset_error_response(exc)
+
+
+async def _project_asset_library(request):
+    try:
+        body = await request.json()
+        if not isinstance(body, dict):
+            raise ValueError("Asset library command must be a JSON object.")
+        project = body.get("project", "")
+        rejection = _project_write_rejection(request, project, "edit the project library")
+        if rejection is not None:
+            return rejection
+        result = await asyncio.to_thread(_owned_project_mutation,
+            project, _request_project_ownership(request), "edit the project library",
+            command_library, _project_asset_store(), project, body)
+        return web.json_response(result)
+    except OSError as exc:
+        # The catalog/receipt may already be durable. Retain the request and
+        # reconcile its operation instead of treating I/O as a rejected write.
+        return web.json_response({"error": str(exc)}, status=500)
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
         return _project_asset_error_response(exc)
 
 
@@ -31903,6 +31929,8 @@ if (PromptServer is not None and web is not None and
     PromptServer.instance.routes.get(
         "/minimax_h3_context_loop/project-assets/sources")(
             _project_asset_sources)
+    PromptServer.instance.routes.post(
+        "/minimax_h3_context_loop/project-assets/library")(_project_asset_library)
     PromptServer.instance.routes.post(
         "/minimax_h3_context_loop/project-assets/upload")(
             _project_asset_upload)
