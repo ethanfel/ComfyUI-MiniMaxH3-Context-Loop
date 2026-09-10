@@ -9606,7 +9606,7 @@ def _parse_timed_lyrics(value: Any) -> list[dict[str, Any]]:
 
 def _editorial_subtitle_cues(
         run_name: str, editorial: dict[str, Any], total_frames: int,
-        timeline_origin_frames: int = 0
+        timeline_origin_frames: int = 0, *, catalog: dict[str, Any] | None = None
         ) -> list[dict[str, Any]]:
     settings = editorial.get("subtitles") or {}
     if settings.get("mode") != "preview_srt":
@@ -9615,7 +9615,8 @@ def _editorial_subtitle_cues(
     if not asset_id:
         raise ValueError(
             "Editorial subtitles are enabled but no lyrics asset is selected.")
-    catalog = ProjectAssetStore(_input_root(), _output_root()).load(run_name)
+    if catalog is None:
+        catalog = ProjectAssetStore(_input_root(), _output_root()).load(run_name)
     asset = next((item for item in catalog.get("assets", [])
                   if str(item.get("id") or "") == asset_id), None)
     if asset is None or asset.get("kind") != "audio":
@@ -19179,6 +19180,27 @@ class MiniMaxH3ChainCheckpointManager:
         return (manifest,)
 
 
+class MiniMaxH3ChainDeliverySource:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {"snapshot_json": ("STRING", {"default": "", "multiline": True,
+            "tooltip": "Exact saved source prepared by the H3 delivery snapshot API. Retains checkpoint lineage, final-cut settings and subtitles without following later edits."})}}
+
+    RETURN_TYPES = (MANIFEST_TYPE,)
+    RETURN_NAMES = ("saved_delivery_manifest",)
+    FUNCTION = "load"
+    CATEGORY = "conditioning/minimax/context_loop"
+    DESCRIPTION = "Load and verify a frozen saved delivery source without generating scenes or changing active checkpoints."
+
+    @classmethod
+    def IS_CHANGED(cls, *args, **kwargs):
+        return float("NaN")
+
+    def load(self, snapshot_json):
+        from .delivery_snapshot import load
+        return (load(sys.modules[__name__], snapshot_json),)
+
+
 class MiniMaxH3ChainFirstSceneImage:
     @classmethod
     def INPUT_TYPES(cls):
@@ -27555,6 +27577,8 @@ class MiniMaxH3ChainAssemble:
                 upscale_manifest)
             manifest = upscale_support._assembly_manifest(
                 upscale_manifest, upscale_segments)
+        if upscale_manifest is not None and manifest.get("delivery_pictures") is not None:
+            raise ValueError("Frozen saved-delivery pictures require a processed-source adapter before assembling an upscale manifest.")
         segments = _validate_manifest(manifest)
         geometry = common_saved_resolution(segments, "H3 Chain Assemble")
         if geometry:
@@ -27565,8 +27589,10 @@ class MiniMaxH3ChainAssemble:
         editorial = _manifest_editorial(manifest)
         editorial, editorial_records, editorial_extension_frames = (
             _editorial_timeline_records(run_name, segments, editorial))
-        presentation_segments = _editorial_presentation_segments(
-            run_name, segments, editorial)
+        from .delivery_snapshot import presentation_segments as frozen_presentation_segments
+        presentation_segments = frozen_presentation_segments(sys.modules[__name__], manifest)
+        if presentation_segments is None:
+            presentation_segments = _editorial_presentation_segments(run_name, segments, editorial)
         generated_extension_frames = int(manifest["total_delivered_frames"])
         editorial_used_frames = sum(
             int(item.get("frame_count", 0)) for item in editorial_records
@@ -27700,11 +27726,13 @@ class MiniMaxH3ChainAssemble:
         if generated_sidecar_audio is not None and prelude is not None:
             generated_sidecar_audio = _audio_with_prelude(
                 generated_sidecar_audio, extension_frames, prelude)
-        subtitle_cues = _editorial_subtitle_cues(
-            run_name, editorial, editorial_extension_frames,
-            timeline_origin_frames=int(
-                (manifest.get("chapter") or {}).get(
-                    "editorial_origin_frame", 0)))
+        from .delivery_snapshot import subtitle_cues as frozen_subtitle_cues
+        subtitle_origin = int((manifest.get("chapter") or {}).get("editorial_origin_frame", 0))
+        subtitle_cues = frozen_subtitle_cues(manifest, editorial_extension_frames, subtitle_origin)
+        if subtitle_cues is None:
+            subtitle_cues = _editorial_subtitle_cues(
+                run_name, editorial, editorial_extension_frames,
+                timeline_origin_frames=subtitle_origin)
         if prelude_frames and subtitle_cues:
             subtitle_shift = prelude_frames / float(FPS)
             subtitle_cues = [{
@@ -27942,6 +27970,20 @@ class MiniMaxH3ChainAssemble:
                 len(segments), int(upscale_manifest["clip_count"]))
         _LOG.info("H3 Chain %s", status)
         published_video = output_copy or final_path
+        if manifest.get("_delivery_snapshot_json"):
+            _atomic_json(os.path.splitext(final_path)[0] + ".delivery.json", {
+                "format": "h3_delivery_record_v1",
+                "snapshot_json": manifest["_delivery_snapshot_json"],
+                "snapshot_id": manifest["delivery_snapshot_id"],
+                "settings": {"audio_source": audio_source, "filename": filename,
+                    "audio_bitrate": audio_bitrate, "copy_to_output": copy_to_output,
+                    "output_subfolder": output_subfolder, "blend_schedule": blend_schedule,
+                    "boundary_tone_match": boundary_tone_match,
+                    "color_stabilization": color_stabilization},
+                "video": _video_output_item(final_path),
+                "video_sha256": _file_sha256(final_path), "frames": total_output_frames,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            })
         _publish_final_review_preview(manifest, published_video, status)
         return {
             "ui": {
@@ -28745,7 +28787,7 @@ def _checkpoint_output_compatibility(value: dict[str, Any]) -> dict[str, Any]:
         "generation_fingerprint", "generation_fingerprint_lineage")}
 
 
-def _checkpoint_selection_manifest(value: Any) -> dict[str, Any] | None:
+def _checkpoint_selection_manifest(value: Any, *, freeze_editorial=False) -> dict[str, Any] | None:
     """Build one immutable generated lineage directly from manager selection."""
     if value is None or (isinstance(value, str) and not value.strip()):
         return None
@@ -29008,11 +29050,11 @@ def _checkpoint_selection_manifest(value: Any) -> dict[str, Any] | None:
     elif isinstance(archived_plan.get("source_timeline"), dict):
         manifest["source_timeline"] = _json_document(
             archived_plan["source_timeline"])
-    if final_cut_branch != current_branch(run_name):
+    if freeze_editorial or final_cut_branch != current_branch(run_name):
         # Freeze the selected path's cut, not the unrelated assignment view's
         # cut. Keep output folders and generation lineage exactly as selected.
         manifest["editorial"] = _json_document(editorial)
-        manifest["final_cut_source"] = {"branch_id": final_cut_branch}
+        manifest["final_cut_source"] = {"branch_id": final_cut_branch, **({"editorial_revision": editorial["revision"]} if freeze_editorial else {})}
     if chapter_output:
         # Picture-only alternates cannot change duration. Earlier chapters'
         # base timing metadata suffices; do not require their alternate media.
@@ -29021,8 +29063,8 @@ def _checkpoint_selection_manifest(value: Any) -> dict[str, Any] | None:
             if int(item.get("scene", 0)) >= scope_start_scene]}
         manifest, _path = _chapter_manifest_from_manifest(
             manifest, int(selected_chapter["number"]), persist=False)
-        if final_cut_branch != current_branch(run_name):
-            manifest["final_cut_source"] = {"branch_id": final_cut_branch}
+        if freeze_editorial or final_cut_branch != current_branch(run_name):
+            manifest["final_cut_source"] = {"branch_id": final_cut_branch, **({"editorial_revision": editorial["revision"]} if freeze_editorial else {})}
     else:
         _validate_manifest(manifest)
     if selection.get("processing_source") is not None:
@@ -29984,6 +30026,18 @@ async def _list_saved_checkpoints(request):
             "H3 checkpoint listing took %.2fs for run %s (%s)",
             elapsed, run_name, "full graph" if include_graph else "active only")
     return web.json_response(payload)
+
+
+async def _prepare_saved_delivery(request):
+    from .delivery_snapshot import prepare, DeliveryConflict
+    try:
+        body = await request.json()
+        payload = await asyncio.to_thread(prepare, sys.modules[__name__], body)
+        return web.json_response(payload, headers={"Cache-Control": "no-store"})
+    except DeliveryConflict as exc:
+        return web.json_response({"error": str(exc)}, status=409)
+    except (OSError, TypeError, ValueError) as exc:
+        return web.json_response({"error": str(exc)}, status=400)
 
 
 async def _inspect_project_storage(request):
@@ -31802,6 +31856,8 @@ _submit_candidate_batch_command = scoped_review(_submit_candidate_batch_command,
 
 if (PromptServer is not None and web is not None and
         getattr(PromptServer, "instance", None) is not None):
+    PromptServer.instance.routes.post(
+        "/minimax_h3_context_loop/delivery/prepare")(_prepare_saved_delivery)
     PromptServer.instance.routes.get(
         "/minimax_h3_context_loop/working-branches")(_working_branch_command)
     PromptServer.instance.routes.post(
@@ -31953,6 +32009,7 @@ CHAIN_NODE_CLASS_MAPPINGS = {
     "MiniMaxH3ProjectAssetManager": MiniMaxH3ProjectAssetManager,
     "MiniMaxH3ChainRunManager": MiniMaxH3ChainRunManager,
     "MiniMaxH3ChainCheckpointManager": MiniMaxH3ChainCheckpointManager,
+    "MiniMaxH3ChainDeliverySource": MiniMaxH3ChainDeliverySource,
     "MiniMaxH3ChainFirstSceneImage": MiniMaxH3ChainFirstSceneImage,
     "MiniMaxH3ChainFrameIndexSwitch": MiniMaxH3ChainFrameIndexSwitch,
     "MiniMaxH3ReferenceVideoPrepare": MiniMaxH3ReferenceVideoPrepare,
@@ -32007,6 +32064,7 @@ CHAIN_NODE_CLASS_MAPPINGS = {
 scope_nodes(CHAIN_NODE_CLASS_MAPPINGS)
 
 CHAIN_NODE_DISPLAY_NAME_MAPPINGS = {
+    "MiniMaxH3ChainDeliverySource": "MiniMax H3 Saved Delivery Source",
     "MiniMaxH3LipSyncOptions": "MiniMax H3 Lip-Sync Options",
     "MiniMaxH3GenerationProfile": "MiniMax H3 Generation Profile",
     "MiniMaxH3ChainPolicy": "MiniMax H3 Manual Chain Policy (Legacy)",
