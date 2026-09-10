@@ -78,6 +78,14 @@ Editorial ALT cards stay below their exact original checkpoint; **Final cut:
 ALT · <revision>** marks the original whose alternate picture is currently used.
 The bright **Output path** is
 the manager's serialized output selection; a clip preview does not move it.
+
+The graph's **Zoom** controls scale only the saved-path canvas, including its
+arrows and inline ALT cards, from **25% to 200%**. Use **− / +**, the slider,
+or **Fit width**; clicking the percentage resets it to **100%**. Zoom is saved
+per Checkpoint Manager node and survives refreshes, stage/chapter switches and
+workflow reloads. It never changes the source selection, branch assignments,
+Plan, saved media, preview size or the main ComfyUI canvas zoom.
+
 **Select path** headings choose a whole original path (unless output is pinned),
 while processed path headings only preview. **Assigned to <name> through S<n>**
 is a separate badge showing where that working branch's assignment ends; it

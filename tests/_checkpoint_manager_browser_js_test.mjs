@@ -104,6 +104,50 @@ async function browserChecks(extensionSource) {
         await new Promise(resolve=>setTimeout(resolve,100));
         check(root.querySelectorAll(".h3cm-fork-edge").length === 6,"All six saved continuation arrows render after resize");
         const output = node.widgets[0].value;
+        const zoomInput = root.querySelector(".h3cm-graph-zoom");
+        const graph = root.querySelector(".h3cm-fork-graph");
+        const firstCard = graph.querySelector(".h3cm-revision");
+        const originalWidth = firstCard.getBoundingClientRect().width;
+        const sliderWidth = zoomInput.getBoundingClientRect().width;
+        const previewWidth = root.querySelector(".h3cm-preview").getBoundingClientRect().width;
+        const setZoom = async value => {
+            zoomInput.value=String(value);zoomInput.dispatchEvent(new Event("input",{bubbles:true}));
+            await new Promise(resolve=>setTimeout(resolve,70));
+        };
+        const checkEdges = label => {
+            for (const path of graph.querySelectorAll(".h3cm-fork-edge")) {
+                const from = [...graph.querySelectorAll(".h3cm-fork-node")].find(item=>item.dataset.graphKey===path.dataset.from)
+                    .querySelector(".h3cm-revision").getBoundingClientRect();
+                const to = [...graph.querySelectorAll(".h3cm-fork-node")].find(item=>item.dataset.graphKey===path.dataset.to)
+                    .querySelector(".h3cm-revision").getBoundingClientRect();
+                const coords = path.getAttribute("d").match(/-?\d*\.?\d+(?:e[-+]?\d+)?/gi).map(Number);
+                const matrix = path.getScreenCTM();
+                const start = new DOMPoint(coords[0],coords[1]).matrixTransform(matrix);
+                const tip = new DOMPoint(coords[10],coords[11]).matrixTransform(matrix);
+                check(Math.abs(start.x-from.right)<2 && Math.abs(start.y-(from.top+from.height/2))<2,
+                    label+": connector starts at original card");
+                check(Math.abs(tip.x+3*matrix.a-to.left)<2 && Math.abs(tip.y-(to.top+to.height/2))<2,
+                    label+": connector points to exact child");
+            }
+        };
+        await setZoom(50);
+        check(Math.abs(firstCard.getBoundingClientRect().width-originalWidth/2)<1,"Graph cards scale to 50 percent");
+        check(zoomInput.getBoundingClientRect().width===sliderWidth,"Zoom toolbar controls are not scaled");
+        check(root.querySelector(".h3cm-preview").getBoundingClientRect().width===previewWidth,"Preview/inspector is not scaled");
+        checkEdges("50 percent graph zoom");
+        document.getElementById("host").style.transform="scale(0.7)";
+        document.getElementById("host").style.transformOrigin="top left";
+        await setZoom(125);
+        checkEdges("125 percent graph plus 70 percent Comfy canvas zoom");
+        document.getElementById("host").style.transform="";
+        root.querySelector(".h3cm-graph-zoom-fit").click();
+        await new Promise(resolve=>setTimeout(resolve,70));
+        const viewport=root.querySelector(".h3cm-fork-scroll");
+        check(viewport.scrollWidth<=viewport.clientWidth+2,"Fit width removes unnecessary horizontal scrolling");
+        root.querySelector(".h3cm-graph-zoom-reset").click();
+        await new Promise(resolve=>setTimeout(resolve,70));
+        check(zoomInput.value==="100","Percentage button resets zoom to 100 percent");
+        check(node.widgets[0].value===output,"Graph zoom cannot change source selection");
         check(root.querySelectorAll(".h3cm-alternate").length === 1,"Original graph shows ALT once under its base");
         const tab = label => [...root.querySelectorAll('[role="tab"]')].find(item=>item.textContent === label);
         check(tab("Original · 8")?.getAttribute("aria-selected") === "true","Original stage includes its ALT takes");
@@ -143,6 +187,7 @@ async function browserChecks(extensionSource) {
         root.querySelector(".h3cm-main").style.gridTemplateColumns="minmax(0,1fr)";
         root.querySelector(".h3cm-detail").style.display="none";
         await new Promise(resolve=>setTimeout(resolve,100));
+        await setZoom(65);
         node.onRemoved?.();
     } catch (error) {report.failures.push(error.stack || String(error));}
     document.body.dataset.report = btoa(JSON.stringify(report));

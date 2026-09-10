@@ -879,3 +879,68 @@ assert.equal(byText(altNode,"ALT · 99999999"),undefined,"Chapter filter applies
 assert.ok(byText(altNode,"ALT · eeeeeeee"));
 assert.equal(mutations,beforeAltMutations,"Preview, refresh, restore and filtering never mutate saved data");
 console.log("Inline ALT: exact base, final-cut markers, broken takes, preview/delete targeting, legacy view restore and output isolation pass");
+
+// Graph zoom is local view state, independent of the source selection and preview.
+currentGraph = structuredClone(payload);
+const zoomed = makeNode(local,{h3_checkpoint_manager_graph_zoom:75}); await settle();
+const zoomPeer = makeNode(); await settle();
+const zoomInput = byClass(zoomed,"h3cm-graph-zoom");
+const zoomGraph = () => byClass(zoomed,"h3cm-fork-graph");
+const zoomBefore = value(zoomed), zoomRevision = zoomed.properties.h3_checkpoint_manager_revision;
+const zoomRequests = requests.length, zoomMutations = mutations;
+assert.equal(zoomGraph().style.zoom,"0.75");
+assert.equal(zoomInput.value,"75");
+assert.equal(byClass(zoomPeer,"h3cm-fork-graph").style.zoom,"1","Zoom is per node");
+zoomInput.value="50"; zoomInput.listeners.input();
+assert.equal(zoomGraph().style.zoom,"0.5");
+assert.equal(zoomed.properties.h3_checkpoint_manager_graph_zoom,50);
+assert.equal(zoomInput["aria-valuetext"],"50 percent");
+assert.equal(byClass(zoomed,"h3cm-graph-zoom-reset").textContent,"50%");
+byClass(zoomed,"h3cm-graph-zoom-in").click();
+assert.equal(zoomInput.value,"60");
+byClass(zoomed,"h3cm-graph-zoom-out").click();
+assert.equal(zoomInput.value,"50");
+byClass(zoomed,"h3cm-graph-zoom-reset").click();
+assert.equal(zoomInput.value,"100");
+zoomGraph().offsetWidth = 900;
+const graphScroll = byClass(zoomed,"h3cm-fork-scroll");
+graphScroll.clientWidth = 460;
+graphScroll.scrollLeft = 230;
+byClass(zoomed,"h3cm-graph-zoom-fit").click();
+assert.equal(zoomInput.value,"50","Fit uses unscaled graph width and available viewport");
+assert.equal(graphScroll.scrollLeft,0,"Zoom preserves the horizontal center subject to scroll limits");
+for (const [input,expected] of [[0,25],[300,200],["invalid",100],[null,100],[NaN,100]]) {
+    zoomInput.value=input; zoomInput.listeners.input();
+    assert.equal(zoomed.properties.h3_checkpoint_manager_graph_zoom,expected);
+}
+zoomInput.value="25";zoomInput.listeners.input();
+assert.ok(byClass(zoomed,"h3cm-graph-zoom-out").disabled);
+zoomInput.value="200";zoomInput.listeners.input();
+assert.ok(byClass(zoomed,"h3cm-graph-zoom-in").disabled);
+zoomed.properties.h3_checkpoint_manager_graph_zoom=150;
+zoomed._h3CheckpointManagerConfigured();
+assert.equal(zoomGraph().style.zoom,"1.5","Configure/undo restores graph zoom without a server refresh");
+assert.equal(value(zoomed),zoomBefore);
+assert.equal(zoomed.properties.h3_checkpoint_manager_revision,zoomRevision);
+assert.equal(requests.length,zoomRequests,"Zoom controls never call the backend");
+assert.equal(mutations,zoomMutations);
+const zoomCopy = makeNode(zoomBefore,{...zoomed.properties}); await settle();
+assert.equal(byClass(zoomCopy,"h3cm-fork-graph").style.zoom,"1.5","Saved workflows restore zoom");
+zoomed._h3CheckpointManagerRefresh();await settle();
+assert.equal(zoomGraph().style.zoom,"1.5","Metadata refresh retains zoom");
+byText(zoomed,"DeRoPE · 0").click();await settle();
+assert.ok(byClass(zoomed,"h3cm-graph-zoom-fit").disabled,"No graph means no fit action");
+byText(zoomed,"Original · 4").click();await settle();
+assert.equal(zoomGraph().style.zoom,"1.5","Stage changes retain the view preference");
+assert.equal(value(zoomed),zoomBefore);
+currentGraph.editorial = {chapters:[{id:"one",title:"Chapter 1",start_scene:1},
+    {id:"two",title:"Chapter 2",start_scene:3}]};
+zoomed._h3CheckpointManagerRefresh();await settle();
+const chapterGraphs = elements(zoomed).filter(item=>item.className==="h3cm-fork-graph");
+assert.equal(chapterGraphs.length,2);
+assert.ok(chapterGraphs.every(graph=>graph.style.zoom==="1.5"),"All visible chapter graphs share the node zoom");
+zoomInput.value="80";zoomInput.listeners.input();
+assert.ok(chapterGraphs.every(graph=>graph.style.zoom==="0.8"));
+byText(zoomed,"Chapter 1").click();await settle();
+assert.equal(zoomGraph().style.zoom,"0.8","Chapter filtering retains zoom");
+console.log("Checkpoint graph zoom: controls, fit, limits, peer isolation, save/restore, refresh and output/preview isolation pass");

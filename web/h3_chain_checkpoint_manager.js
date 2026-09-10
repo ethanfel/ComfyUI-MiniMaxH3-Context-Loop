@@ -50,6 +50,10 @@ const STAGE_PROPERTY = "h3_checkpoint_manager_stage";
 const VARIANT_PROPERTY = "h3_checkpoint_manager_variant";
 const COLLAPSED_CHAPTERS_PROPERTY = "h3_checkpoint_manager_collapsed_chapters";
 const PREVIEW_HEIGHT_PROPERTY = "h3_checkpoint_manager_preview_height";
+const GRAPH_ZOOM_PROPERTY = "h3_checkpoint_manager_graph_zoom";
+const MIN_GRAPH_ZOOM = 25;
+const MAX_GRAPH_ZOOM = 200;
+const DEFAULT_GRAPH_ZOOM = 100;
 const DEFAULT_PREVIEW_HEIGHT = 280;
 const MIN_PREVIEW_HEIGHT = 120;
 const MAX_PREVIEW_HEIGHT = 720;
@@ -59,6 +63,13 @@ function previewHeight(value) {
     return Number.isFinite(number)
         ? Math.max(MIN_PREVIEW_HEIGHT, Math.min(MAX_PREVIEW_HEIGHT, Math.round(number)))
         : DEFAULT_PREVIEW_HEIGHT;
+}
+
+function graphZoom(value) {
+    const number = value == null || value === "" ? NaN : Number(value);
+    return Number.isFinite(number)
+        ? Math.max(MIN_GRAPH_ZOOM, Math.min(MAX_GRAPH_ZOOM, Math.round(number / 5) * 5))
+        : DEFAULT_GRAPH_ZOOM;
 }
 
 function nodeType(node) {
@@ -224,6 +235,10 @@ function injectStyles() {
         border-radius:7px; background:color-mix(in srgb,var(--h3cm-panel) 90%,transparent); }
       .h3cm-panel-title { display:flex; justify-content:space-between; gap:8px; margin-bottom:7px; font-weight:750; }
       .h3cm-shared-legend { color:var(--h3cm-muted); font-size:10px; font-weight:500; }
+      .h3cm-graph-tools { display:flex; flex-wrap:wrap; align-items:center; gap:6px; margin-bottom:7px; }
+      .h3cm-graph-tools label { display:flex; align-items:center; gap:6px; color:var(--h3cm-muted); }
+      .h3cm-graph-zoom { width:130px; max-width:100%; margin:0; }
+      .h3cm-graph-zoom-reset { min-width:52px; font-variant-numeric:tabular-nums; }
       .h3cm-branches { position:relative; }
       .h3cm-branch-chapter { margin-bottom:12px; padding:7px; border:1px solid color-mix(in srgb,var(--h3cm-border) 62%,transparent);
         border-radius:8px; background:color-mix(in srgb,var(--h3cm-panel) 70%,transparent); }
@@ -349,6 +364,7 @@ function mount(node) {
                 ? node.properties[COLLAPSED_CHAPTERS_PROPERTY].map(String) : [],
         ),
         previewHeight:previewHeight(node.properties[PREVIEW_HEIGHT_PROPERTY]),
+        graphZoom:graphZoom(node.properties[GRAPH_ZOOM_PROPERTY]), graphViews:[],
         selected:null, outputTip:null, previewTip:null, deletion:null, busy:false, requestToken:0,
         initialRefresh:true, attribution:null, attributionButton:null,
         workingBranches:[], defaultWorkingBranch:"main", graphCleanups:[], planMarkerSignature:"",
@@ -426,9 +442,65 @@ function mount(node) {
     const branchesTitle = element("div", "h3cm-panel-title", "Saved clip paths");
     const branchLegend = element("span", "h3cm-shared-legend", "shared clips shown once · bright line = output path · dashed badge = Plan");
     branchesTitle.append(branchLegend);
+    const graphTools = element("div", "h3cm-graph-tools");
+    graphTools.setAttribute("role", "group");
+    graphTools.setAttribute("aria-label", "Checkpoint graph zoom controls");
+    const zoomOut = button("−", "Zoom out the checkpoint graph",
+        () => setGraphZoom(state.graphZoom - 10), "h3cm-graph-zoom-out");
+    zoomOut.setAttribute("aria-label", "Zoom out checkpoint graph");
+    const zoomIn = button("+", "Zoom in the checkpoint graph",
+        () => setGraphZoom(state.graphZoom + 10), "h3cm-graph-zoom-in");
+    zoomIn.setAttribute("aria-label", "Zoom in checkpoint graph");
+    const zoomLabel = element("label", "", "Zoom");
+    const zoomInput = element("input", "h3cm-graph-zoom");
+    zoomInput.type = "range"; zoomInput.min = String(MIN_GRAPH_ZOOM);
+    zoomInput.max = String(MAX_GRAPH_ZOOM); zoomInput.step = "5";
+    zoomInput.setAttribute("aria-label", "Checkpoint graph zoom percent");
+    zoomInput.addEventListener("input", () => setGraphZoom(zoomInput.value));
+    zoomLabel.append(zoomInput);
+    const zoomReset = button("100%", "Reset checkpoint graph zoom to 100%",
+        () => setGraphZoom(DEFAULT_GRAPH_ZOOM), "h3cm-graph-zoom-reset");
+    zoomReset.setAttribute("aria-label", "Reset checkpoint graph zoom to 100 percent");
+    const zoomFit = button("Fit width", "Fit visible checkpoint graphs to the available width (25% minimum)",
+        () => fitGraphZoom(), "h3cm-graph-zoom-fit");
+    graphTools.append(zoomOut, zoomLabel, zoomIn, zoomReset, zoomFit);
     const planContext = element("div", "h3cm-plan-context");
     const branches = element("div", "h3cm-branches");
-    branchesPanel.append(branchesTitle, planContext, branches);
+    branchesPanel.append(branchesTitle, graphTools, planContext, branches);
+
+    function updateGraphZoomControls() {
+        zoomInput.value = String(state.graphZoom);
+        zoomInput.setAttribute("aria-valuetext", `${state.graphZoom} percent`);
+        zoomReset.textContent = `${state.graphZoom}%`;
+        zoomOut.disabled = state.graphZoom <= MIN_GRAPH_ZOOM;
+        zoomIn.disabled = state.graphZoom >= MAX_GRAPH_ZOOM;
+        zoomFit.disabled = !state.graphViews.length;
+    }
+
+    function setGraphZoom(value, persist = true) {
+        const previous = state.graphZoom;
+        state.graphZoom = graphZoom(value);
+        for (const {graph, scroll} of state.graphViews) {
+            const center = (scroll.scrollLeft || 0) + (scroll.clientWidth || 0) / 2;
+            // CSS zoom changes the scrollable dimensions as well as the cards,
+            // including inline ALT cards and SVG edges. The inspector is outside it.
+            graph.style.zoom = String(state.graphZoom / 100);
+            scroll.scrollLeft = Math.max(0, center * state.graphZoom / previous - (scroll.clientWidth || 0) / 2);
+        }
+        updateGraphZoomControls();
+        if (persist) {
+            node.properties[GRAPH_ZOOM_PROPERTY] = state.graphZoom;
+            node.graph?.setDirtyCanvas?.(true, true);
+        }
+    }
+
+    function fitGraphZoom() {
+        const widths = state.graphViews.filter(({graph, scroll}) => graph.offsetWidth > 0 && scroll.clientWidth > 6)
+            .map(({graph, scroll}) => 100 * (scroll.clientWidth - 6) / graph.offsetWidth);
+        if (widths.length) setGraphZoom(Math.floor(Math.min(DEFAULT_GRAPH_ZOOM, ...widths) / 5) * 5);
+    }
+
+    updateGraphZoomControls();
     const detail = element("section", "h3cm-panel h3cm-detail");
     const previewFrame = element("div", "h3cm-preview-frame");
     const preview = element("video", "h3cm-preview");
@@ -1046,6 +1118,7 @@ function mount(node) {
         const inPlan = marker?.run === state.runName && marker.branch === selectedWorkingBranch();
         const scroll = element("div", "h3cm-fork-scroll");
         const graph = element("div", "h3cm-fork-graph");
+        graph.style.zoom = String(state.graphZoom / 100);
         graph.style.gridTemplateColumns = `repeat(${model.columns}, 180px)`;
         graph.setAttribute("aria-label", `${stageLabel()} saved revision forks`);
         const cards = new Map();
@@ -1190,6 +1263,8 @@ function mount(node) {
             cell.append(empty); graph.append(cell); cards.set(item.key, empty);
         }
         scroll.append(graph); container.append(scroll);
+        state.graphViews.push({graph, scroll});
+        updateGraphZoomControls();
         state.graphCleanups.push(mountCheckpointGraphEdges(graph, model, cards, output, document, window));
     }
 
@@ -1213,6 +1288,8 @@ function mount(node) {
         state.graphCleanups = [];
         renderPlanContext();
         branches.replaceChildren();
+        state.graphViews = [];
+        updateGraphZoomControls();
         const originals = state.payload?.revisions ?? [];
         const order = checkpointSaveOrder(state.stage === "original"
             ? [...originals, ...originals.flatMap(record => record.alternates ?? [])]
@@ -2244,6 +2321,7 @@ function mount(node) {
         state.stage = CHECKPOINT_STAGES.some(item => item.id === node.properties[STAGE_PROPERTY])
             ? node.properties[STAGE_PROPERTY] : "original";
         state.variantKey = String(node.properties[VARIANT_PROPERTY] ?? "");
+        setGraphZoom(node.properties[GRAPH_ZOOM_PROPERTY], false);
         state.initialRefresh = !state.scene || !state.revision;
     };
     bindSelectionSerializer();
@@ -2276,6 +2354,7 @@ function mount(node) {
         if (markerTimer != null) window.clearInterval(markerTimer);
         for (const cleanup of state.graphCleanups) cleanup();
         state.graphCleanups = [];
+        state.graphViews = [];
         delete this._h3CheckpointManagerPlanMarkerRefresh;
         return removed?.apply(this, arguments);
     };
