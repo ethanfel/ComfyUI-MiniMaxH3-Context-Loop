@@ -9606,7 +9606,7 @@ def _parse_timed_lyrics(value: Any) -> list[dict[str, Any]]:
 
 def _editorial_subtitle_cues(
         run_name: str, editorial: dict[str, Any], total_frames: int,
-        timeline_origin_frames: int = 0
+        timeline_origin_frames: int = 0, *, catalog: dict[str, Any] | None = None
         ) -> list[dict[str, Any]]:
     settings = editorial.get("subtitles") or {}
     if settings.get("mode") != "preview_srt":
@@ -9615,7 +9615,8 @@ def _editorial_subtitle_cues(
     if not asset_id:
         raise ValueError(
             "Editorial subtitles are enabled but no lyrics asset is selected.")
-    catalog = ProjectAssetStore(_input_root(), _output_root()).load(run_name)
+    if catalog is None:
+        catalog = ProjectAssetStore(_input_root(), _output_root()).load(run_name)
     asset = next((item for item in catalog.get("assets", [])
                   if str(item.get("id") or "") == asset_id), None)
     if asset is None or asset.get("kind") != "audio":
