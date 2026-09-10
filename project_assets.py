@@ -511,7 +511,9 @@ class ProjectAssetStore:
         }
 
     @_project_mutation
-    def load(self, project: Any, *, create: bool = False) -> dict[str, Any]:
+    def load(self, project: Any, *, create: bool = False, repair: bool = True) -> dict[str, Any]:
+        if create and not repair:
+            raise ValueError("A read-only catalog load cannot create a project.")
         directory, name = self._project_dir(project)
         path = os.path.join(directory, "catalog.json")
         backup_path = os.path.join(self._backup_dir(name)[0], "catalog.json")
@@ -523,7 +525,12 @@ class ProjectAssetStore:
                     catalog = json.load(handle)
             except (OSError, json.JSONDecodeError) as exc:
                 primary_error = exc
-        if catalog is None and os.path.isfile(backup_path):
+        if catalog is None and not repair and os.path.isfile(backup_path):
+            # Preview callers may use the recovery mirror without restoring
+            # the primary catalog or creating a filesystem lock.
+            with open(backup_path, "r", encoding="utf-8") as handle:
+                catalog = json.load(handle)
+        if catalog is None and repair and os.path.isfile(backup_path):
             # A writer may repair or replace the primary between our first
             # read and recovery. Re-check it while holding the same process
             # and filesystem locks used by catalog commits so an older mirror
