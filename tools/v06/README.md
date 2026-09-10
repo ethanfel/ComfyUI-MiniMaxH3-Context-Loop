@@ -25,6 +25,7 @@ python3 tools/build_v06_workflows.py --check
 python3 tests/_workflow_schema_unit_test.py
 python3 tests/_workflow_catalog_unit_test.py
 python3 tests/_derope_workflow_unit_test.py
+python3 tests/_split_upscale_workflow_unit_test.py
 ```
 
 The builder imports this branch's H3 `INPUT_TYPES` / output definitions in an

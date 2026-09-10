@@ -5,12 +5,58 @@
     "MAINodes": "https://github.com/matlowai/ComfyUI-MAINodes/blob/main/motion.py",
     "SeedVR2": "https://github.com/ethanfel/ComfyUI-SeedVR2_VideoUpscaler/blob/main/src/interfaces/direct_video_upscaler.py",
     "LBH": "https://github.com/LBH-123-AI/Comfyui_Minimax_h3_latent_Upscaler",
+    "LBH_split": "https://github.com/LBH-123-AI/Comfyui_Minimax_h3_latent_Upscaler/blob/main/nodes/MMH3_Split_Upscale.py (2026-09-10; MMH3SplitUpscale and V10 parameter schemas); Concat AV Latent from ComfyUI comfy_extras/nodes_lt.py",
     "USDU_H3": "https://github.com/lisitskyaa/ComfyUI_UltimateSDUpscaleGuider_H3/blob/main/usdu_nodes.py (2026-09-06; anchor_context BOOLEAN)",
     "DLSS5": "https://github.com/Blueforcer/ComfyUI-DLSS5-Enhancer/tree/main/nodes (2026-09-06)",
     "LMS": "https://huggingface.co/Alissonerdx/Minimax-H3-ComfyUI/tree/37bd61a3880640e0b5601954a2721d214c5f13b7 (LMS filename); ComfyUI be92396834f9b6e3e361cfe30e7eed693137a448 comfy_extras/nodes_lt.py (Separate AV Latent)",
     "note": "External-only offline contracts; H3 Context Loop contracts are imported from this checkout, never from a server."
   },
   "nodes": {
+    "MMH3TemporalSplitParamsV10": {
+      "input": {"required": {
+        "chunk_frames": ["INT", {"default": 73, "min": 5, "max": 100000, "step": 1}],
+        "temporal_overlap_frames": ["INT", {"default": 22, "min": 0, "max": 100000, "step": 1}],
+        "anchor_strength": ["FLOAT", {"default": 0.999, "min": 0.0, "max": 1.0, "step": 0.001}],
+        "motion_anchor_frames": [["0", "5", "22", "39"], {"default": "22"}],
+        "identity_anchor_frames": ["INT", {"default": 24, "min": 0, "max": 240, "step": 1}]
+      }},
+      "output": ["H3_TEMPORAL_PARAM_V10"], "output_name": ["temporal_split_param"], "output_is_list": [false]
+    },
+    "MMH3SpatialSplitParamsV10": {
+      "input": {"required": {
+        "tile_width": ["INT", {"default": 512, "min": 64, "max": 16384, "step": 32}],
+        "tile_height": ["INT", {"default": 512, "min": 64, "max": 16384, "step": 32}],
+        "overlap_ratio": ["FLOAT", {"default": 0.25, "min": 0.0, "max": 0.9, "step": 0.05}],
+        "fade_ratio": ["FLOAT", {"default": 0.5, "min": 0.0, "max": 1.0, "step": 0.05}],
+        "min_tile_size": ["INT", {"default": 256, "min": 0, "max": 16384, "step": 32}],
+        "seam_denoise": ["FLOAT", {"default": 1.0, "min": 0.1, "max": 1.0, "step": 0.05}]
+      }},
+      "output": ["H3_SPATIAL_PARAM_V10", "STRING"], "output_name": ["spatial_split_param", "grid_preview"], "output_is_list": [false, false]
+    },
+    "MMH3SplitUpscale": {
+      "input": {"required": {
+        "model": ["MODEL", {}],
+        "conditioning": ["CONDITIONING", {}],
+        "latent": ["LATENT", {}],
+        "noise": ["NOISE", {}],
+        "sampler": ["SAMPLER", {}],
+        "sigmas": ["SIGMAS", {}],
+        "cfg": ["FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0, "step": 0.1}],
+        "seam_polish": [["off", "auto", "all"], {"default": "off"}],
+        "color_match": ["BOOLEAN", {"default": true}]
+      }, "optional": {
+        "negative": ["CONDITIONING", {}],
+        "temporal_split_param": ["H3_TEMPORAL_PARAM_V10", {}],
+        "spatial_split_param": ["H3_SPATIAL_PARAM_V10", {}]
+      }},
+      "output": ["LATENT"], "output_name": ["latent"], "output_is_list": [false]
+    },
+    "LTXVConcatAVLatent": {
+      "input": {"required": {
+        "video_latent": ["LATENT", {}], "audio_latent": ["LATENT", {}]
+      }},
+      "output": ["LATENT"], "output_name": ["latent"], "output_is_list": [false]
+    },
     "LoraLoaderModelOnly": {
       "input": {"required": {
         "model": ["MODEL", {}],

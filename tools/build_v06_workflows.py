@@ -51,6 +51,10 @@ LABELS = {
     'CLIPLoader':'H3 Text Encoder', 'RandomNoise':'Scene Seed', 'SamplerCustomAdvanced':'Sample Video + Audio',
     'BasicScheduler':'Sampling Schedule', 'KSamplerSelect':'Sampler',
     'MinimaxH3LatentUpscaler3D':'LBH 3D Latent Upscaler', 'SeedVR2VideoPathUpscaler':'SeedVR2 Video Path Upscaler',
+    'MMH3TemporalSplitParamsV10':'MMH3 Temporal Split Params',
+    'MMH3SpatialSplitParamsV10':'MMH3 Spatial Split Params',
+    'MMH3SplitUpscale':'MMH3 Split Upscale • Experimental',
+    'LTXVConcatAVLatent':'Concat AV Latent',
     'MiniMaxH3ChainUpscalePixelCurrent':'Pixel Current Scene • Experimental',
     'MiniMaxH3ChainDeropeBudget':'De-Rope Budget',
     'H3ManualHoldMap':'De-Rope Ranges • RAW Scene Clock',
@@ -162,7 +166,7 @@ def layout(nodes,links):
         stack(col,x,180)
         types={n['type'] for n in col}; heading='PREPARE SCENE'
         if index==0:heading='MODELS & INPUTS'
-        if 'SamplerCustomAdvanced' in types:heading='SAMPLE & DECODE'
+        if types & {'SamplerCustomAdvanced', 'MMH3SplitUpscale'}:heading='SAMPLE & DECODE'
         if types & {'MiniMaxH3ChainSegmentSave','MiniMaxH3ChainUpscaleSegmentSave'}:heading='SAVE & REVIEW'
         if 'MiniMaxH3ChainReview' in types:heading='REVIEW & CONTINUE'
         if types & {'MiniMaxH3ChainAssemble','SaveVideo'}:heading='DELIVER'

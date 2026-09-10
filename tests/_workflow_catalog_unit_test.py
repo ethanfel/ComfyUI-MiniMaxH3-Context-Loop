@@ -16,6 +16,7 @@ WORKFLOWS = {
     "Deferred De-Rope Only - Fast Turbo - MiniMax H3 0.6.json",
     "Deferred Upscale + De-Rope - H3 LBH 3D - MiniMax H3 0.6.json",
     "Deferred Upscale - H3 LBH 3D - MiniMax H3 0.6.json",
+    "Deferred Upscale - H3 LBH 3D Split - EXPERIMENTAL - MiniMax H3 0.6.json",
     "Deferred Upscale - Pixel DLSS5 + USDU - EXPERIMENTAL - MiniMax H3 0.6.json",
     "Deferred Upscale - DLSS5 + LMS Guide - EXPERIMENTAL - MiniMax H3 0.6.json",
     "Deferred Upscale - SeedVR2 Full Chain - MiniMax H3 0.6.json",

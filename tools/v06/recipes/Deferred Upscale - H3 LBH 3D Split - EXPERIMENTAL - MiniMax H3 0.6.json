@@ -1,0 +1,449 @@
+{
+  "nodes": [
+    {
+      "key": "n1",
+      "type": "MiniMaxH3ChainCheckpointManager",
+      "settings": {
+        "selection_json": ""
+      },
+      "inputs": {}
+    },
+    {
+      "key": "n2",
+      "type": "MiniMaxH3ChainUpscaleAdapter",
+      "settings": {
+        "profile": "h3_lbh_3d_split_experimental",
+        "backend": "h3_latent",
+        "recipe_json": "{\"upscaler\":\"LBH 3D\",\"refinement\":\"MMH3SplitUpscale\",\"scale_multiplier\":2,\"pass2_steps\":20,\"scheduler\":\"simple\",\"sampler\":\"res_multistep\",\"denoise\":0.24,\"conditioning\":\"latent_sync\",\"audio_denoise\":0,\"source_audio\":\"reattach_exact\",\"locked_hq_prefix\":false,\"temporal\":{\"chunk_frames\":73,\"temporal_overlap_frames\":22,\"anchor_strength\":0.999,\"motion_anchor_frames\":22,\"identity_anchor_frames\":24},\"spatial\":{\"tile_width\":512,\"tile_height\":512,\"overlap_ratio\":0.25,\"fade_ratio\":0.5,\"min_tile_size\":256,\"seam_denoise\":0.65},\"seam_polish\":\"off\",\"color_match\":true}",
+        "start_clip": 1,
+        "end_clip": 1,
+        "save_latent": false,
+        "segment_crf": 18,
+        "start_mode": "fresh_range"
+      },
+      "inputs": {
+        "source_manifest": [
+          "n1",
+          "selected_manifest"
+        ]
+      }
+    },
+    {
+      "key": "n3",
+      "type": "MiniMaxH3ChainUpscaleCurrent",
+      "settings": {},
+      "inputs": {
+        "state": [
+          "n2",
+          "state"
+        ]
+      }
+    },
+    {
+      "key": "n4",
+      "type": "UNETLoader",
+      "settings": {
+        "unet_name": "minimax_h3_fl2va_pruned_int8_convrot.safetensors",
+        "weight_dtype": "default"
+      },
+      "inputs": {}
+    },
+    {
+      "key": "n5",
+      "type": "ModelAttentionBackend",
+      "settings": {
+        "attention": "pytorch attention"
+      },
+      "inputs": {
+        "model": [
+          "n4",
+          "MODEL"
+        ]
+      },
+      "mode": 4
+    },
+    {
+      "key": "n6",
+      "type": "MiniMaxH3SigmaShift",
+      "settings": {
+        "shift_video": 12,
+        "shift_audio": 3
+      },
+      "inputs": {
+        "model": [
+          "n5",
+          "MODEL"
+        ]
+      }
+    },
+    {
+      "key": "n7",
+      "type": "CLIPLoader",
+      "settings": {
+        "clip_name": "qwen3vl_32b_minimax_h3_int8_convrot.safetensors",
+        "type": "minimax",
+        "device": "default"
+      },
+      "inputs": {}
+    },
+    {
+      "key": "n8",
+      "type": "VAELoader",
+      "settings": {
+        "vae_name": "minimax_h3_video_vae_fp16.safetensors"
+      },
+      "inputs": {}
+    },
+    {
+      "key": "n9",
+      "type": "MiniMaxH3UpscaleReferencePromptOverride",
+      "settings": {
+        "prompt_override": "",
+        "disabled_tags": ""
+      },
+      "inputs": {}
+    },
+    {
+      "key": "n10",
+      "type": "MiniMaxH3ChainUpscaleReferenceConditioning",
+      "settings": {
+        "missing_cache": "text_only",
+        "motion_ref_mode": "exclude_video_keep_audio",
+        "prompt_override": "",
+        "override_ref_image_size": "inherit",
+        "override_reference_policy": "strict",
+        "override_semantic_anchor_size": "inherit",
+        "override_semantic_anchor_mode": "inherit"
+      },
+      "inputs": {
+        "state": [
+          "n3",
+          "state"
+        ],
+        "clip": [
+          "n7",
+          "CLIP"
+        ],
+        "video_vae": [
+          "n8",
+          "VAE"
+        ],
+        "prompt_override": [
+          "n9",
+          "prompt_override"
+        ],
+        "tagged_references": [
+          "n9",
+          "references"
+        ]
+      }
+    },
+    {
+      "key": "n11",
+      "type": "RandomNoise",
+      "settings": {
+        "noise_seed": 0,
+        "control_after_generate": "fixed"
+      },
+      "inputs": {
+        "noise_seed": [
+          "n3",
+          "seed"
+        ]
+      }
+    },
+    {
+      "key": "n12",
+      "type": "BasicScheduler",
+      "settings": {
+        "scheduler": "simple",
+        "steps": 20,
+        "denoise": 0.24
+      },
+      "inputs": {
+        "model": [
+          "n6",
+          "MODEL"
+        ]
+      }
+    },
+    {
+      "key": "n13",
+      "type": "MinimaxH3LatentUpscaler3D",
+      "settings": {
+        "model_name": "minimax_h3_latent_upscaler_3d_fp16.safetensors",
+        "mode": "scale by multiplier",
+        "mode.scale": 2,
+        "align": 32,
+        "enable_temporal_chunking": true,
+        "force_unload": true,
+        "device": "cuda",
+        "precision": "fp16"
+      },
+      "inputs": {
+        "latent": [
+          "n3",
+          "source_video_latent"
+        ]
+      }
+    },
+    {
+      "key": "n14",
+      "type": "H3ConditioningSyncFromLatents",
+      "settings": {
+        "method": "bilinear",
+        "motion_ref_mode": "conditioning_policy"
+      },
+      "inputs": {
+        "original_latent": [
+          "n3",
+          "source_video_latent"
+        ],
+        "upscaled_latent": [
+          "n13",
+          "latent"
+        ],
+        "positive": [
+          "n10",
+          "positive"
+        ]
+      }
+    },
+    {
+      "key": "n18",
+      "type": "KSamplerSelect",
+      "settings": {
+        "sampler_name": "res_multistep"
+      },
+      "inputs": {}
+    },
+    {
+      "key": "join_clean",
+      "type": "LTXVConcatAVLatent",
+      "settings": {},
+      "inputs": {
+        "video_latent": [
+          "n13",
+          "latent"
+        ],
+        "audio_latent": [
+          "n3",
+          "source_audio_latent"
+        ]
+      }
+    },
+    {
+      "key": "time_params",
+      "type": "MMH3TemporalSplitParamsV10",
+      "settings": {
+        "chunk_frames": 73,
+        "temporal_overlap_frames": 22,
+        "anchor_strength": 0.999,
+        "motion_anchor_frames": "22",
+        "identity_anchor_frames": 24
+      },
+      "inputs": {}
+    },
+    {
+      "key": "space_params",
+      "type": "MMH3SpatialSplitParamsV10",
+      "settings": {
+        "tile_width": 512,
+        "tile_height": 512,
+        "overlap_ratio": 0.25,
+        "fade_ratio": 0.5,
+        "min_tile_size": 256,
+        "seam_denoise": 0.65
+      },
+      "inputs": {}
+    },
+    {
+      "key": "split",
+      "type": "MMH3SplitUpscale",
+      "settings": {
+        "cfg": 1,
+        "seam_polish": "off",
+        "color_match": true
+      },
+      "inputs": {
+        "model": [
+          "n6",
+          "MODEL"
+        ],
+        "conditioning": [
+          "n14",
+          "positive"
+        ],
+        "latent": [
+          "join_clean",
+          "latent"
+        ],
+        "noise": [
+          "n11",
+          "NOISE"
+        ],
+        "sampler": [
+          "n18",
+          "SAMPLER"
+        ],
+        "sigmas": [
+          "n12",
+          "SIGMAS"
+        ],
+        "temporal_split_param": [
+          "time_params",
+          "temporal_split_param"
+        ],
+        "spatial_split_param": [
+          "space_params",
+          "spatial_split_param"
+        ]
+      }
+    },
+    {
+      "key": "separate_result",
+      "type": "LTXVSeparateAVLatent",
+      "settings": {},
+      "inputs": {
+        "av_latent": [
+          "split",
+          "latent"
+        ]
+      }
+    },
+    {
+      "key": "restore_audio",
+      "type": "LTXVConcatAVLatent",
+      "settings": {},
+      "inputs": {
+        "video_latent": [
+          "separate_result",
+          "video_latent"
+        ],
+        "audio_latent": [
+          "n3",
+          "source_audio_latent"
+        ]
+      }
+    },
+    {
+      "key": "n20",
+      "type": "VAEDecode",
+      "settings": {},
+      "inputs": {
+        "samples": [
+          "separate_result",
+          "video_latent"
+        ],
+        "vae": [
+          "n8",
+          "VAE"
+        ]
+      }
+    },
+    {
+      "key": "n21",
+      "type": "MiniMaxH3ChainUpscaleSegmentSave",
+      "settings": {},
+      "inputs": {
+        "state": [
+          "n3",
+          "state"
+        ],
+        "images": [
+          "n20",
+          "IMAGE"
+        ],
+        "upscaled_latent": [
+          "restore_audio",
+          "latent"
+        ]
+      }
+    },
+    {
+      "key": "n22",
+      "type": "MiniMaxH3ChainUpscaleLoopEnd",
+      "settings": {},
+      "inputs": {
+        "flow": [
+          "n2",
+          "flow"
+        ],
+        "state": [
+          "n3",
+          "state"
+        ],
+        "images": [
+          "n20",
+          "IMAGE"
+        ],
+        "segment": [
+          "n21",
+          "segment"
+        ],
+        "upscaled_latent": [
+          "restore_audio",
+          "latent"
+        ]
+      }
+    },
+    {
+      "key": "n23",
+      "type": "MiniMaxH3ChainAssemble",
+      "settings": {
+        "audio_source": "plan",
+        "filename": "h3_split_upscaled_%date:yyyy-MM-dd%",
+        "audio_bitrate": 256,
+        "copy_to_output": false,
+        "output_subfolder": "",
+        "blend_schedule": "plan",
+        "boundary_tone_match": "off",
+        "color_stabilization": "off"
+      },
+      "inputs": {
+        "manifest": [
+          "n22",
+          "manifest"
+        ]
+      }
+    },
+    {
+      "key": "note_0",
+      "type": "Note",
+      "settings": {
+        "text": "## Run a bounded comparison\n\nOpen this alternate, select the saved source lineage, and retain the distinct profile `h3_lbh_3d_split_experimental`. Nothing is regenerated in the original branch.\n\nThe default range is scene 1 only. To test scene 5 without upscaling 1-4, keep start_mode=fresh_range and set start_clip=5 and end_clip=5. After inspection, choose a wider range; end_clip=0 means the selection's last generated scene. These are original scene numbers, not chapter-local offsets. For a chapter starting at scene 8, set both to 8. To continue an interrupted range, select resume and the next unfinished scene; keep that profile and recipe unchanged.\n\nKeep the same source, seed, model and refinement schedule when comparing against the ordinary LBH workflow. The scene's recorded seed feeds RandomNoise; this template contains no project-specific prompt or selection.\n\nInstall/update the [LBH node pack](https://github.com/LBH-123-AI/Comfyui_Minimax_h3_latent_Upscaler) so MMH3SplitUpscale, MMH3TemporalSplitParamsV10 and MMH3SpatialSplitParamsV10 are present. Use current ComfyUI with MiniMax H3 AV masking support. Select an installed compatible 3D model from latent_upscale_models; the template keeps the existing LBH FP16 filename, 2x multiplier, align=32, temporal chunking and force_unload enabled. No new LoRA is required."
+      },
+      "inputs": {},
+      "label": "SETUP"
+    },
+    {
+      "key": "note_1",
+      "type": "Note",
+      "settings": {
+        "text": "## What is different\n\nSaved clean video latent -> LBH 3D -> Concat AV Latent with original audio -> MMH3 Split Upscale -> Separate AV Latent -> video decode.\n\nA second Concat AV Latent combines the separated refined video with the **untouched source audio latent**, then feeds Segment Save and Loop End. Separating first avoids core Concat fitting the original audio to the split result's potentially shortened audio clock. Segment Save also retains the source checkpoint's delivered waveform; recovered_audio is deliberately disconnected. Frame counts and source trimming remain checked by Segment Save.\n\nThere is no Pass-2 AV Prepare, DisableNoise, BasicGuider or SamplerCustomAdvanced in this alternate. The split node creates a guider for each tile and applies RandomNoise itself; passing the existing pre-noised latent would use the wrong initialization.\n\nThe existing source-prompt/reference restore and conditioning geometry sync remain connected. Motion references stay excluded by default; this is not a new prompt-generation path.\n\n## Important continuity limitation\n\n**No locked previous-HQ scene prefix.** The inspected upstream split node creates its own video masks and does not merge an input noise_mask. Its temporal anchors are within the current scene; they are not our cross-scene Drift-Control protection. Carried source frames can be refined again. They are still trimmed on delivery, but boundary appearance can differ from the previous HQ scene. Do not use this alternate as a drop-in replacement for a mask-sensitive inpaint or an exact-prefix workflow.\n\nDo not connect Pass-2 AV Prepare to try to restore that protection: its mask would be discarded and its pre-noising would conflict with split sampling. Use the ordinary LBH workflow when exact previous-HQ prefix protection is required.\n\nThe split operation is one node execution: an interruption restarts the current scene, not the last completed tile. Completed scene checkpoints remain available. VAE decoding still materializes the full scene; smaller sampler tiles do not guarantee that every stage fits memory. No model/backend patches or installed packs are modified by this example."
+      },
+      "inputs": {},
+      "label": "WIRING"
+    },
+    {
+      "key": "note_2",
+      "type": "Note",
+      "settings": {
+        "text": "## Starting settings, not a validated quality preset\n\n| Control | Value |\n|---|---|\n| Learned upscale | 2x, grid 32, FP16 |\n| Temporal chunk / overlap | 73 / 22 frames |\n| Anchor strength / motion frames / identity spacing | 0.999 / 22 / 24 |\n| Spatial tile | 512 x 512 pixels |\n| Tile overlap / overlap fade / minimum edge | 25% / 50% / 256 pixels |\n| Seam denoise / polish / color match | 0.65 / off / on |\n| Refinement | res_multistep, simple, 20 steps, denoise 0.24, CFG 1 |\n\nTemporal and spatial values follow [upstream's node documentation](https://github.com/LBH-123-AI/Comfyui_Minimax_h3_latent_Upscaler#node-reference--mmh3-split-upscale-combo), except seam_denoise=0.65, chosen within its suggested 0.5-0.8 range. These are conservative starting controls, not measured best settings for this chain.\n\nThe refinement schedule is inherited from the actual current base-model LBH graph: **20 sampler steps**, not the stale two-step description in its older notes. It does not use a Turbo LoRA. Adapter recipe metadata matches the visible settings in this alternate.\n\nStart with the saved defaults and inspect identity, fast movement, spatial seams and temporal joins. With enough VRAM, test larger tiles or disconnect only Spatial Split Params for temporal-only refinement. Keep Temporal Split Params connected in that case; disconnecting both disables splitting. Treat seam polish as an additional experiment: it samples strips that can span a full image dimension, increasing peak memory. Change one variable at a time.\n\nIf you change sampling or split settings, use a new profile and update recipe_json to describe the experiment accurately; that field is a record, not a control for the downstream nodes."
+      },
+      "inputs": {},
+      "label": "SETTINGS"
+    },
+    {
+      "key": "note_3",
+      "type": "Note",
+      "settings": {
+        "text": "## Research and validation record — 2026-09-10\n\n- [Upstream implementation](https://github.com/LBH-123-AI/Comfyui_Minimax_h3_latent_Upscaler/blob/main/nodes/MMH3_Split_Upscale.py) supplies the schemas and confirms clean-input sampling, replacement video masks, zero audio masks and per-tile guider construction. It returns a new samples dictionary rather than preserving all input metadata.\n- [Banodoco: Illynir, August 29](https://discord.com/channels/1076117621407223829/1533923760984555875/1543269788518850613) mentions the spatial/split resampling addition, but supplies no settings or benchmark. The accessible H3-channel search did not establish a tested preset for this exact node. The curated-distillation endpoint was unavailable; raw message search worked.\n- Local checks cover schema/widget serialization, links, layout, clean-input wiring, exact source-audio routing and metadata/settings agreement. They do **not** establish output quality, seamless joins, hardware memory requirements, or runtime compatibility with every upstream version.\n- The existing MiniMax H3 model license still applies; this workflow adds no model weights. See the [vendor license](https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/LICENSE), including its local-use territory restrictions (US/EU/UK/South Korea); the paid API is a separate product."
+      },
+      "inputs": {},
+      "label": "SOURCES"
+    }
+  ],
+  "compatibility_note": "Experimental alternate for **nightly**. The ordinary LBH 3D workflow is unchanged. Offline contracts and wiring are checked; this example has not been GPU-render validated.",
+  "setup_steps": "1. Requires the LBH pack with MMH3 Split Upscale and both V10 Split Params nodes (August 28+).\n2. Select a saved lineage in Checkpoint Manager; keep a distinct upscale profile.\n3. First test: fresh_range, start_clip=1 / end_clip=1. For scene 5 alone, set BOTH to 5.\n4. EXPERIMENTAL: no locked previous-HQ scene prefix; inspect cuts before processing a range.\n5. Clean latent -> LBH 2x -> temporal/spatial Split Upscale -> restore original audio -> save.\n6. Do not insert Pass-2 AV Prepare / Disable Noise: the split node adds its own noise.\n7. Read the matching guide for parameters, source links, memory limits and continuity caveats."
+}
