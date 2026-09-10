@@ -108,7 +108,7 @@ from .review_inventory import (
     mark_review_snapshot_decided as _mark_review_snapshot_decided,
     write_review_snapshot as _write_review_snapshot,
 )
-from .prompt_history import PromptHistoryStore
+from .prompt_history import PromptHistoryStore, PromptHistoryConflict
 from .prompt_optimizer import optimize_prompt_payload
 from .run_manager import RunArchiveManager, archive_policy_inputs
 from .asset_store import MAX_DIRECT_ASSET_BINDINGS, RunAssetStore
@@ -30244,9 +30244,13 @@ async def _get_prompt_history(request):
     run_name = request.query.get("run_name", "")
     scene_id = request.query.get("scene_id", "")
     revision = request.query.get("revision", "")
+    operation_id = request.query.get("operation_id", "")
     store = PromptHistoryStore(_output_root())
     try:
-        if revision:
+        if operation_id:
+            payload = await asyncio.to_thread(
+                store.command_status, run_name, scene_id, operation_id)
+        elif revision:
             payload = await asyncio.to_thread(
                 store.get, run_name, scene_id, revision)
         else:
@@ -30276,7 +30280,12 @@ async def _update_prompt_history(request):
         return rejection
     store = PromptHistoryStore(_output_root())
     try:
-        if action == "save":
+        if "command_version" in body:
+            payload = await asyncio.to_thread(
+                _owned_project_mutation, run_name, ownership_proof,
+                "change prompt history", store.command,
+                run_name, body.get("scene_id"), body)
+        elif action == "save":
             payload = await asyncio.to_thread(
                 _owned_project_mutation, run_name, ownership_proof,
                 "change prompt history", store.save_draft,
@@ -30309,11 +30318,15 @@ async def _update_prompt_history(request):
         else:
             return web.json_response(
                 {"error": "Unknown prompt-history action."}, status=400)
+    except PromptHistoryConflict as exc:
+        return web.json_response({"error": str(exc), "code": "h3_prompt_history_changed"}, status=409)
     except ProjectOwnershipError as exc:
         return web.json_response({
             "error": str(exc), "code": "h3_project_read_only",
         }, status=423)
-    except (OSError, ValueError, json.JSONDecodeError) as exc:
+    except OSError as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+    except (ValueError, json.JSONDecodeError) as exc:
         return web.json_response({"error": str(exc)}, status=400)
     return web.json_response(payload)
 

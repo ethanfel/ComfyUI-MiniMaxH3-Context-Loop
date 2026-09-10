@@ -20,6 +20,7 @@ from typing import Any
 FORMAT = "h3_scene_prompt_history_v1"
 MAX_PROMPT_LENGTH = 200_000
 MAX_LABEL_LENGTH = 80
+MAX_COMMANDS = 1024
 _LOCK = threading.RLock()
 
 
@@ -94,9 +95,31 @@ def _atomic_json(path: str, value: Any) -> None:
             pass
 
 
+def _branch(run):
+    if __package__:
+        from .branch_scope import current_branch
+    else:
+        from branch_scope import current_branch
+    return current_branch(run)
+
+
+def _history_revision(index):
+    value = {key: index.get(key) for key in
+             ("format", "run_name", "scene_id", "active_revision", "revisions")}
+    value["working_branch_id"] = _branch(index["run_name"])
+    return hashlib.sha256(json.dumps(value, sort_keys=True,
+        ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+class PromptHistoryConflict(ValueError):
+    pass
+
+
 class PromptHistoryStore:
     def __init__(self, output_root: str):
         self.output_root = os.path.abspath(output_root)
+        self._pending_command = None
+        self._staged_revisions = {}
 
     def _scene_dir(self, run_name: Any, scene_id: Any) -> tuple[str, str, str]:
         run = _strict_run_name(run_name)
@@ -122,6 +145,7 @@ class PromptHistoryStore:
         }
 
     def _load_index(self, directory: str, run: str, scene: str) -> dict[str, Any]:
+        self._recover_command(directory, run, scene)
         path = os.path.join(directory, "index.json")
         if not os.path.isfile(path):
             return self._empty_index(run, scene)
@@ -153,6 +177,8 @@ class PromptHistoryStore:
 
     def _read_revision(self, directory: str, revision_id: str) -> dict[str, Any]:
         path = self._revision_path(directory, revision_id)
+        if path in self._staged_revisions:
+            return dict(self._staged_revisions[path])
         try:
             with open(path, "r", encoding="utf-8") as handle:
                 value = json.load(handle)
@@ -176,6 +202,9 @@ class PromptHistoryStore:
             default=None)
         return {
             "format": FORMAT,
+            "command_version": 1,
+            "working_branch_id": _branch(index["run_name"]),
+            "history_revision": _history_revision(index),
             "run_name": index["run_name"],
             "scene_id": index["scene_id"],
             "active_revision": active_revision,
@@ -202,7 +231,10 @@ class PromptHistoryStore:
             revision = str(revision_id or "")
             if self._meta(index, revision) is None:
                 raise ValueError("Unknown prompt revision.")
-            return self._read_revision(directory, revision)
+            value = self._read_revision(directory, revision)
+            return {**value, "run_name": run, "scene_id": scene,
+                    "working_branch_id": _branch(run), "command_version": 1,
+                    "history_revision": _history_revision(index)}
 
     def _find_prompt(self, directory: str, index: dict[str, Any],
                      prompt: str) -> dict[str, Any] | None:
@@ -218,8 +250,135 @@ class PromptHistoryStore:
                 return meta
         return None
 
-    def _write_index(self, directory: str, index: dict[str, Any]) -> None:
+    def _recover_command(self, directory, run, scene):
+        path = os.path.join(directory, ".command-journal.json")
+        if not os.path.isfile(path):
+            return
+        with open(path, "r", encoding="utf-8") as handle:
+            journal = json.load(handle)
+        if not isinstance(journal, dict):
+            raise ValueError("The pending prompt-history journal is invalid.")
+        index, revisions = journal.get("index"), journal.get("revisions")
+        if (not isinstance(index, dict) or index.get("format") != FORMAT
+                or index.get("run_name") != run or index.get("scene_id") != scene
+                or not isinstance(index.get("revisions"), list) or not isinstance(revisions, dict)):
+            raise ValueError("The pending prompt-history journal is invalid.")
+        targets = []
+        for revision_id, value in revisions.items():
+            target = self._revision_path(directory, revision_id)
+            if not isinstance(value, dict) or value.get("id") != revision_id:
+                raise ValueError("The pending prompt-history revision is invalid.")
+            targets.append((target, value))
+        for target, value in targets:
+            _atomic_json(target, value)
         _atomic_json(os.path.join(directory, "index.json"), index)
+        os.unlink(path)
+
+    def _write_revision(self, path, value):
+        if self._pending_command:
+            self._staged_revisions[path] = dict(value)
+        else:
+            _atomic_json(path, value)
+
+    def _write_index(self, directory: str, index: dict[str, Any]) -> None:
+        pending = self._pending_command
+        if pending:
+            # Commit the receipt with the index change, not in a later write.
+            # A lost acknowledgement can never create a second fork on retry.
+            revision_id = (index.get("active_revision") if pending["action"] in
+                           ("save", "fork", "activate") else pending["revision"])
+            meta = self._meta(index, revision_id)
+            receipt = {**pending, "result_revision": revision_id,
+                       "result_prompt_sha256": meta.get("prompt_sha256") if meta else None,
+                       "after_revision": _history_revision(index), "committed_at": _timestamp()}
+            index.setdefault("command_receipts", {})[pending["operation_id"]] = receipt
+        if pending:
+            # The journal is the durable intent. All native readers/writers
+            # recover it under _LOCK before observing an index or revision.
+            journal = {"index": index, "revisions": {
+                os.path.basename(path)[:-5]: value
+                for path, value in self._staged_revisions.items()}}
+            _atomic_json(os.path.join(directory, ".command-journal.json"), journal)
+            self._recover_command(directory, index["run_name"], index["scene_id"])
+            self._staged_revisions = {}
+        else:
+            _atomic_json(os.path.join(directory, "index.json"), index)
+
+    def command_status(self, run_name, scene_id, operation_id):
+        with _LOCK:
+            directory, run, scene = self._scene_dir(run_name, scene_id)
+            index = self._load_index(directory, run, scene)
+            receipt = index.get("command_receipts", {}).get(str(operation_id))
+            if receipt and (receipt.get("run_name"), receipt.get("scene_id"), receipt.get("working_branch_id")) != (run, scene, _branch(run)):
+                receipt = None
+            return {"history": self._public_index(index), "receipt": receipt}
+
+    def command(self, run_name, scene_id, command):
+        """Conditional, idempotent authoring. Existing native writers share _LOCK."""
+        if not isinstance(command, dict) or command.get("command_version") != 1:
+            raise ValueError("Unsupported prompt-history command version.")
+        action = command.get("action")
+        if action not in ("save", "fork", "activate", "label", "archive", "delete"):
+            raise ValueError("Unknown prompt-history command.")
+        operation = str(command.get("operation_id") or "")
+        if re.fullmatch(r"[0-9a-f]{32}", operation) is None:
+            raise ValueError("A 32-character operation ID is required.")
+        expected = command.get("base_revision")
+        if not isinstance(expected, str) or not re.fullmatch(r"[0-9a-f]{64}", expected):
+            raise ValueError("Review the current prompt history before changing it.")
+        request = {key: command.get(key) for key in
+                   ("action", "base_revision", "revision", "parent_revision", "prompt", "label", "archived")}
+        fingerprint = hashlib.sha256(json.dumps(request, sort_keys=True,
+            ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
+        with _LOCK:
+            directory, run, scene = self._scene_dir(run_name, scene_id)
+            index = self._load_index(directory, run, scene)
+            receipt = index.get("command_receipts", {}).get(operation)
+            if receipt:
+                if (receipt.get("run_name"), receipt.get("scene_id"), receipt.get("working_branch_id")) != (run, scene, _branch(run)):
+                    raise ValueError("This operation belongs to a different project, scene or branch.")
+                if receipt["request_sha256"] != fingerprint:
+                    raise ValueError("This operation ID was already used for a different command.")
+                if action == "delete":
+                    # The index/receipt commit precedes file cleanup. Finish a
+                    # cleanup interrupted by a crash without repeating the edit.
+                    try:
+                        os.unlink(self._revision_path(directory, str(command.get("revision"))))
+                    except FileNotFoundError:
+                        pass
+                return {"history": self._public_index(index), "receipt": receipt, "replayed": True}
+            if _history_revision(index) != expected:
+                raise PromptHistoryConflict("Prompt history changed. Reload and review it before retrying.")
+            if len(index.get("command_receipts", {})) >= MAX_COMMANDS:
+                raise ValueError("This scene reached its retained history-command limit; no receipts were discarded.")
+            self._pending_command = {"operation_id": operation, "action": action,
+                "run_name": run, "scene_id": scene, "working_branch_id": _branch(run),
+                "revision": command.get("revision"), "request_sha256": fingerprint,
+                "before_revision": expected}
+            try:
+                if action == "save":
+                    self.save_draft(run, scene, command.get("prompt", ""), command.get("parent_revision"))
+                elif action == "fork":
+                    parent = str(command.get("revision") or "")
+                    if self._meta(index, parent) is None:
+                        raise ValueError("The parent prompt revision no longer exists.")
+                    self._create(directory, index, _normalized_prompt(command.get("prompt", "")), parent)
+                elif action == "activate":
+                    self.activate(run, scene, command.get("revision"))
+                elif action == "label":
+                    self.set_label(run, scene, command.get("revision"), command.get("label", ""))
+                elif action == "archive":
+                    if not isinstance(command.get("archived"), bool):
+                        raise ValueError("Archived must be a boolean.")
+                    self.set_archived(run, scene, command.get("revision"), command["archived"])
+                else:
+                    self.delete_draft(run, scene, command.get("revision"))
+            finally:
+                self._pending_command = None
+                self._staged_revisions = {}
+            result = self.command_status(run, scene, operation)
+            result["replayed"] = False
+            return result
 
     def _create(self, directory: str, index: dict[str, Any], prompt: str,
                 parent_id: str | None) -> dict[str, Any]:
@@ -237,7 +396,7 @@ class PromptHistoryStore:
             "prompt_sha256": _prompt_hash(prompt),
         }
         revision = {"format": FORMAT, **meta, "prompt": prompt}
-        _atomic_json(self._revision_path(directory, meta["id"]), revision)
+        self._write_revision(self._revision_path(directory, meta["id"]), revision)
         index["revisions"].append(meta)
         index["active_revision"] = meta["id"]
         self._write_index(directory, index)
@@ -255,7 +414,7 @@ class PromptHistoryStore:
                     exact["archived_at"] = None
                     revision = self._read_revision(directory, exact["id"])
                     revision["archived_at"] = None
-                    _atomic_json(
+                    self._write_revision(
                         self._revision_path(directory, exact["id"]), revision)
                 index["active_revision"] = exact["id"]
                 self._write_index(directory, index)
@@ -281,7 +440,7 @@ class PromptHistoryStore:
                     "prompt_sha256": parent_meta["prompt_sha256"],
                     "prompt": prompt,
                 })
-                _atomic_json(self._revision_path(directory, parent), revision)
+                self._write_revision(self._revision_path(directory, parent), revision)
                 index["active_revision"] = parent
                 self._write_index(directory, index)
             else:
@@ -306,7 +465,7 @@ class PromptHistoryStore:
             if meta.get("archived_at"):
                 meta["archived_at"] = None
                 value["archived_at"] = None
-                _atomic_json(self._revision_path(directory, revision), value)
+                self._write_revision(self._revision_path(directory, revision), value)
             index["active_revision"] = revision
             self._write_index(directory, index)
             return {"history": self._public_index(index), "revision": value}
@@ -324,7 +483,7 @@ class PromptHistoryStore:
             revision = self._read_revision(directory, revision_id)
             meta["label"] = label
             revision["label"] = label
-            _atomic_json(
+            self._write_revision(
                 self._revision_path(directory, revision_id), revision)
             self._write_index(directory, index)
             return {
@@ -350,7 +509,7 @@ class PromptHistoryStore:
             archived_at = _timestamp() if should_archive else None
             meta["archived_at"] = archived_at
             revision["archived_at"] = archived_at
-            _atomic_json(
+            self._write_revision(
                 self._revision_path(directory, revision_id), revision)
             self._write_index(directory, index)
             return {
@@ -422,7 +581,7 @@ class PromptHistoryStore:
                 "execution_count": meta["execution_count"],
                 "updated_at": now,
             })
-            _atomic_json(self._revision_path(directory, meta["id"]), revision)
+            self._write_revision(self._revision_path(directory, meta["id"]), revision)
             index["active_revision"] = meta["id"]
             self._write_index(directory, index)
             return {"history": self._public_index(index), "revision": revision}
