@@ -111,6 +111,7 @@ from .review_inventory import (
 from .prompt_history import PromptHistoryStore
 from .asset_library import command_library, inspect_library
 from .asset_copy import preview_copy
+from .asset_image import inspect_image
 from .prompt_optimizer import optimize_prompt_payload
 from .run_manager import RunArchiveManager, archive_policy_inputs
 from .asset_store import MAX_DIRECT_ASSET_BINDINGS, RunAssetStore
@@ -30992,6 +30993,11 @@ def _project_asset_error_response(exc: Exception):
 async def _project_asset_catalog(request):
     try:
         project = request.query.get("project", "")
+        if request.query.get("image_asset"):
+            edit = json.loads(request.query["image_edit"]) if "image_edit" in request.query else None
+            result = await asyncio.to_thread(inspect_image, _project_asset_store(), project,
+                request.query["image_asset"], edit)
+            return web.json_response(result)
         if request.query.get("copy_source"):
             enabled = request.query.get("enabled", "true")
             if enabled not in ("true", "false"):

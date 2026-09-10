@@ -63,10 +63,23 @@ async def main():
         assert copied.status == 200, copied.text
         assert json.loads(copied.text)["catalog"]["assets"][0]["source_origin"]["project"] == "source"
         assert json.loads((await chain._project_asset_library(Request(copy_request))).text)["replayed"]
+        parent_id = json.loads(copied.text)["catalog"]["assets"][0]["id"]
+        image_edit = {"crop": {"x": 0, "y": 0, "width": 8, "height": 8}, "target": {"width": 4, "height": 4}, "resample": "nearest", "tag": "small_picture", "folder_id": ""}
+        image_info = await chain._project_asset_catalog(Request(project="film", image_asset=parent_id, image_edit=json.dumps(image_edit)))
+        assert image_info.status == 200, image_info.text
+        image_info = json.loads(image_info.text)
+        assert image_info["source"] == {"width": 24, "height": 16}
+        image_request = {"command_version": 1, "project": "film", "action": "asset_derive", "operation_id": uuid.uuid4().hex, "asset_id": parent_id,
+            "base_revision": image_info["base_revision"], "preview_revision": image_info["preview_revision"], **image_edit}
+        variant = await chain._project_asset_library(Request(image_request))
+        assert variant.status == 200, variant.text
+        assert json.loads(variant.text)["catalog"]["assets"][-1]["parent_asset_id"] == parent_id
+        assert json.loads((await chain._project_asset_library(Request(image_request))).text)["replayed"]
         chain.claim_project_ownership(str(root / "output"), "film", "workflow-owner-a-1234567890", "Owner")
         denied = await chain._project_asset_library(Request({**command, "operation_id": uuid.uuid4().hex}))
         assert denied.status == 423, denied.text
         assert (await chain._project_asset_library(Request({**copy_request, "operation_id": uuid.uuid4().hex}))).status == 423
+        assert (await chain._project_asset_library(Request({**image_request, "operation_id": uuid.uuid4().hex}))).status == 423
         assert len(chain._project_asset_store().load("film")["folders"]) == 2
     print("Asset library HTTP: read without creation, native commands, receipts, 409/500 recovery and 423 ownership passed")
 

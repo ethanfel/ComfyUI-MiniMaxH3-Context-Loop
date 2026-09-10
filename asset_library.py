@@ -7,10 +7,12 @@ import re
 
 if __package__:
     from .project_assets import ProjectAssetConflictError, _project_mutation
-    from .asset_copy import command_copy, pending_copy, finish_copy
+    from .asset_copy import command_copy, pending_copy, pending_operation, finish_copy
+    from .asset_image import command_image
 else:
     from project_assets import ProjectAssetConflictError, _project_mutation
-    from asset_copy import command_copy, pending_copy, finish_copy
+    from asset_copy import command_copy, pending_copy, pending_operation, finish_copy
+    from asset_image import command_image
 
 MAX_COMMANDS = 1024
 ACTIONS = frozenset(("folder_create", "folder_update", "folder_delete",
@@ -36,12 +38,15 @@ def inspect_library(store, project, operation_id=""):
         finish_copy(store, project, receipt)
     return {"catalog": store.public_catalog(project, create=False),
             "receipt": _receipt(receipt) if receipt else None,
-            "pending_copy": pending_copy(store, project, operation_id) if operation_id and not receipt else None}
+            "pending_copy": pending_copy(store, project, operation_id) if operation_id and not receipt else None,
+            "pending_operation": pending_operation(store, project, operation_id) if operation_id and not receipt else None}
 
 
 def command_library(store, project, body):
     if isinstance(body, dict) and body.get("action") == "asset_copy":
         return command_copy(store, project, body)
+    if isinstance(body, dict) and body.get("action") == "asset_derive":
+        return command_image(store, project, body)
     return _command_library(store, project, body)
 
 

@@ -87,15 +87,16 @@ def _read(path):
         return None
 
 
-def pending_copy(store, project, operation):
+def pending_operation(store, project, operation):
     job = _read(os.path.join(_directory(store, project, operation), "operation.json"))
     if not job or job["request"].get("project") != project or job["phase"] == "rejected":
         return None
-    return {"operation_id": operation, "action": "asset_copy", "phase": job["phase"],
+    return {"operation_id": operation, "action": job["request"]["action"], "phase": job["phase"],
+            "asset_id": job["request"]["asset_id"],
             "request": job["request"]}
 
 
-def pending_copies(store, project, catalog):
+def pending_operations(store, project, catalog):
     directory, _ = store._project_dir(project)
     root = os.path.join(directory, ".library_copies")
     if not os.path.isdir(root):
@@ -104,10 +105,19 @@ def pending_copies(store, project, catalog):
     for operation in sorted(os.listdir(root)):
         if not re.fullmatch(r"[0-9a-f]{32}", operation) or operation in (catalog.get("library_receipts") or {}):
             continue
-        item = pending_copy(store, project, operation)
+        item = pending_operation(store, project, operation)
         if item:
             result.append({key: value for key, value in item.items() if key != "request"})
     return result
+
+
+def pending_copy(store, project, operation):
+    value = pending_operation(store, project, operation)
+    return value if value and value["action"] == "asset_copy" else None
+
+
+def pending_copies(store, project, catalog):
+    return [item for item in pending_operations(store, project, catalog) if item["action"] == "asset_copy"]
 
 
 def finish_copy(store, project, receipt):
@@ -117,7 +127,7 @@ def finish_copy(store, project, receipt):
     in reverse order. After commit, retries follow the receipt path and no
     publisher can still need the staging bytes.
     """
-    if receipt.get("project") != project or receipt.get("action") != "asset_copy":
+    if receipt.get("project") != project or receipt.get("action") not in ("asset_copy", "asset_derive"):
         return
     directory = _directory(store, project, receipt["operation_id"])
     job = _read(os.path.join(directory, "operation.json"))
@@ -205,8 +215,8 @@ def _publish(store, project, request, job):
     if len(catalog.get("library_receipts") or {}) >= 1024:
         raise ValueError("The retained library-command limit was reached.")
     store._library_command = {"operation_id": request["operation_id"], "project": project,
-        "action": "asset_copy", "request_sha256": _hash(request), "before_revision": request["base_revision"],
-        "source_project": request["source_project"], "source_asset_id": request["asset_id"],
+        "action": request["action"], "request_sha256": _hash(request), "before_revision": request["base_revision"],
+        "source_project": request.get("source_project", project), "source_asset_id": request["asset_id"],
         "asset_ids_before": [item["id"] for item in catalog["assets"]],
         "folder_ids_before": [item["id"] for item in catalog["folders"]]}
     try:
@@ -217,12 +227,34 @@ def _publish(store, project, request, job):
 
 
 def command_copy(store, project, body):
+    def snapshot(store, project, request):
+        return _snapshot(store, project, request["source_project"], request["asset_id"], request["enabled"], request["folder_id"])
+    return command_staged(store, project, body, "asset_copy", FIELDS, snapshot, _stage)
+
+
+def command_staged(store, project, body, action, fields, snapshot, stage):
+    """Publish a native media operation's prepared assets with one receipt."""
     project = native._safe_project(project)
-    request = {key: body.get(key) for key in FIELDS}
-    if request["project"] != project or request["command_version"] != 1 or request["action"] != "asset_copy":
-        raise ValueError("Copy request does not match this project or command version.")
+    request = {key: body.get(key) for key in fields}
+    if request["project"] != project or request["command_version"] != 1 or request["action"] != action:
+        raise ValueError("Media request does not match this project or command version.")
     directory = _directory(store, project, request["operation_id"])
     path = os.path.join(directory, "operation.json")
+    saved = (store.load(project).get("library_receipts") or {}).get(request["operation_id"])
+    if saved:
+        if saved.get("project") != project or saved.get("request_sha256") != _hash(request):
+            raise ValueError("Media operation belongs to another request or project.")
+        finish_copy(store, project, saved)
+        return {"catalog": store.public_catalog(project, create=False), "receipt": saved, "replayed": True}
+    # Reserve a new operation before opening its lock file. Rejected new IDs
+    # must not create more directories after the retained-operation limit.
+    root = os.path.dirname(directory)
+    with native._catalog_lock(root), native._catalog_file_lock(root + ".admission"):
+        if not os.path.isdir(directory):
+            count = len([name for name in os.listdir(root) if re.fullmatch(r"[0-9a-f]{32}", name)]) if os.path.isdir(root) else 0
+            if count >= 1024:
+                raise ValueError("The retained media-operation limit was reached.")
+            os.makedirs(directory, exist_ok=True)
     # Operation lock first, then brief target commit lock. No source/target
     # pair of project locks is held while copying, including reciprocal imports.
     with native._catalog_lock(path), native._catalog_file_lock(path):
@@ -239,17 +271,13 @@ def command_copy(store, project, body):
             raise native.ProjectAssetConflictError("This copy was rejected. Review a new copy request.")
         try:
             if not job or job["phase"] != "prepared":
-                preview, target, source = _snapshot(store, project, request["source_project"], request["asset_id"], request["enabled"], request["folder_id"])
+                preview, target, source = snapshot(store, project, request)
                 if preview["base_revision"] != request["base_revision"] or preview["preview_revision"] != request["preview_revision"]:
                     raise native.ProjectAssetConflictError("Source or destination changed after review.")
                 if not preview["copyable"]:
                     raise ValueError(preview["issue"])
-                if not job:
-                    root = os.path.dirname(directory)
-                    if len(os.listdir(root)) > 1024:
-                        raise ValueError("The retained copy-operation limit was reached.")
                 native._atomic_json(path, {"request": request, "phase": "staging"})
-                job = _stage(store, directory, request, target, source, preview)
+                job = stage(store, directory, request, target, source, preview)
                 native._atomic_json(path, job)
             _publish_files(store, project, directory, job)
             _publish(store, project, request, job)

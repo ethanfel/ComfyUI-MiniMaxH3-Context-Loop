@@ -690,14 +690,16 @@ class ProjectAssetStore:
 
     def public_catalog(self, project: Any, *, create: bool = True) -> dict[str, Any]:
         if __package__:
-            from .asset_copy import pending_copies
+            from .asset_copy import pending_copies, pending_operations
         else:
-            from asset_copy import pending_copies
+            from asset_copy import pending_copies, pending_operations
         catalog = self.load(project, create=create)
         return {
             **{key: value for key, value in catalog.items() if key != "library_receipts"},
             "library_command_version": 1,
             "library_copy_version": 1,
+            "library_image_version": 1,
+            "library_pending_operations": pending_operations(self, catalog["project"], catalog),
             "library_pending_copies": pending_copies(self, catalog["project"], catalog),
             "library_revision": str(catalog.get("storage_revision") or "empty"),
             "assets": [dict(item) for item in catalog["assets"]],

@@ -40,15 +40,16 @@ not select a separate library. Send a JSON object with `project`,
 | `asset_duplicate` | `asset_id`, optional `tag` and `folder_id` |
 | `asset_delete` | `asset_id` |
 | `asset_copy` | `source_project`, `asset_id`, boolean `enabled`, `folder_id` (empty for unfiled), `preview_revision`; requires `library_copy_version: 1` |
+| `asset_derive` | `asset_id`, `crop`, `target`, `resample`, `tag`, `folder_id`, `preview_revision`; requires `library_image_version: 1`, see [image commands](asset-image-commands.md) |
 
 The native store preserves shared media when duplicating cards, disables a
 duplicated Source track, and retains its existing tag, role, track-group and
 folder validation. Deleting a folder preserves its media. Deleting an asset
 protects track-group members and media paths still shared by another card.
 This API does not add cross-Plan/branch usage analysis or rewrite prompt tags.
-Upload, derived-image jobs, whole-project duplication and the legacy import
-endpoint retain their existing behavior. Reviewed cross-project copies use the
-new command described below.
+Upload, model-based image jobs, whole-project duplication and the legacy
+import/derive endpoints retain their existing behavior. Reviewed cross-project
+copies and resampled image variants use staged commands.
 
 On success the response is `{catalog, receipt, replayed}`. Repeat only the exact
 request/operation ID after an uncertain result. A matching retained receipt is
