@@ -37,6 +37,9 @@ explanation.
 |---|---|
 | [Complete Plan format](../H3_CHAIN_FORMAT_GUIDE.md) | Every Plan and per-scene field, exact timing, prompt syntax, and JSON forms |
 | [Version 0.5 architecture](V0_5_ARCHITECTURE.md) | Frozen Source Timeline, policy, dependency, migration, and preflight contracts |
+| [Chain storage audit](STORAGE_LAYOUT_AUDIT.md) | Current folder ownership, measured storage, path complexity and a staged simplification proposal |
+| [Storage migration plan](STORAGE_MIGRATION_PLAN.md) | Compatibility invariants, feature tests, phased implementation, existing-folder migration and rollback gates |
+| [Storage Inspector](STORAGE_INSPECTOR.md) | Read-only disk inventory, report format, consumer baseline and remaining migration gates |
 | [Reference Video Fade](REFERENCE_VIDEO_FADE.md) | Experimental denoising-time control of Ref2VA video influence |
 | [Visual-context drift research](VISUAL_CONTEXT_DRIFT_RESEARCH.md) | Evidence, experiments, and validation protocol for recursive drift |
 | [Feature traceability](FEATURE_TRACEABILITY.md) | Origins, upstream links, implementation files, and commit evidence |

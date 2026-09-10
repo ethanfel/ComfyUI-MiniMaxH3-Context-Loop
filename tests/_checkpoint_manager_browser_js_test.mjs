@@ -7,7 +7,7 @@ import {pathToFileURL} from "node:url";
 import {spawnSync} from "node:child_process";
 
 const read = name => readFileSync(new URL("../web/" + name, import.meta.url), "utf8");
-const modules = ["h3_checkpoint_manager_core.mjs", "h3_working_branches.mjs", "h3_checkpoint_graph.mjs"]
+const modules = ["h3_checkpoint_manager_core.mjs", "h3_working_branches.mjs", "h3_checkpoint_graph.mjs", "h3_storage_inspector.mjs"]
     .map(name => read(name).replace(/^export /gm, "")).join("\n");
 const extension = read("h3_chain_checkpoint_manager.js")
     .replace(/^import\s[\s\S]*?from\s+"[^"]+";\n/gm, "");
@@ -19,7 +19,7 @@ const out = mkdtempSync(join(tmpdir(), "h3-checkpoint-ui-"));
 const html = '<!doctype html><meta charset="utf-8"><style>body{margin:8px;background:#171717}'
     + '#host{width:1500px;height:960px}</style><div id="host"></div><script>\n'
     + modules + "\n" + "(" + browserChecks.toString() + ")(" + JSON.stringify(extension).replace(/<\/script/gi,"<\\/script")
-    + ");</script>";
+    + "," + process.argv.includes("--storage") + ");</script>";
 const file = join(out, "fixture.html");
 writeFileSync(file, html);
 const run = spawnSync(process.env.H3_TEST_BROWSER || "/opt/google/chrome/chrome", [
@@ -36,7 +36,7 @@ console.log(report);
 console.log("Isolated screenshot: " + join(out,"checkpoint-manager.png"));
 assert.deepEqual(report.failures,[]);
 
-async function browserChecks(extensionSource) {
+async function browserChecks(extensionSource, keepStorageOpen) {
     const report = {checks:0,failures:[]};
     const check = (condition, message) => {report.checks++; if (!condition) report.failures.push(message);};
     try {
@@ -60,11 +60,25 @@ async function browserChecks(extensionSource) {
         const studio = {type:"MiniMaxH3ChainPlanStudio",inputs:[],widgets:[{name:"run_name",value:"demo"},
             {name:"plan_json",value:'{"shots":[{"id":"one"}]}'},{name:"working_branch_id",value:named}]};
         const app = {registerExtension(){},graph:{setDirtyCanvas(){}}};
-        const api = {apiURL:path=>path,fetchApi:async path=>{
+        let storageRequests = 0;
+        const storageReport = {format:"h3_storage_inventory_v1",run_name:"demo",scan_complete:true,
+            totals:{files:61,logical_bytes:6100,allocated_bytes:8192,allocation_unknown_files:0},
+            categories:{takes:{files:61,logical_bytes:6100,allocated_bytes:8192,allocation_unknown_files:0}},
+            limitations:["Not a deletion authority."],longest_paths:[],issues:[],issue_counts:{},issues_omitted:0,
+            files:Array.from({length:61},(_,i)=>({path:i ? `segments/clip_${i}.mp4` : '<img src=x onerror=alert(1)>',
+                category:"takes",branch_id:"main",profile:null,logical_bytes:100,
+                referenced_by:[],flags:["unverified","unreferenced_candidate"]}))};
+        const api = {apiURL:path=>path,fetchApi:async (path,options={})=>{
             let data;
             if (path.endsWith("/runs")) data = {runs:[{run_name:"demo",checkpoint_count:7}]};
             else if (path.includes("/working-branches?")) data = {default_branch:"main",branches:[{id:"main",name:"Original"},{id:named,name:"960x544"}]};
             else if (path.includes("/checkpoints?")) data = payload;
+            else if (path.includes("/storage-inventory?")) {
+                storageRequests++;
+                check(options.method === "GET", "Storage inspection only uses GET");
+                check(!path.includes("branch_id"), "Storage inspection is project-wide, not scoped to a working branch");
+                data = storageReport;
+            }
             else if (path.endsWith("/delete-preview")) data = {allowed:false,blockers:["A saved dependency uses this take."],
                 files:Array.from({length:50},(_,i)=>({exists:true,label:"checkpoint",path:`demo/checkpoints/file_${i}`,size_bytes:100}))};
             else throw new Error("Unexpected request " + path);
@@ -202,6 +216,27 @@ async function browserChecks(extensionSource) {
         cut.value="auto";cut.dispatchEvent(new Event("change",{bubbles:true}));
         check(Boolean(root.querySelector(".h3cm-alternate-used")),"Auto restores the selected path's ALT marker");
         check(node.widgets[0].value===output,"Auto restores the original pin bytes");
+        check(storageRequests === 0, "Normal manager refreshes never scan storage");
+        const beforeStorage = JSON.stringify(node.properties);
+        [...root.querySelectorAll("button")].find(item=>item.textContent === "Storage").click();
+        await new Promise(resolve=>setTimeout(resolve,50));
+        const storage = root.querySelector(".h3-storage");
+        check(storage && !storage.hidden, "On-demand Storage Inspector opens");
+        check(storage.textContent.includes("61 files"), "Storage totals render");
+        check(storage.querySelectorAll(".h3-storage-scroll tbody tr").length === 50, "Storage file table is paginated");
+        check(!storage.querySelector("img"), "Untrusted filenames render as text, never HTML");
+        [...storage.querySelectorAll("button")].find(item=>item.textContent === "Next").click();
+        check(storage.querySelectorAll(".h3-storage-scroll tbody tr").length === 11, "Storage next page works");
+        const filter = storage.querySelector("input"); filter.value = "clip_60";filter.dispatchEvent(new Event("input"));
+        check(storage.querySelectorAll(".h3-storage-scroll tbody tr").length === 1, "Storage filter resets pagination");
+        check(JSON.stringify(node.properties) === beforeStorage && node.widgets[0].value === output,
+            "Storage inspection leaves Plan/output/preview selections unchanged");
+        for (const width of [900,1500]) {
+            document.getElementById("host").style.width=width+"px";
+            check(root.scrollWidth<=root.clientWidth+1,`Storage Inspector has no root overflow at ${width}px`);
+        }
+        [...storage.querySelectorAll("button")].find(item=>item.textContent === "Close").click();
+        check(storage.hidden, "Storage Inspector closes without changing the graph");
         for (const width of [900,1500]) {
             document.getElementById("host").style.width=width+"px";
             check(root.scrollWidth<=root.clientWidth+1,`Final-cut control has no root overflow at ${width}px`);
@@ -212,6 +247,11 @@ async function browserChecks(extensionSource) {
         await new Promise(resolve=>setTimeout(resolve,100));
         await setZoom(65);
         node.onRemoved?.();
+        if (keepStorageOpen) {
+            [...root.querySelectorAll("button")].find(item=>item.textContent === "Storage").click();
+            await new Promise(resolve=>setTimeout(resolve,50));
+            root.scrollTop = 0;
+        }
     } catch (error) {report.failures.push(error.stack || String(error));}
     document.body.dataset.report = btoa(JSON.stringify(report));
 }

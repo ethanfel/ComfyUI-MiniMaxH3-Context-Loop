@@ -1,5 +1,6 @@
 import {app} from "/scripts/app.js";
 import {api} from "/scripts/api.js";
+import {mountStorageInspector} from "./h3_storage_inspector.mjs?v=0.1.0";
 import {branchRequestPath, branchSelectionJson} from "./h3_working_branches.mjs?v=0.7.18";
 import {checkpointForkGraph, checkpointGraphKey, checkpointSaveOrder, checkpointGraphOutput, mountCheckpointGraphEdges} from "./h3_checkpoint_graph.mjs?v=0.7.20";
 import {
@@ -416,6 +417,15 @@ function mount(node) {
         render();
     });
     const refresh = button("Refresh", "Rescan saved runs and checkpoint revisions", () => void refreshRuns());
+    const storagePanel = element("section");
+    storagePanel.hidden = true;
+    let storageInspector = null;
+    const storage = button("Storage", "Inspect disk usage across all working branches; read-only, no cleanup or migration", async () => {
+        storageInspector ??= mountStorageInspector(storagePanel, {request:jsonRequest, currentRun:() => state.runName});
+        storage.disabled = true;
+        try { await storageInspector.open(); }
+        finally { storage.disabled = false; }
+    });
     const open = button("Open folder", "Open the selected run folder on the ComfyUI host", () => void openFolder());
     const deleteRun = button(
         "Delete run folder",
@@ -424,7 +434,7 @@ function mount(node) {
         "h3cm-run-delete",
     );
     deleteRun.disabled = true;
-    runRow.append(runSelect, refresh, open, deleteRun);
+    runRow.append(runSelect, refresh, open, storage, deleteRun);
     const outputRow = element("div", "h3cm-output");
     const outputSummary = element("div", "h3cm-output-summary");
     const outputScope = element("select", "h3cm-output-scope");
@@ -567,7 +577,7 @@ function mount(node) {
     assignmentPanel.append(assignmentContext, assignmentActions);
     deletionActions.append(remove);
     deletion.append(deletionActions, deletionTitle, deletionDetails);
-    root.append(head, runRow, workingRow, workingHelp, finalCutRow, outputRow, stageTabs, stageNote, chapterTabs, scenes,
+    root.append(head, runRow, storagePanel, workingRow, workingHelp, finalCutRow, outputRow, stageTabs, stageNote, chapterTabs, scenes,
         assignmentPanel, status, main, deletion);
 
     function setPreviewHeight(value, persist = false) {
@@ -1688,6 +1698,7 @@ function mount(node) {
     }
 
     function render() {
+        storageInspector?.syncRun();
         const total = state.payload?.summary;
         summary.textContent = total
             ? `${total.scene_count} scenes · ${total.revision_count} revisions · ${total.branch_count} branches · ${formatCheckpointBytes(total.bytes)}`
@@ -2348,6 +2359,7 @@ function mount(node) {
             writeOutputSelection("");
         }
         state.runName = runSelect.value;
+        storageInspector?.dismiss();
         state.finalCutBranch = "auto";
         node.properties.h3_working_branch_id = "main";
         state.payload = null;
@@ -2423,6 +2435,7 @@ function mount(node) {
     node._h3CheckpointManagerPlanMarkerRefresh = refreshPlanMarker;
     const markerTimer = window.setInterval?.(refreshPlanMarker, 500);
     node.onRemoved = function () {
+        storageInspector?.dismiss();
         if (markerTimer != null) window.clearInterval(markerTimer);
         for (const cleanup of state.graphCleanups) cleanup();
         state.graphCleanups = [];

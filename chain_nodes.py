@@ -29986,6 +29986,22 @@ async def _list_saved_checkpoints(request):
     return web.json_response(payload)
 
 
+async def _inspect_project_storage(request):
+    # Project-wide and deliberately NOT branch-scoped or ownership-guarded:
+    # even the mutation lock would create a file during a read-only inspection.
+    from .storage_inventory import inspect_storage
+    try:
+        run_name = _strict_run_name(request.query.get("run_name", ""))
+        payload = await asyncio.to_thread(inspect_storage, _output_root(), run_name)
+    except FileNotFoundError:
+        return web.json_response({"error": "H3 project folder does not exist."}, status=404)
+    except (TypeError, ValueError):
+        return web.json_response({"error": "Invalid or linked H3 project folder."}, status=400)
+    except OSError:
+        return web.json_response({"error": "Could not inspect H3 project storage."}, status=500)
+    return web.json_response(payload, headers={"Cache-Control": "no-store"})
+
+
 def _save_run_editorial_document_unlocked(body: Any) -> dict[str, Any]:
     if not isinstance(body, dict):
         raise ValueError("H3 run editorial data must be a JSON object.")
@@ -31808,6 +31824,8 @@ if (PromptServer is not None and web is not None and
             _submit_deferred_review)
     PromptServer.instance.routes.get(
         "/minimax_h3_context_loop/checkpoints")(_list_saved_checkpoints)
+    PromptServer.instance.routes.get(
+        "/minimax_h3_context_loop/storage-inventory")(_inspect_project_storage)
     PromptServer.instance.routes.get(
         "/minimax_h3_context_loop/handoffs")(_list_handoffs)
     PromptServer.instance.routes.post(
