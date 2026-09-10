@@ -1,3 +1,4 @@
+export { DELIVERY_VERSION, prepareDelivery, deliveryPrompt } from './h3_delivery_core.mjs';
 import {app} from "/scripts/app.js";
 import {api} from "/scripts/api.js";
 import {mountStorageInspector} from "./h3_storage_inspector.mjs?v=0.1.0";

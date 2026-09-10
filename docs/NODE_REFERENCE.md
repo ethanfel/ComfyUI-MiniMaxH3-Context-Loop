@@ -6,6 +6,11 @@ remain documented by the node tooltips and the linked specialist guides.
 
 ## Read a node at a glance
 
+**MiniMax H3 Saved Delivery Source** accepts an API-prepared `snapshot_json` and
+outputs a verified saved manifest for H3 Chain Assemble. See the
+[saved delivery guide](SAVED_DELIVERY.md) for preparation, source verification and
+recovery. It leaves the active checkpoint selection unchanged.
+
 The tables use this direction:
 
 ```text

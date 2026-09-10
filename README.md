@@ -28,6 +28,8 @@ scene can be reviewed, retried, checkpointed, resumed, and assembled later.
   DeRoPE/upscale checkpoints and recoverable VIDEO PNG publication.
 - Provides scene review, alternate takes, branch management, final assembly,
   masked editing, and deferred upscaling.
+- Offers [saved delivery snapshots](docs/SAVED_DELIVERY.md) for companion tools:
+  assemble an exact saved cut and captions even after later editorial changes.
 - Captures a frame from a saved Review Gate preview into the Project Asset
   Carousel as a new tagged picture, without replacing the original take.
 
