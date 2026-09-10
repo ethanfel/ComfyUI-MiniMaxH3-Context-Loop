@@ -944,3 +944,55 @@ assert.ok(chapterGraphs.every(graph=>graph.style.zoom==="0.8"));
 byText(zoomed,"Chapter 1").click();await settle();
 assert.equal(zoomGraph().style.zoom,"0.8","Chapter filtering retains zoom");
 console.log("Checkpoint graph zoom: controls, fit, limits, peer isolation, save/restore, refresh and output/preview isolation pass");
+
+// The output's ALT choice follows its exact path, not the assignment-view branch.
+currentGraph = structuredClone(payload);
+currentGraph.run_name = "demo";
+const cutBranch = "4".repeat(32), secondCut = "5".repeat(32);
+namedWorkingBranch = cutBranch;
+const cutAlt = {scene:2,revision:"6".repeat(32),alternate_of_revision:c,take_kind:"editorial_alternate",
+    ready:true,used_in_final_cut:false,video:{filename:"named_alt.mp4"}};
+currentGraph.revisions.push(cutAlt);
+currentGraph.revisions[2].alternates = [cutAlt];
+currentGraph.final_cut_contexts = [
+    {id:"main",name:"Original",lineage:JSON.parse(wholeActive).lineage,replacements:[]},
+    {id:cutBranch,name:"960x544",lineage:JSON.parse(local).lineage,
+        replacements:[{scene:2,base_revision:c,alternate_revision:cutAlt.revision}]},
+];
+const cutNode = makeNode(local); await settle();
+const cutBefore = value(cutNode), cutMutations = mutations;
+assert.match(byClass(cutNode,"h3cm-final-cut-status").textContent,/Resolved: 960x544.*S2 ALT 66666666/);
+assert.equal(byClass(cutNode,"h3cm-final-cut-alt").textContent,"Final cut: ALT · 66666666");
+assert.equal(cutNode.properties.h3_working_branch_id,"main","Assignment view and output folder are untouched");
+assert.equal(value(cutNode),cutBefore,"Auto works for existing workflow pins without rewriting them");
+byText(cutNode,"ALT · 66666666").click(); await settle();
+assert.match(byClass(cutNode,"h3cm-inspector").children.map(item=>item.textContent).join(" "),/used in final cut/);
+assert.equal(value(cutNode),cutBefore,"ALT previews do not change final-cut source");
+const cutSelect = byClass(cutNode,"h3cm-final-cut-select");
+cutSelect.value="main";cutSelect.listeners.change();
+assert.equal(JSON.parse(value(cutNode)).final_cut_branch_id,"main");
+assert.deepEqual(JSON.parse(value(cutNode)).lineage,JSON.parse(cutBefore).lineage);
+assert.equal(byClass(cutNode,"h3cm-alternate-used"),undefined,"Explicit Original removes the named branch's ALT marker");
+assert.match(byClass(cutNode,"h3cm-final-cut-status").textContent,/Original.*original pictures/);
+assert.equal(JSON.parse(await cutNode.widgets[0].serializeValue()).final_cut_branch_id,"main");
+const reopenedCut = makeNode(value(cutNode));await settle();
+assert.equal(byClass(reopenedCut,"h3cm-final-cut-select").value,"main");
+cutSelect.value=cutBranch;cutSelect.listeners.change();
+cutNode._h3CheckpointManagerRefresh();await settle();
+assert.equal(JSON.parse(value(cutNode)).final_cut_branch_id,cutBranch);
+assert.ok(byClass(cutNode,"h3cm-alternate-used"));
+cutNode.widgets[0].value=cutBefore;cutNode._h3CheckpointManagerConfigured();
+cutNode._h3CheckpointManagerRefresh();await settle();
+assert.equal(byClass(cutNode,"h3cm-final-cut-select").value,"auto","Configure/undo restores the serialized choice");
+currentGraph.final_cut_contexts.push({...currentGraph.final_cut_contexts[1],id:secondCut,name:"Different cut"});
+cutNode._h3CheckpointManagerRefresh();await settle();
+assert.match(byClass(cutNode,"h3cm-final-cut-status").textContent,/multiple final-cut branches/);
+assert.equal(byClass(cutNode,"h3cm-alternate-used"),undefined,"Ambiguity must not claim a final-cut choice");
+cutSelect.value=cutBranch;cutSelect.listeners.change();
+assert.ok(byClass(cutNode,"h3cm-alternate-used"));
+currentGraph.final_cut_contexts=currentGraph.final_cut_contexts.filter(item=>item.id!==cutBranch);
+cutNode._h3CheckpointManagerRefresh();await settle();
+assert.match(byClass(cutNode,"h3cm-final-cut-status").textContent,/unavailable/);
+assert.equal(JSON.parse(value(cutNode)).final_cut_branch_id,cutBranch,"Missing explicit choice is kept, never silently substituted");
+assert.equal(mutations,cutMutations,"Final-cut output choice never mutates saved media, assignments or Plan");
+console.log("Manager final cut: named ALT marker, explicit source, serialization, undo, ambiguity and read-only isolation pass");

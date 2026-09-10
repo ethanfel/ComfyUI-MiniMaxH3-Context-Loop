@@ -14,6 +14,8 @@ import {
     checkpointDeletionTitle,
     checkpointDependencyText,
     checkpointRevisionKey,
+    checkpointFinalCutContext,
+    checkpointFinalCutAlternate,
     checkpointRevisionLineage,
     checkpointSelectionJson,
     checkpointLocalSelection,
@@ -23,7 +25,7 @@ import {
     checkpointOutputSummary,
     formatCheckpointBytes,
     selectedCheckpointRevision,
-} from "./h3_checkpoint_manager_core.mjs?v=0.7.19";
+} from "./h3_checkpoint_manager_core.mjs?v=0.7.21";
 import {
     parsePlanJson,
     planToJson,
@@ -352,6 +354,7 @@ function mount(node) {
     } catch { /* Execution reports invalid selections; never silently repair them. */ }
     const selectedWorkingBranch = () => node.properties.h3_working_branch_id ?? "main";
     const state = {
+        finalCutBranch:"auto", finalCutContext:null, finalCutSelection:null,
         runs:[], runName:String(node.properties[RUN_PROPERTY] ?? ""), payload:null,
         scene:Number(node.properties[SCENE_PROPERTY]) || null,
         revision:String(node.properties[REVISION_PROPERTY] ?? ""),
@@ -369,6 +372,11 @@ function mount(node) {
         initialRefresh:true, attribution:null, attributionButton:null,
         workingBranches:[], defaultWorkingBranch:"main", graphCleanups:[], planMarkerSignature:"",
     };
+    function restoreFinalCutChoice() {
+        try { state.finalCutBranch = JSON.parse(selectionWidget?.value || "null")?.final_cut_branch_id ?? "auto"; }
+        catch { state.finalCutBranch = "auto"; }
+    }
+    restoreFinalCutChoice();
     const root = element("div", "h3cm-root");
     const head = element("div", "h3cm-head");
     const title = element("div", "h3cm-title", "Checkpoint Manager");
@@ -377,7 +385,7 @@ function mount(node) {
     const runRow = element("div", "h3cm-run-row");
     const runSelect = element("select", "h3cm-run-select");
     const workingSelect = element("select", "h3cm-run-select");
-    workingSelect.title = "Working branch for the assignments shown here and the manager's output namespace. Saved paths are shared: any complete path can be assigned here. Does not switch Plan Studio or the project default.";
+    workingSelect.title = "Working branch for the assignments shown here and the manager's output folder. Final cut from separately chooses the saved timeline/ALT settings for the output path. Does not switch Plan Studio or the project default.";
     workingSelect.setAttribute("aria-label", "Working branch whose assignments are shown");
     const workingRow = element("label", "h3cm-working-row");
     workingRow.append(element("span", "", "Assignments shown for:"), workingSelect);
@@ -390,9 +398,22 @@ function mount(node) {
             workingSelect.value = selectedWorkingBranch(); return;
         }
         node.properties.h3_working_branch_id = workingSelect.value;
+        state.finalCutBranch = "auto";
         if (selectionWidget) selectionWidget.value = "";
         state.outputTip = null; state.selected = null;
         await refreshCheckpoints();
+    });
+    const finalCutRow = element("label", "h3cm-working-row");
+    const finalCutSelect = element("select", "h3cm-final-cut-select");
+    finalCutSelect.setAttribute("aria-label", "Final cut from working branch");
+    finalCutSelect.title = "Auto uses the working branch matching the exact selected checkpoint path. If several branches match, choose one explicitly. ALTs supply their own picture, prompt and seed for upscaling, with original audio. Saved generation checkpoints, branch assignments and output folders are unchanged.";
+    const finalCutStatus = element("span", "h3cm-final-cut-status");
+    finalCutRow.append(element("span", "", "Final cut from:"), finalCutSelect, finalCutStatus);
+    finalCutSelect.addEventListener("change", () => {
+        if (state.busy) return;
+        state.finalCutBranch = finalCutSelect.value;
+        writeOutputSelection(selectionWidget?.value);
+        render();
     });
     const refresh = button("Refresh", "Rescan saved runs and checkpoint revisions", () => void refreshRuns());
     const open = button("Open folder", "Open the selected run folder on the ComfyUI host", () => void openFolder());
@@ -546,7 +567,7 @@ function mount(node) {
     assignmentPanel.append(assignmentContext, assignmentActions);
     deletionActions.append(remove);
     deletion.append(deletionActions, deletionTitle, deletionDetails);
-    root.append(head, runRow, workingRow, workingHelp, outputRow, stageTabs, stageNote, chapterTabs, scenes,
+    root.append(head, runRow, workingRow, workingHelp, finalCutRow, outputRow, stageTabs, stageNote, chapterTabs, scenes,
         assignmentPanel, status, main, deletion);
 
     function setPreviewHeight(value, persist = false) {
@@ -668,8 +689,16 @@ function mount(node) {
             const selection = JSON.parse(value);
             if (!selection || typeof selection !== "object" || Array.isArray(selection)) return value;
             if (selection.output_scope != null && !["project", "chapter"].includes(selection.output_scope)) return value;
-            if ((selection.output_scope ?? "project") === outputScope.value) return value;
-            return JSON.stringify({...selection, output_scope:outputScope.value});
+            let changed = false;
+            if ((selection.output_scope ?? "project") !== outputScope.value) {
+                selection.output_scope = outputScope.value; changed = true;
+            }
+            if ((selection.final_cut_branch_id ?? "auto") !== state.finalCutBranch) {
+                if (state.finalCutBranch === "auto") delete selection.final_cut_branch_id;
+                else selection.final_cut_branch_id = state.finalCutBranch;
+                changed = true;
+            }
+            return changed ? JSON.stringify(selection) : value;
         } catch { return value; } // Invalid selections still fail backend validation.
     }
 
@@ -705,9 +734,9 @@ function mount(node) {
             previousRevision !== state.revision ||
             previousChapter !== state.chapterTab || previousScope !== outputScope.value;
         if (selectionWidget && state.stage === "original") {
-            const value = branchSelectionJson(checkpointOutputSelectionJson(
+            const value = branchSelectionJson(outputSelectionForScope(checkpointOutputSelectionJson(
                 selectionWidget.value, state.payload, state.runName, state.outputTip,
-                chapterRangeFor(state.outputTip), outputScope.value), selectedWorkingBranch());
+                chapterRangeFor(state.outputTip), outputScope.value)), selectedWorkingBranch());
             if (selectionWidget.value !== value) {
                 selectionWidget.value = value;
                 selectionWidget.callback?.(value);
@@ -720,7 +749,7 @@ function mount(node) {
     function writeOutputSelection(value) {
         if (!selectionWidget) return;
         node.properties[OUTPUT_SCOPE_PROPERTY] = outputScope.value;
-        selectionWidget.value = branchSelectionJson(value, selectedWorkingBranch());
+        selectionWidget.value = branchSelectionJson(outputSelectionForScope(value), selectedWorkingBranch());
         selectionWidget.callback?.(selectionWidget.value);
         node.graph?.setDirtyCanvas?.(true, true);
     }
@@ -792,6 +821,7 @@ function mount(node) {
         }
         let saved = null;
         try { saved = JSON.parse(outputValue); } catch { /* invalid selections fail at execution */ }
+        renderFinalCutSelection(saved);
         if (saved && state.payload && saved.run_name === state.runName) {
             const tip = saved.lineage?.at(-1);
             const range = {start:saved.scope_start_scene, end:saved.scope_end_scene};
@@ -801,6 +831,46 @@ function mount(node) {
                     + (local ? ", then Use branch locally" : "") + " to include its later clips";
             }
         }
+    }
+
+    function renderFinalCutSelection(saved) {
+        state.finalCutSelection = saved;
+        state.finalCutContext = null;
+        finalCutSelect.replaceChildren();
+        const auto = element("option", "", "Auto · selected path");
+        auto.value = "auto"; finalCutSelect.append(auto);
+        for (const item of state.payload?.final_cut_contexts ?? []) {
+            const option = element("option", "", workingBranchName(item.id));
+            option.value = item.id; finalCutSelect.append(option);
+        }
+        if (state.finalCutBranch !== "auto" && !(state.payload?.final_cut_contexts ?? []).some(item => item.id === state.finalCutBranch)) {
+            const missing = element("option", "", `Unavailable · ${String(state.finalCutBranch).slice(0, 8)}`);
+            missing.value = state.finalCutBranch; finalCutSelect.append(missing);
+        }
+        finalCutSelect.value = state.finalCutBranch;
+        finalCutSelect.disabled = state.busy || !saved || !state.payload?.final_cut_contexts;
+        finalCutStatus.className = "h3cm-final-cut-status h3cm-muted";
+        finalCutStatus.textContent = "";
+        if (!saved || saved.run_name !== state.payload?.run_name) return;
+        try {
+            state.finalCutContext = checkpointFinalCutContext(saved, state.payload.final_cut_contexts, selectedWorkingBranch());
+            if (!state.finalCutContext) return;
+            const used = (state.payload.revisions ?? []).filter(item =>
+                item.take_kind === "editorial_alternate" && alternateUsedInOutput(item));
+            finalCutStatus.textContent = `${state.finalCutBranch === "auto" ? "Resolved: " : ""}${state.finalCutContext.name}`
+                + (used.length ? ` · ${used.map(item => `S${item.scene} ALT ${item.revision.slice(0, 8)}`).join(", ")}` : " · original pictures");
+            outputSummary.textContent += ` Final cut from ${state.finalCutContext.name}.`;
+        } catch (error) {
+            finalCutStatus.className = "h3cm-final-cut-status h3cm-error";
+            finalCutStatus.textContent = error.message;
+            outputSummary.className += " h3cm-error";
+            outputSummary.textContent += ` ${error.message}`;
+        }
+    }
+
+    function alternateUsedInOutput(alternate) {
+        if (!state.payload?.final_cut_contexts) return Boolean(alternate.used_in_final_cut);
+        return checkpointFinalCutAlternate(state.finalCutContext, alternate, state.finalCutSelection);
     }
 
     function setBusy(value, message = "") {
@@ -1164,7 +1234,7 @@ function mount(node) {
             cell.append(card); cards.set(item.key, card);
             if (original) {
                 const alternates = revision.alternates ?? [];
-                const usedAlternate = alternates.find(alternate => alternate.used_in_final_cut);
+                const usedAlternate = alternates.find(alternateUsedInOutput);
                 if (usedAlternate) {
                     const marker = element("small", "h3cm-final-cut-alt",
                         `Final cut: ALT · ${String(usedAlternate.revision).slice(0, 8)}`);
@@ -1182,7 +1252,7 @@ function mount(node) {
                             "h3cm-alternate",
                         );
                         appendSaveOrder(alt, alternate, order);
-                        if (alternate.used_in_final_cut) {
+                        if (alternateUsedInOutput(alternate)) {
                             alt.classList.add("h3cm-alternate-used");
                             alt.append(element("small", "", "used in final cut"));
                         } else {
@@ -1448,7 +1518,7 @@ function mount(node) {
         }
         addInspector("Identity", `${state.attribution ? "Candidate " : ""}Scene ${record.scene} · ${record.scene_id} · ${record.revision}`);
         addInspector("State", record.take_kind === "editorial_alternate"
-            ? `Editorial alternate · ${record.used_in_final_cut ? "used in final cut" : "available"} · ${record.ready ? "Ready" : "Broken"}`
+            ? `Editorial alternate · ${alternateUsedInOutput(record) ? "used in final cut" : "available"} · ${record.ready ? "Ready" : "Broken"}`
             : `${record.active ? `Assigned to ${workingBranchName()}` : `Not assigned to ${workingBranchName()}`} · ${record.ready ? "Saved take ready" : "Broken"}`);
         if (record.take_kind === "editorial_alternate") {
             addInspector("Original base", `Scene ${record.scene} · ${String(record.alternate_of_revision).slice(0, 8)}`);
@@ -2278,6 +2348,7 @@ function mount(node) {
             writeOutputSelection("");
         }
         state.runName = runSelect.value;
+        state.finalCutBranch = "auto";
         node.properties.h3_working_branch_id = "main";
         state.payload = null;
         state.selected = null;
@@ -2313,6 +2384,7 @@ function mount(node) {
         // Configuration can arrive after mount, including undo/redo and tab
         // restores. Hydrate the scope before refresh can persist a selection.
         bindSelectionSerializer();
+        restoreFinalCutChoice();
         restoreOutputScope();
         state.runName = String(node.properties[RUN_PROPERTY] ?? "");
         state.scene = Number(node.properties[SCENE_PROPERTY]) || null;

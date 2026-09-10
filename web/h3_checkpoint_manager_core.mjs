@@ -10,6 +10,40 @@ export function checkpointRevisionKey(scene, revision) {
     return `${Number(scene)}:${String(revision ?? "").toLowerCase()}`;
 }
 
+// Keep this rule aligned with checkpoint_final_cut.resolve_final_cut_context.
+// Matching is by exact saved revisions, never dimensions, names or timestamps.
+export function checkpointFinalCutContext(selection, contexts, current = "main") {
+    if (!Array.isArray(contexts)) return null; // Older server; no inferred claims.
+    const requested = selection?.final_cut_branch_id === undefined ? "auto" : selection.final_cut_branch_id;
+    if (typeof requested !== "string" || !requested) throw new Error("Invalid final-cut branch choice. Choose Final cut from.");
+    const byId = new Map(contexts.map(item => [item.id, item]));
+    if (requested !== "auto") {
+        if (!byId.has(requested)) throw new Error("Selected final-cut branch is unavailable. Choose Final cut from.");
+        return byId.get(requested);
+    }
+    if (!byId.has(current)) throw new Error("Checkpoint Manager's working branch is unavailable.");
+    const first = selection?.output_scope === "chapter" ? Number(selection.scope_start_scene ?? 1) : 1;
+    const wanted = (selection?.lineage ?? []).filter(item => Number(item.scene) >= first);
+    const matches = wanted.length ? contexts.filter(context => {
+        const assigned = new Map(context.lineage.map(item => [Number(item.scene), String(item.revision).toLowerCase()]));
+        return wanted.every(item => assigned.get(Number(item.scene)) === String(item.revision).toLowerCase());
+    }) : [];
+    if (matches.some(item => item.id === current)) return byId.get(current);
+    if (matches.length > 1) throw new Error(`This saved path matches multiple final-cut branches (${matches.map(item => item.name).join(", ")}). Choose Final cut from before upscaling.`);
+    return matches[0] ?? byId.get(current);
+}
+
+export function checkpointFinalCutAlternate(context, alternate, selection) {
+    if (!context || !alternate || !selection) return false;
+    const first = selection.output_scope === "chapter" ? Number(selection.scope_start_scene ?? 1) : 1;
+    const base = (selection.lineage ?? []).find(item => Number(item.scene) === Number(alternate.scene)
+        && Number(item.scene) >= first);
+    return Boolean(base && String(base.revision).toLowerCase() === String(alternate.alternate_of_revision).toLowerCase()
+        && context.replacements.some(item => Number(item.scene) === Number(alternate.scene)
+            && String(item.base_revision).toLowerCase() === String(base.revision).toLowerCase()
+            && String(item.alternate_revision).toLowerCase() === String(alternate.revision).toLowerCase()));
+}
+
 export const CHECKPOINT_STAGES = [
     {id:"original", label:"Original"},
     {id:"derope", label:"DeRoPE"},

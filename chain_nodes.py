@@ -9124,9 +9124,11 @@ def _editorial_presentation_segments(
             result.append(base)
             continue
         revision = str(replacement["alternate_revision"])
-        metadata_path = _versioned_path(
-            _artifact_paths({"run_name": run_name}, scene)["metadata"],
-            revision)
+        # Revision objects are project-shared, unlike the branch's mutable
+        # clip_XXXX.json pointers. Named final cuts must read the shared ALT.
+        metadata_path = os.path.join(
+            _project_run_dir({"run_name": run_name}), "checkpoints",
+            "clip_%04d.%s.json" % (scene, revision))
         if not os.path.isfile(metadata_path):
             raise FileNotFoundError(
                 "Selected scene %d alternate revision is missing: %s" %
@@ -28794,7 +28796,9 @@ def _checkpoint_selection_manifest(value: Any) -> dict[str, Any] | None:
     scope_start_scene = int(selection.get("scope_start_scene", 1))
     scope_end_scene = int(selection.get(
         "scope_end_scene", len(shots)))
-    editorial = _load_run_editorial(run_name)
+    from .checkpoint_final_cut import selection_editorial
+    editorial, final_cut_branch = selection_editorial(
+        sys.modules[__name__], run_name, selection, current_branch(run_name))
     maximum_scene = max([
         len(shots), *(int(item.get("scene", 0))
                      for item in editorial.get("scene_order", [])
@@ -29004,6 +29008,11 @@ def _checkpoint_selection_manifest(value: Any) -> dict[str, Any] | None:
     elif isinstance(archived_plan.get("source_timeline"), dict):
         manifest["source_timeline"] = _json_document(
             archived_plan["source_timeline"])
+    if final_cut_branch != current_branch(run_name):
+        # Freeze the selected path's cut, not the unrelated assignment view's
+        # cut. Keep output folders and generation lineage exactly as selected.
+        manifest["editorial"] = _json_document(editorial)
+        manifest["final_cut_source"] = {"branch_id": final_cut_branch}
     if chapter_output:
         # Picture-only alternates cannot change duration. Earlier chapters'
         # base timing metadata suffices; do not require their alternate media.
@@ -29012,6 +29021,8 @@ def _checkpoint_selection_manifest(value: Any) -> dict[str, Any] | None:
             if int(item.get("scene", 0)) >= scope_start_scene]}
         manifest, _path = _chapter_manifest_from_manifest(
             manifest, int(selected_chapter["number"]), persist=False)
+        if final_cut_branch != current_branch(run_name):
+            manifest["final_cut_source"] = {"branch_id": final_cut_branch}
     else:
         _validate_manifest(manifest)
     if selection.get("processing_source") is not None:
@@ -29934,6 +29945,8 @@ def _saved_checkpoint_listing(
                 "branch_count": 0, "bytes": 0, "broken_count": 0,
             },
         }
+    from .checkpoint_final_cut import final_cut_contexts
+    payload["final_cut_contexts"] = final_cut_contexts(sys.modules[__name__], run_name)
     payload.update({
         "revisions": graph["revisions"],
         "scenes": graph["scenes"],

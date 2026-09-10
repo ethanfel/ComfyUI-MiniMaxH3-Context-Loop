@@ -94,6 +94,86 @@ class AlternateUpscaleTests(unittest.TestCase):
         self.assertEqual(upscale._verified_source_manifest(manifest), manifest)
         self.assertEqual(self.original_files, {p: p.read_bytes() for p in self.original_files})
 
+    def branch_with_selected_alt(self):
+        store = chain.WorkingBranches(self.temp.name, self.run)
+        branch = store.create("main", "960x544", {"plan_json": json.dumps({
+            "shots": [{"id": "first"}, {"id": "second"}]})}, 2)
+        # Original is assigned a different scene 1; the local output remains
+        # the old two-scene path now assigned to the named working branch.
+        metadata = copy.deepcopy(chain._read_json(str(self.root / self.bases[0]["metadata"])))
+        metadata["segment"]["revision"] = "0" * 32
+        chain._atomic_json(str(self.root / self.bases[0]["metadata"]), metadata)
+        # Original's old choice is unrelated, just like the reported project.
+        editorial = chain._load_run_editorial(self.run)
+        editorial["replacements"][0]["base_revision"] = "0" * 32
+        editorial["replacements"][0]["alternate_revision"] = "1" * 32
+        chain._atomic_json(chain._run_editorial_path(self.run), editorial)
+        return branch
+
+    def test_local_pin_resolves_named_branch_alt_without_changing_assignments(self):
+        branch = self.branch_with_selected_alt()
+        root = self.root / "h3_chains" / self.run
+        before = {p: p.read_bytes() for p in root.rglob("*") if p.is_file()}
+        source = self.manager.passthrough(json.dumps(self.selection))[0]
+        self.assertNotIn("_branch_id", source, "Output namespace must not move")
+        self.assertEqual(source["final_cut_source"], {"branch_id": branch["id"]})
+        self.assertEqual(source["editorial"]["replacements"][0]["alternate_revision"], self.alt["revision"])
+        _, state, manifest, status = self.adapt(source)
+        self.assertIn("final-cut ALT pictures: 1/" + self.alt["revision"][:8], status)
+        current = upscale.MiniMaxH3ChainUpscaleCurrent().current(state)
+        self.assertTrue(torch.all(current[2]["samples"] == 0.9), "Read ALT video, not base")
+        self.assertTrue(torch.all(current[3]["samples"] == 0.3), "Keep original audio latent")
+        self.assertEqual(current[6], self.alt["prompt"])
+        self.assertEqual(current[9], 91)
+        self.assertEqual(manifest["segments"][1]["revision"], self.bases[1]["revision"])
+        self.assertEqual(before, {p: p.read_bytes() for p in root.rglob("*") if p.is_file()})
+
+    def test_named_branch_chapter_pixel_and_explicit_cut_use_shared_alt(self):
+        branch = self.branch_with_selected_alt()
+        for route in ({}, {"_branch_id": branch["id"]}, {"final_cut_branch_id": branch["id"]}):
+            with self.subTest(route=route):
+                source = self.manager.passthrough(json.dumps({**self.selection, **route,
+                    "output_scope": "chapter", "scope_start_scene": 1, "scope_end_scene": 2}))[0]
+                _, state, manifest, _ = self.adapt(source, backend="pixel")
+                self.assertEqual(manifest["segments"][0]["revision"], self.alt["revision"])
+
+                class VideoVAE:
+                    def decode(_self, video):
+                        self.assertTrue(torch.all(video == 0.9))
+                        return self.frames
+
+                current = upscale.MiniMaxH3ChainUpscalePixelCurrent().current(state, VideoVAE())
+                self.assertIn("ALT ", current[-1])
+                self.assertTrue(torch.all(current[2]["waveform"] == 0.2))
+                self.assertEqual(current[3], self.alt["prompt"])
+
+    def test_ambiguous_cut_requires_choice_and_missing_choice_fails(self):
+        branch = self.branch_with_selected_alt()
+        store = chain.WorkingBranches(self.temp.name, self.run)
+        duplicate = store.create(branch["id"], "Different cut", {"plan_json": json.dumps({
+            "shots": [{"id": "first"}, {"id": "second"}]})}, 2)
+        with self.assertRaisesRegex(ValueError, "multiple final-cut branches"):
+            self.manager.passthrough(json.dumps(self.selection))
+        selected = self.manager.passthrough(json.dumps({**self.selection,
+            "final_cut_branch_id": branch["id"]}))[0]
+        self.assertEqual(self.adapt(selected)[2]["segments"][0]["revision"], self.alt["revision"])
+        original = self.manager.passthrough(json.dumps({**self.selection,
+            "final_cut_branch_id": "main"}))[0]
+        self.assertEqual(self.adapt(original)[2]["segments"][0]["revision"], self.bases[0]["revision"])
+        for bad in ("f" * 32, "../escape", None, False, 0, "", []):
+            with self.assertRaises(ValueError):
+                self.manager.passthrough(json.dumps({**self.selection, "final_cut_branch_id": bad}))
+        # If explicitly browsing the matching named branch, Auto is unambiguous.
+        selected = self.manager.passthrough(json.dumps({**self.selection, "_branch_id": duplicate["id"]}))[0]
+        self.assertEqual(self.adapt(selected)[2]["segments"][0]["revision"], self.alt["revision"])
+
+    def test_named_cut_missing_alt_never_falls_back_to_base(self):
+        self.branch_with_selected_alt()
+        source = self.manager.passthrough(json.dumps(self.selection))[0]
+        (self.root / self.alt["revision_metadata"]).unlink()
+        with self.assertRaisesRegex(FileNotFoundError, "alternate revision is missing"):
+            self.adapt(source)
+
     def test_chapter_and_pixel_reader_select_same_alt(self):
         chapter, _ = chain._chapter_manifest_from_manifest(self.manifest, 1, persist=False)
         self.make_alternate()  # Chapter selection remains frozen to the first ALT.

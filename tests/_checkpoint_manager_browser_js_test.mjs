@@ -183,6 +183,29 @@ async function browserChecks(extensionSource) {
         check(rootY < forkY && forkY < otherY,"Related fork stays above the unrelated branch in the real grid");
         check(findCell(other[6].revision).getBoundingClientRect().top === otherY,"Unrelated seven-scene family stays together");
         check(node.widgets[0].value === output,"Layout grouping cannot change the output path");
+        payload.run_name = "demo";
+        alternate.used_in_final_cut = false; // Old assignment-view badge is wrong.
+        payload.final_cut_contexts = [
+            {id:"main",name:"Original",lineage:other.map(({scene,revision})=>({scene,revision})),replacements:[]},
+            {id:named,name:"960x544",lineage:seven.map(({scene,revision})=>({scene,revision})),replacements:[
+                {scene:1,base_revision:seven[0].revision,alternate_revision:alternate.revision}]},
+        ];
+        node._h3CheckpointManagerRefresh(); await new Promise(resolve=>setTimeout(resolve,100));
+        const cut = root.querySelector(".h3cm-final-cut-select");
+        check(root.querySelector(".h3cm-final-cut-status").textContent.includes("Resolved: 960x544"),"Local output resolves named final cut");
+        check(Boolean(root.querySelector(".h3cm-alternate-used")),"Named final cut marks ALT despite Original assignment view");
+        check(root.querySelector(".h3cm-final-cut-alt").textContent.includes("eeeeeeee"),"Base line marks the resolved ALT");
+        check(node.widgets[0].value===output,"Auto final cut does not rewrite the pin or output folder");
+        cut.value="main";cut.dispatchEvent(new Event("change",{bubbles:true}));
+        check(!root.querySelector(".h3cm-alternate-used"),"Explicit Original changes only final-cut picture selection");
+        check(JSON.parse(node.widgets[0].value).final_cut_branch_id==="main","Explicit cut is serialized");
+        cut.value="auto";cut.dispatchEvent(new Event("change",{bubbles:true}));
+        check(Boolean(root.querySelector(".h3cm-alternate-used")),"Auto restores the selected path's ALT marker");
+        check(node.widgets[0].value===output,"Auto restores the original pin bytes");
+        for (const width of [900,1500]) {
+            document.getElementById("host").style.width=width+"px";
+            check(root.scrollWidth<=root.clientWidth+1,`Final-cut control has no root overflow at ${width}px`);
+        }
         const host = document.getElementById("host"); host.style.width="1850px";host.style.height="1040px";
         root.querySelector(".h3cm-main").style.gridTemplateColumns="minmax(0,1fr)";
         root.querySelector(".h3cm-detail").style.display="none";

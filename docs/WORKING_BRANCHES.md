@@ -86,6 +86,27 @@ per Checkpoint Manager node and survives refreshes, stage/chapter switches and
 workflow reloads. It never changes the source selection, branch assignments,
 Plan, saved media, preview size or the main ComfyUI canvas zoom.
 
+**Final cut from** chooses the saved working branch's timeline/ALT settings for
+the output, independently of **Assignments shown for** and the output folder.
+The default **Auto · selected path** compares exact checkpoint revisions (only
+the output chapter for chapter-only selections): it uses the displayed working
+branch if that branch matches, otherwise a unique matching working branch. If
+several other branches match, choose one explicitly; it never guesses by
+resolution, newest save or the Plan open in another tab. An unassigned historical
+path retains the displayed branch's cut unless you explicitly choose another.
+Existing local pins receive this resolution at execution too, without being
+rewritten. Missing explicit branches or invalid saved cuts fail rather than
+silently selecting another cut.
+
+The resolved branch and selected ALTs appear beside the control. Inline ALT
+badges and **Final cut: ALT** on the original checkpoint describe this output's
+resolved cut, not an unrelated assignment view. Deferred pixel and latent
+upscales use the selected ALT picture, prompt and seed with the original audio;
+generation ancestry and saved media stay unchanged. New selections read today's
+saved cut; existing chapter/presentation snapshots remain frozen. A changed ALT
+invalidates incompatible HQ resume sources, so restart at the affected scene
+instead of reusing an upscale of the old picture.
+
 **Select path** headings choose a whole original path (unless output is pinned),
 while processed path headings only preview. **Assigned to <name> through S<n>**
 is a separate badge showing where that working branch's assignment ends; it
