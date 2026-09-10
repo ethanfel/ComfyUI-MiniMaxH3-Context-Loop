@@ -139,6 +139,8 @@ const PLAN_NAMES = new Set([PLAN_NAME, MODERN_PLAN_NAME]);
 const ACTIVE_PROPERTY = "h3_plan_studio_active_scene";
 const ACTIVE_CHAPTER_PROPERTY = "h3_plan_studio_active_chapter";
 const VIEW_PROPERTY = "h3_plan_studio_view";
+const PROMPT_TAKE_TAB_PROPERTY = "h3_plan_studio_prompt_take_tab";
+let promptTakeTabsSerial = 0;
 const TIMELINE_ZOOM_PROPERTY = "h3_plan_studio_timeline_zoom";
 const SOURCE_AUDIO_MUTES_PROPERTY = "h3_plan_studio_source_audio_mutes";
 const GENERATED_VOLUME_PROPERTY = "h3_plan_studio_generated_volume";
@@ -338,6 +340,10 @@ function injectStyles() {
         .h3studio-audio-overrides { display:grid; grid-template-columns:repeat(3,minmax(160px,1fr));
             gap:7px; margin:0 0 8px; align-items:end; }
         .h3studio-field { display:flex; min-width:0; flex-direction:column; gap:3px; color:var(--hs-muted); }
+        .h3studio-prompt-take-tabs { display:flex; gap:6px; margin-bottom:8px; }
+        .h3studio-prompt-take-tabs [aria-selected="true"] { color:var(--hs-accent);
+            border-color:var(--hs-accent); }
+        .h3studio-prompt-takes > [role="tabpanel"][hidden] { display:none; }
         .h3studio-alternate { margin:0 0 9px; padding:9px; border:1px solid var(--hs-alternate);
             border-radius:7px; background:color-mix(in srgb,var(--hs-panel) 94%,var(--hs-alternate)); }
         .h3studio-alternate-title { display:flex; align-items:center; gap:7px; margin-bottom:4px; }
@@ -3178,6 +3184,61 @@ function mount(node) {
         tray.append(preview); show(records[0]);
     }
 
+    function promptTakeTabs(original, alternate, sceneId, baseRevision) {
+        const host = element("div", "h3studio-prompt-takes");
+        const tabs = element("div", "h3studio-prompt-take-tabs");
+        tabs.setAttribute("role", "tablist");
+        tabs.setAttribute("aria-label", "Scene prompt take");
+        const prefix = `h3studio-prompt-take-${++promptTakeTabsSerial}`;
+        const panels = {original, alt:alternate}, buttons = new Map();
+        let active = node.properties[PROMPT_TAKE_TAB_PROPERTY] === "alt" ? "alt" : "original";
+        const refresh = () => {
+            const draft = state.editorial.alternate_draft;
+            const armed = draft?.enabled && draft.scene_id === sceneId && draft.base_revision === baseRevision;
+            const used = state.editorial.replacements.some(item => item.scene_id === sceneId
+                && item.base_revision === baseRevision && item.alternate_revision);
+            for (const [take, tab] of buttons) {
+                tab.textContent = take === "original" ? "Original" : `ALT${armed ? " · armed" : used ? " · used in final cut" : ""}`;
+                tab.setAttribute("aria-selected", String(take === active));
+                tab.tabIndex = take === active ? 0 : -1;
+                panels[take].hidden = take !== active;
+            }
+        };
+        const select = take => {
+            active = take;
+            node.properties[PROMPT_TAKE_TAB_PROPERTY] = take;
+            // Only visibility changes: keep both editor DOMs and unsaved text.
+            // Never choose a final-cut take, arm a render or write Plan/editorial data.
+            refresh();
+            node.graph?.setDirtyCanvas?.(true, true);
+        };
+        for (const [take, panel] of Object.entries(panels)) {
+            const tab = button(take === "original" ? "Original" : "ALT",
+                take === "original" ? "Edit the generation prompt and its history"
+                    : "Edit picture-only alternates and choose the final-cut picture; switching tabs does not enable generation",
+                () => select(take));
+            tab.id = `${prefix}-${take}-tab`;
+            tab.setAttribute("role", "tab");
+            tab.setAttribute("aria-controls", `${prefix}-${take}-panel`);
+            panel.id = `${prefix}-${take}-panel`;
+            panel.setAttribute("role", "tabpanel");
+            panel.setAttribute("aria-labelledby", tab.id);
+            tab.addEventListener("keydown", event => {
+                if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+                event.preventDefault();
+                const next = event.key === "Home" ? "original" : event.key === "End" ? "alt"
+                    : active === "original" ? "alt" : "original";
+                select(next); buttons.get(next).focus();
+            });
+            buttons.set(take, tab); tabs.append(tab);
+        }
+        // Keep a hidden armed draft visible in the ALT tab label after its checkbox changes.
+        alternate.addEventListener("change", refresh);
+        host.append(tabs, original, alternate);
+        refresh();
+        return host;
+    }
+
     function renderScenePanel() {
         const shot = state.plan.shots[state.active];
         const row = timing().shots[state.active];
@@ -3815,6 +3876,7 @@ function mount(node) {
             return section;
         }
         const alternate = alternateTakePanel();
+        const original = element("div", "h3studio-original-prompt-panel");
 
         if (state.promptEditors.length) {
             const delegated = element("div", "h3studio-prompt-delegated");
@@ -3825,7 +3887,9 @@ function mount(node) {
                     "Scene selection is synchronized in both directions; Studio keeps scene ID, length, steps, seed, timeline, and playback controls.",
                 ),
             );
-            panel.append(head, form, audioOverrides, alternate, delegated);
+            original.append(delegated);
+            panel.append(head, form, audioOverrides,
+                promptTakeTabs(original, alternate, String(row.id), String(checkpoint?.revision ?? "")));
             return panel;
         }
 
@@ -3855,9 +3919,9 @@ function mount(node) {
         );
         const history = element("div", "h3studio-history");
         state.history.host = history; state.history.textarea = prompt; state.history.status = message;
-        panel.append(
-            head, form, audioOverrides, alternate, prompt, tools, tray, history,
-        );
+        original.append(prompt, tools, tray, history);
+        panel.append(head, form, audioOverrides,
+            promptTakeTabs(original, alternate, String(row.id), String(checkpoint?.revision ?? "")));
         void loadHistory(row.id, prompt.value);
         return panel;
     }

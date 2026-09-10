@@ -25,7 +25,7 @@ writeFileSync(file, html);
 const run = spawnSync(process.env.H3_TEST_BROWSER || "/opt/google/chrome/chrome", [
     "--headless", "--disable-gpu", "--no-first-run", "--disable-background-networking",
     "--disable-component-update", "--disable-sync", "--host-resolver-rules=MAP * ~NOTFOUND",
-    "--user-data-dir=" + join(out, "profile"), "--virtual-time-budget=2000", "--window-size=1530,1000",
+    "--user-data-dir=" + join(out, "profile"), "--virtual-time-budget=2500", "--window-size=1900,1100",
     "--screenshot=" + join(out, "checkpoint-manager.png"), "--dump-dom", pathToFileURL(file).href,
 ], {encoding:"utf8",timeout:25000,maxBuffer:2 * 1024 * 1024});
 assert.equal(run.status,0,run.error?.message || run.stderr);
@@ -104,24 +104,45 @@ async function browserChecks(extensionSource) {
         await new Promise(resolve=>setTimeout(resolve,100));
         check(root.querySelectorAll(".h3cm-fork-edge").length === 6,"All six saved continuation arrows render after resize");
         const output = node.widgets[0].value;
-        check(!root.querySelector(".h3cm-alternate"),"Original graph has no embedded ALT cards");
+        check(root.querySelectorAll(".h3cm-alternate").length === 1,"Original graph shows ALT once under its base");
         const tab = label => [...root.querySelectorAll('[role="tab"]')].find(item=>item.textContent === label);
-        check(tab("Original · 7")?.getAttribute("aria-selected") === "true","Original count excludes ALT");
-        tab("ALT · 1").click(); await new Promise(resolve=>setTimeout(resolve,100));
-        check(tab("ALT · 1")?.getAttribute("aria-selected") === "true","ALT is a separate selected tab");
-        check(root.querySelectorAll(".h3cm-alternate").length === 1,"ALT appears exactly once");
-        check(!root.querySelector(".h3cm-fork-graph"),"ALT view has no misleading generation fork graph");
+        check(tab("Original · 8")?.getAttribute("aria-selected") === "true","Original stage includes its ALT takes");
+        check(!tab("ALT · 1"),"ALT editor tabs belong in Plan Studio, not Checkpoint Manager");
+        const originalCell = root.querySelector('.h3cm-fork-node[data-graph-key="1:' + seven[0].revision + '"]');
+        check(Boolean(originalCell.querySelector(".h3cm-alternate")),"ALT is nested under the exact original");
+        check(originalCell.querySelector(".h3cm-final-cut-alt").textContent === "Final cut: ALT · eeeeeeee",
+            "The original checkpoint line identifies the selected final-cut ALT");
         check(Boolean(root.querySelector(".h3cm-alternate-used")),"Used ALT is marked");
-        check(root.querySelector(".h3cm-alt-title").textContent.includes("Base 11111111"),"ALT shows its original base");
-        check(!root.querySelector(".h3cm-branches [aria-expanded]"),"ALT view has no collapse controls");
-        check(root.querySelector(".h3cm-assignment").hidden,"ALT hides generation-assignment controls");
-        check(root.querySelector(".h3cm-plan-context").hidden,"ALT hides generation-path marker text");
-        check(node.widgets[0].value === output,"Switching tabs preserves output selection");
+        check(!root.querySelector(".h3cm-branches [aria-expanded]"),"Inline ALTs have no collapse controls");
+        root.querySelector(".h3cm-alternate").click(); await new Promise(resolve=>setTimeout(resolve,100));
+        check(action.disabled || [...root.querySelectorAll("button")].find(item=>item.textContent === "Assign path to Original").disabled,
+            "Previewing ALT cannot assign it as generation lineage");
+        check(node.widgets[0].value === output,"Previewing ALT preserves output selection");
         check(root.querySelector(".h3cm-stage-note").textContent.length < 120,"Help text stays concise");
         for (const width of [900,1500]) {
             document.getElementById("host").style.width = width + "px";
             check(root.scrollWidth <= root.clientWidth + 1,`ALT has no root overflow at ${width}px`);
         }
+        const other = seven.map((item,i)=>({...item, revision:("8" + i).repeat(16), active:false,
+            alternates:[], compatibility:{width:1344,height:768},
+            ...(i ? {parent:{scene:i,revision:("8" + (i - 1)).repeat(16)}} : {})}));
+        const fork = [...seven.slice(0,5), {...seven[5],revision:"c".repeat(32)},
+            {...seven[6],revision:"d".repeat(32),parent:{scene:6,revision:"c".repeat(32)}}];
+        payload.revisions.push(...other,...fork.slice(5));
+        payload.branches.push({active:false,path:other},{active:false,path:fork});
+        node._h3CheckpointManagerRefresh(); await new Promise(resolve=>setTimeout(resolve,100));
+        const nodes = [...root.querySelectorAll(".h3cm-fork-node")];
+        const findCell = revision => nodes.find(item=>item.dataset.graphKey.endsWith(":" + revision));
+        const rootY = findCell(seven[0].revision).getBoundingClientRect().top;
+        const forkY = findCell(fork[5].revision).getBoundingClientRect().top;
+        const otherY = findCell(other[0].revision).getBoundingClientRect().top;
+        check(rootY < forkY && forkY < otherY,"Related fork stays above the unrelated branch in the real grid");
+        check(findCell(other[6].revision).getBoundingClientRect().top === otherY,"Unrelated seven-scene family stays together");
+        check(node.widgets[0].value === output,"Layout grouping cannot change the output path");
+        const host = document.getElementById("host"); host.style.width="1850px";host.style.height="1040px";
+        root.querySelector(".h3cm-main").style.gridTemplateColumns="minmax(0,1fr)";
+        root.querySelector(".h3cm-detail").style.display="none";
+        await new Promise(resolve=>setTimeout(resolve,100));
         node.onRemoved?.();
     } catch (error) {report.failures.push(error.stack || String(error));}
     document.body.dataset.report = btoa(JSON.stringify(report));

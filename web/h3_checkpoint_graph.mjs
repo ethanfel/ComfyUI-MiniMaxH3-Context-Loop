@@ -106,7 +106,38 @@ export function checkpointForkGraph(rows, stage = "original") {
         const edgeKey = checkpointGraphEdgeKey(parent.key, key);
         edges.set(edgeKey, {key:edgeKey, from:parent.key, to:key, kind:"reuse", paths:[]});
     }
-    const scenes = [...new Set([...nodes.values(), ...slots.values()].map(item => item.scene))].sort((a, b) => a - b);
+    // Input rows can interleave unrelated roots and nested forks. Keep each
+    // family together by visiting the recorded descendants before the next
+    // sibling/root. Only lane positions change: path order/identity, edges,
+    // assignments and save-order labels retain their original meaning.
+    const cells = [...nodes.values(), ...slots.values()];
+    const byKey = new Map(cells.map(item => [item.key, item]));
+    const children = new Map(), hasParent = new Set();
+    for (const edge of edges.values()) {
+        if (!children.has(edge.from)) children.set(edge.from, []);
+        children.get(edge.from).push(edge.to);
+        hasParent.add(edge.to);
+    }
+    const visited = new Set(), laneOrder = new Map();
+    const visit = root => {
+        const pending = [root.key];
+        while (pending.length) {
+            const key = pending.pop();
+            if (visited.has(key)) continue;
+            visited.add(key);
+            const item = byKey.get(key);
+            if (!item) continue;
+            if (!laneOrder.has(item.lane)) laneOrder.set(item.lane, laneOrder.size);
+            // A stack preserves the first saved continuation before siblings.
+            const next = children.get(key) ?? [];
+            for (let i = next.length - 1; i >= 0; i--) pending.push(next[i]);
+        }
+    };
+    for (const item of cells) if (!hasParent.has(item.key)) visit(item);
+    for (const item of cells) visit(item); // Keep malformed/disconnected history inspectable.
+    for (const item of cells) item.lane = laneOrder.get(item.lane);
+    nextLane = laneOrder.size;
+    const scenes = [...new Set(cells.map(item => item.scene))].sort((a, b) => a - b);
     const columns = new Map(scenes.map((scene, index) => [scene, index]));
     return {nodes:[...nodes.values()].map(item => ({...item, column:columns.get(item.scene)})),
         slots:[...slots.values()].map(item => ({...item, column:columns.get(item.scene)})),

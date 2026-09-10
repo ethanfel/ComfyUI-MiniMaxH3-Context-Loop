@@ -72,7 +72,11 @@ switch the connected Plan's branch; it is not needed just to assign clips.
 **Use branch locally** remains an output-only pin.
 
 The revision display is a fork graph: shared clips appear once and arrows follow
-the saved paths, including processing histories. The bright **Output path** is
+the saved paths, including processing histories. Related forks are kept together,
+before unrelated root paths/profiles, regardless of the order they were listed.
+Editorial ALT cards stay below their exact original checkpoint; **Final cut:
+ALT · <revision>** marks the original whose alternate picture is currently used.
+The bright **Output path** is
 the manager's serialized output selection; a clip preview does not move it.
 **Select path** headings choose a whole original path (unless output is pinned),
 while processed path headings only preview. **Assigned to <name> through S<n>**

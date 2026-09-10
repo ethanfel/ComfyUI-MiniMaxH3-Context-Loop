@@ -819,7 +819,7 @@ recovery._h3CheckpointManagerPlanMarkerRefresh();
 assert.equal(byText(recovery,"Assign path to Original (Plan)").hidden,true,"Same-target duplicate action is hidden");
 console.log("Original assignment recovery: full 960x544 path, no phantom slot, named targets, visible controls, cancel and output isolation pass");
 
-// Original and picture-only ALT are separate presentation tabs, not branches.
+// Editorial ALT cards remain nested under their exact generation checkpoint.
 currentGraph = structuredClone(payload);
 const alts = [
     {scene:2, revision:"e".repeat(32), alternate_of_revision:b, take_kind:"editorial_alternate",
@@ -835,57 +835,47 @@ currentGraph.revisions[2].alternates = [alts[1]];
 currentGraph.revisions[3].alternates = [alts[2]];
 const altNode = makeNode(); await settle();
 const beforeAltOutput = value(altNode), beforeAltMutations = mutations;
-assert.equal(byText(altNode,"Original · 4")["aria-selected"],"true");
-assert.equal(byText(altNode,"ALT · 3")["aria-selected"],"false");
-assert.equal(byClass(altNode,"h3cm-alternate"),undefined,"No embedded ALT under the Original fork graph");
-select(altNode,2,b); await settle();
-byText(altNode,"ALT · 3").click(); await settle();
-assert.equal(byText(altNode,"ALT · 3")["aria-selected"],"true");
-assert.equal(byText(altNode,"Original · 4")["aria-selected"],"false");
-assert.equal(byClass(altNode,"h3cm-fork-graph"),undefined,"ALTs are not generation paths");
+assert.equal(byText(altNode,"Original · 7")["aria-selected"],"true");
+assert.ok(!elements(altNode).some(item=>item.role==="tab" && item.textContent.startsWith("ALT")),
+    "Original/ALT prompt tabs belong in Plan Studio, not Checkpoint Manager");
 assert.equal(elements(altNode).filter(item=>item.className.split(" ").includes("h3cm-alternate")).length,3);
-assert.ok(byClass(altNode,"h3cm-alternate-used"),"Used final-cut take remains marked");
-assert.ok(elements(altNode).some(item=>item.textContent.includes("Base bbbbbbbb")));
-assert.ok(elements(altNode).some(item=>item.textContent === "Missing artifacts"),"Broken ALTs remain inspectable");
-assert.ok(byText(altNode,"Use branch locally").disabled,"ALT cannot become generation output");
-assert.ok(byText(altNode,"Assign path to Original").disabled,"ALT cannot be assigned as a generation branch");
-assert.ok(byClass(altNode,"h3cm-assignment").hidden,"Generation assignment controls do not clutter ALT");
-assert.ok(!byClass(altNode,"h3cm-inspector").children.some(item=>item.textContent === "Unresolved lineage"),
-    "ALT has a base take, not an unresolved generation branch");
-assert.ok(!elements(altNode).some(item=>item["aria-expanded"] !== undefined),"ALT has no collapse controls");
+const baseCell = revision => elements(altNode).find(item=>item.dataset.graphKey===core.checkpointRevisionKey(
+    currentGraph.revisions.find(record=>record.revision===revision).scene,revision));
+const contains = (cell, target) => cell.children.some(child=>child===target || contains(child,target));
+assert.ok(contains(baseCell(b),byText(altNode,"ALT · eeeeeeee")),"Used ALT is beneath its actual original");
+assert.ok(contains(baseCell(c),byText(altNode,"ALT · ffffffff")),"Broken ALT remains attached and inspectable");
+assert.ok(contains(baseCell(d),byText(altNode,"ALT · 99999999")));
+assert.ok(contains(baseCell(b),byClass(altNode,"h3cm-final-cut-alt")),"Original line marks the used picture");
+assert.equal(byClass(altNode,"h3cm-final-cut-alt").textContent,"Final cut: ALT · eeeeeeee");
+assert.equal(elements(altNode).filter(item=>item.className==="h3cm-final-cut-alt").length,1,
+    "An unused ALT on another base must not mark that original as replaced");
+assert.ok(elements(altNode).some(item=>item.textContent==="Missing artifacts"));
+assert.ok(byClass(altNode,"h3cm-alternate-used"));
+assert.ok(byClass(altNode,"h3cm-fork-graph"),"ALT cards do not replace the saved path graph");
 byText(altNode,"ALT · 99999999").click(); await settle();
 assert.match(byClass(altNode,"h3cm-preview").dataset.source,/alt_later\.mp4/);
+assert.ok(byText(altNode,"Use branch locally").disabled,"ALT cannot become generation output");
+assert.ok(byText(altNode,"Assign path to Original").disabled,"ALT cannot be assigned as generation lineage");
+assert.ok(!byClass(altNode,"h3cm-inspector").children.some(item=>item.textContent==="Unresolved lineage"));
 const altDeletion = requests.findLast(item=>item.path.endsWith("/checkpoint-revisions/delete-preview"));
-assert.equal(JSON.parse(altDeletion.options.body).revision,alts[2].revision,"Deletion preview targets the ALT, not its base");
+assert.equal(JSON.parse(altDeletion.options.body).revision,alts[2].revision,"Deletion preview targets ALT, not its base");
 assert.equal(value(altNode),beforeAltOutput);
 altNode._h3CheckpointManagerRefresh(); await settle();
 assert.equal(altNode.properties.h3_checkpoint_manager_revision,alts[2].revision,"Refresh keeps the selected ALT");
 assert.match(byClass(altNode,"h3cm-preview").dataset.source,/alt_later\.mp4/);
-const restoredAlt = makeNode(beforeAltOutput, {...altNode.properties}); await settle();
-assert.equal(byText(restoredAlt,"ALT · 3")["aria-selected"],"true","Workflow restore keeps the ALT tab");
-assert.equal(restoredAlt.properties.h3_checkpoint_manager_revision,alts[2].revision);
-byText(altNode,"Original · 4").click(); await settle();
-assert.equal(altNode.properties.h3_checkpoint_manager_revision,d,"Original returns to the ALT's actual base");
-assert.equal(byClass(altNode,"h3cm-alternate"),undefined);
-assert.equal(byClass(altNode,"h3cm-assignment").hidden,false,"Original restores assignment controls");
-assert.equal(value(altNode),beforeAltOutput,"Tab switches preserve exact output JSON");
-byText(altNode,"ALT · 3").click(); await settle();
+const restoredAlt = makeNode(beforeAltOutput,{...altNode.properties,h3_checkpoint_manager_take_tab:"alt"}); await settle();
+assert.ok(byClass(restoredAlt,"h3cm-fork-graph"),"Old workflows with a saved ALT tab reopen the inline graph");
+assert.match(byClass(restoredAlt,"h3cm-preview").dataset.source,/alt_later\.mp4/);
+assert.equal(value(restoredAlt),beforeAltOutput);
+currentGraph.revisions[4].used_in_final_cut = false;
+altNode._h3CheckpointManagerRefresh(); await settle();
+assert.equal(byClass(altNode,"h3cm-final-cut-alt"),undefined,"Final-cut marker clears after deselection");
+assert.equal(byClass(altNode,"h3cm-alternate-used"),undefined);
 currentGraph.editorial = {chapters:[{id:"one",title:"Chapter 1",start_scene:1},
     {id:"two",title:"Chapter 2",start_scene:3}]};
 altNode._h3CheckpointManagerRefresh(); await settle();
 byText(altNode,"Chapter 1").click(); await settle();
-assert.equal(byText(altNode,"ALT · 2")["aria-selected"],"true");
-assert.equal(byText(altNode,"ALT · 99999999"),undefined,"Chapter filter applies to ALT cards");
-assert.equal(altNode.properties.h3_checkpoint_manager_scene,2,"Chapter switch never previews an Original in ALT");
-currentGraph.revisions = currentGraph.revisions.filter(item=>item.take_kind !== "editorial_alternate");
-altNode._h3CheckpointManagerRefresh(); await settle();
-assert.equal(byText(altNode,"ALT · 0")["aria-selected"],"true");
-assert.equal(byClass(altNode,"h3cm-alternate"),undefined);
-assert.equal(byClass(altNode,"h3cm-preview").dataset.source,undefined,"Empty ALT view must not substitute Original video");
-assert.ok(elements(altNode).some(item=>item.textContent === "No ALT takes in this view."));
-assert.equal(value(altNode),beforeAltOutput);
-assert.equal(mutations,beforeAltMutations,"Browsing, refresh, restore and filtering never mutate saved data");
-altNode.properties.h3_checkpoint_manager_take_tab = "original";
-altNode._h3CheckpointManagerConfigured(); altNode._h3CheckpointManagerRefresh(); await settle();
-assert.equal(byText(altNode,"Original · 3")["aria-selected"],"true","Configure/undo restores the tab property");
-console.log("Original/ALT tabs: separate counts/cards, base identity, used/broken takes, preview/delete targeting, restore and output isolation pass");
+assert.equal(byText(altNode,"ALT · 99999999"),undefined,"Chapter filter applies to inline ALT");
+assert.ok(byText(altNode,"ALT · eeeeeeee"));
+assert.equal(mutations,beforeAltMutations,"Preview, refresh, restore and filtering never mutate saved data");
+console.log("Inline ALT: exact base, final-cut markers, broken takes, preview/delete targeting, legacy view restore and output isolation pass");

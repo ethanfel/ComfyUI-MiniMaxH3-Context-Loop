@@ -1,7 +1,7 @@
 import {app} from "/scripts/app.js";
 import {api} from "/scripts/api.js";
 import {branchRequestPath, branchSelectionJson} from "./h3_working_branches.mjs?v=0.7.18";
-import {checkpointForkGraph, checkpointGraphKey, checkpointSaveOrder, checkpointGraphOutput, mountCheckpointGraphEdges} from "./h3_checkpoint_graph.mjs?v=0.7.19";
+import {checkpointForkGraph, checkpointGraphKey, checkpointSaveOrder, checkpointGraphOutput, mountCheckpointGraphEdges} from "./h3_checkpoint_graph.mjs?v=0.7.20";
 import {
     CHECKPOINT_STAGES,
     checkpointStageVariants,
@@ -47,7 +47,6 @@ const REVISION_PROPERTY = "h3_checkpoint_manager_revision";
 const CHAPTER_PROPERTY = "h3_checkpoint_manager_chapter";
 const OUTPUT_SCOPE_PROPERTY = "h3_checkpoint_manager_output_scope";
 const STAGE_PROPERTY = "h3_checkpoint_manager_stage";
-const TAKE_TAB_PROPERTY = "h3_checkpoint_manager_take_tab";
 const VARIANT_PROPERTY = "h3_checkpoint_manager_variant";
 const COLLAPSED_CHAPTERS_PROPERTY = "h3_checkpoint_manager_collapsed_chapters";
 const PREVIEW_HEIGHT_PROPERTY = "h3_checkpoint_manager_preview_height";
@@ -249,12 +248,13 @@ function injectStyles() {
       .h3cm-branch-active { color:var(--h3cm-accent); font-weight:700; }
       .h3cm-revision { position:relative; min-width:112px; text-align:left; white-space:nowrap; }
       .h3cm-revision small { display:block; color:var(--h3cm-muted); font-size:10px; }
-      .h3cm-alt-group { margin-bottom:14px; }
-      .h3cm-alt-title { margin-bottom:6px; color:var(--h3cm-muted); }
-      .h3cm-alt-takes { display:flex; flex-wrap:wrap; gap:8px; }
-      .h3cm-alternate { width:180px; white-space:normal; overflow-wrap:anywhere; }
-      .h3cm-alternate-used { border-color:var(--h3cm-chapter) !important;
-        box-shadow:inset 3px 0 0 var(--h3cm-chapter); }
+      .h3cm-alternates { display:flex; flex-direction:column; gap:3px; min-width:104px;
+        padding-left:7px; border-left:2px solid #8264bd; }
+      .h3cm-alternate { min-width:100px; min-height:24px !important; padding:3px 6px !important;
+        border-color:#7259a8 !important; color:var(--h3cm-text) !important; font-size:10px !important;
+        white-space:normal; overflow-wrap:anywhere; }
+      .h3cm-alternate-used { background:color-mix(in srgb,var(--h3cm-panel) 68%,#56358b) !important;
+        box-shadow:inset 3px 0 0 #b493f0; }
       .h3cm-revision-empty { border-style:dashed !important; color:var(--h3cm-muted) !important;
         background:color-mix(in srgb,var(--h3cm-panel) 72%,transparent) !important; }
       div.h3cm-revision-empty { padding:5px 8px; border:1px dashed var(--h3cm-border); border-radius:6px; }
@@ -265,6 +265,8 @@ function injectStyles() {
       .h3cm-fork-node,.h3cm-fork-slot { width:180px; min-width:0; position:relative; z-index:1; }
       .h3cm-fork-node > .h3cm-revision,.h3cm-fork-slot > .h3cm-revision { width:100%; min-height:74px; white-space:normal; overflow-wrap:anywhere; }
       .h3cm-fork-node .h3cm-revision small { margin-top:2px; }
+      .h3cm-fork-node .h3cm-alternates { margin-top:5px; }
+      .h3cm-fork-node .h3cm-alternate small { display:block; }
       .h3cm-fork-node .h3cm-branch { margin:6px 0 0; padding:5px; }
       .h3cm-fork-node .h3cm-branch-head { flex-wrap:wrap; justify-content:flex-start; font-size:10px; gap:4px; margin:0; }
       .h3cm-fork-node .h3cm-branch-head > span { overflow-wrap:anywhere; }
@@ -277,6 +279,7 @@ function injectStyles() {
       .h3cm-output-path { border-color:var(--h3cm-accent) !important;
         box-shadow:0 0 0 2px color-mix(in srgb,var(--h3cm-accent) 55%,transparent) !important; }
       .h3cm-output-path-label { color:var(--h3cm-accent) !important; font-weight:700; }
+      .h3cm-revision .h3cm-final-cut-alt { color:var(--h3cm-chapter); font-weight:700; }
       .h3cm-plan-marker { display:inline-block; border:1px dashed currentColor; border-radius:4px;
         padding:1px 4px; color:var(--h3cm-chapter); font-size:10px; font-weight:700; }
       .h3cm-plan-context { font-size:11px; color:var(--h3cm-muted); margin-bottom:6px; }
@@ -340,7 +343,6 @@ function mount(node) {
         chapterTab:String(node.properties[CHAPTER_PROPERTY] ?? "all"),
         stage:CHECKPOINT_STAGES.some(item => item.id === node.properties[STAGE_PROPERTY])
             ? node.properties[STAGE_PROPERTY] : "original",
-        takeTab:node.properties[TAKE_TAB_PROPERTY] === "alt" ? "alt" : "original",
         variantKey:String(node.properties[VARIANT_PROPERTY] ?? ""),
         collapsedChapters:new Set(
             Array.isArray(node.properties[COLLAPSED_CHAPTERS_PROPERTY])
@@ -416,15 +418,14 @@ function mount(node) {
     const chapterTabs = element("div", "h3cm-chapter-tabs");
     const stageTabs = element("div", "h3cm-stage-tabs");
     stageTabs.setAttribute("role", "tablist");
-    stageTabs.setAttribute("aria-label", "Saved take type and processing stage");
+    stageTabs.setAttribute("aria-label", "Saved clip processing stage");
     const stageNote = element("div", "h3cm-stage-note");
     const scenes = element("div", "h3cm-scenes");
     const main = element("div", "h3cm-main");
     const branchesPanel = element("section", "h3cm-panel");
-    const branchesTitle = element("div", "h3cm-panel-title");
-    const branchesHeading = element("span", "", "Saved clip paths");
+    const branchesTitle = element("div", "h3cm-panel-title", "Saved clip paths");
     const branchLegend = element("span", "h3cm-shared-legend", "shared clips shown once · bright line = output path · dashed badge = Plan");
-    branchesTitle.append(branchesHeading, branchLegend);
+    branchesTitle.append(branchLegend);
     const planContext = element("div", "h3cm-plan-context");
     const branches = element("div", "h3cm-branches");
     branchesPanel.append(branchesTitle, planContext, branches);
@@ -563,7 +564,6 @@ function mount(node) {
     }
 
     function renderPlanContext() {
-        planContext.hidden = alternateView();
         const marker = currentPlanMarker();
         planContext.textContent = marker
             ? `${marker.label}: ${marker.run} / ${workingBranchName(marker.branch)}`
@@ -632,7 +632,7 @@ function mount(node) {
             previousScene !== state.scene ||
             previousRevision !== state.revision ||
             previousChapter !== state.chapterTab || previousScope !== outputScope.value;
-        if (selectionWidget && state.stage === "original" && !alternateView()) {
+        if (selectionWidget && state.stage === "original") {
             const value = branchSelectionJson(checkpointOutputSelectionJson(
                 selectionWidget.value, state.payload, state.runName, state.outputTip,
                 chapterRangeFor(state.outputTip), outputScope.value), selectedWorkingBranch());
@@ -693,7 +693,7 @@ function mount(node) {
 
     function renderOutputSelection() {
         const local = checkpointLocalSelection(selectionWidget?.value);
-        outputScope.disabled = state.busy || state.stage !== "original" || alternateView();
+        outputScope.disabled = state.busy || state.stage !== "original";
         if (local) restoreOutputScope();
         useLocal.textContent = state.stage === "derope" ? "Use DeRoPE branch locally" : "Use branch locally";
         useLocal.disabled = state.busy || Boolean(state.attribution) || !selectionWidget || !["original", "derope"].includes(state.stage) || !state.previewTip?.ready;
@@ -806,21 +806,7 @@ function mount(node) {
     }
 
     function stageLabel() {
-        if (alternateView()) return "ALT";
         return CHECKPOINT_STAGES.find(item => item.id === state.stage)?.label ?? "Original";
-    }
-
-    function alternateView() {
-        return state.stage === "original" && state.takeTab === "alt";
-    }
-
-    function sourceTakes(tab = state.takeTab) {
-        return (state.payload?.revisions ?? []).filter(record =>
-            (record.take_kind === "editorial_alternate") === (tab === "alt"));
-    }
-
-    function selectedSourceTake(scene = state.scene, revision = state.revision) {
-        return selectedCheckpointRevision({revisions:sourceTakes().filter(record => sceneVisible(record.scene))}, scene, revision);
     }
 
     function currentVariant() {
@@ -840,20 +826,9 @@ function mount(node) {
         selectRevision(original, true, record.key);
     }
 
-    function selectStage(stage, takeTab = "original") {
+    function selectStage(stage) {
         if (state.busy) return;
         state.stage = stage;
-        if (stage === "original") {
-            state.takeTab = takeTab;
-            node.properties[TAKE_TAB_PROPERTY] = takeTab;
-            const revision = takeTab === "original" && state.selected?.take_kind === "editorial_alternate"
-                ? state.selected.alternate_of_revision : state.revision;
-            state.selected = selectedSourceTake(state.scene, revision);
-            state.scene = state.selected?.scene ?? null;
-            state.revision = state.selected?.revision ?? "";
-            node.properties[SCENE_PROPERTY] = state.scene;
-            node.properties[REVISION_PROPERTY] = state.revision;
-        }
         state.attribution = null;
         state.deletion = null;
         state.requestToken += 1;
@@ -868,28 +843,24 @@ function mount(node) {
 
     function renderStageTabs() {
         stageTabs.replaceChildren();
-        const tabs = CHECKPOINT_STAGES.flatMap(stage => stage.id === "original"
-            ? [{...stage, takeTab:"original"}, {...stage, label:"ALT", takeTab:"alt"}] : [stage]);
-        for (const stage of tabs) {
-            const count = stage.id === "original" ? sourceTakes(stage.takeTab).filter(item => sceneVisible(item.scene)).length
+        for (const stage of CHECKPOINT_STAGES) {
+            const count = stage.id === "original" ? (state.payload?.revisions ?? []).filter(item => sceneVisible(item.scene)).length
                 : checkpointStageVariants(state.payload, stage.id, null, activeChapterRange()).length;
             if (["pixel_upscale", "other"].includes(stage.id) && !count && state.stage !== stage.id) continue;
             const tab = button(`${stage.label} · ${count}`, `Browse saved ${stage.label} versions; does not activate a generation branch`,
-                () => selectStage(stage.id, stage.takeTab), "h3cm-stage-tab");
+                () => selectStage(stage.id), "h3cm-stage-tab");
             tab.setAttribute("role", "tab");
-            tab.setAttribute("aria-selected", String(state.stage === stage.id
-                && (stage.id !== "original" || state.takeTab === stage.takeTab)));
+            tab.setAttribute("aria-selected", String(state.stage === stage.id));
             tab.disabled = state.busy;
             stageTabs.append(tab);
         }
-        stageNote.textContent = alternateView()
-            ? "Picture-only alternatives. Choose the final-cut take in Plan Studio."
-            : state.stage === "original" ? "Preview only. Select a path for output; assign it explicitly to a working branch."
-                : `${stageLabel()} saved branches. Browsing does not change output.`;
+        stageNote.textContent = state.stage === "original"
+            ? "Preview only. ALT takes sit beneath their original; the used final-cut take is marked."
+            : `${stageLabel()} saved branches. Browsing does not change output.`;
         stageNote.title = "Clip clicks preview only. Select path chooses output unless pinned. Assign path changes the named working branch. "
-            + "Save # and Latest describe the available takes in this tab, not the output or branch assignment. "
-            + (alternateView() ? "ALTs belong to the indicated base take and are not generation branches."
-                : "Forks follow saved history; shared clips appear once.");
+            + "Save # and Latest describe available takes, not the output or branch assignment. "
+            + "Related forks stay together; arrows follow saved history and shared clips appear once. "
+            + "ALT changes final-cut picture only; following scenes still use the original generation checkpoint.";
         if (state.stage === "derope") stageNote.title += " Select a saved take, then Use DeRoPE branch locally for deferred upscaling. Unsaved scenes use their original take.";
         const warnings = state.payload?.processing_variant_warnings ?? [];
         if (warnings.length) stageNote.textContent += ` ${warnings.length} processing metadata warning(s): ${warnings[0]}`;
@@ -898,9 +869,7 @@ function mount(node) {
             stageNote.title += ` Saved editorial choices not applied: ${state.payload.editorial_notices.join("; ")}. The choices and ALT files are kept for their original base clips.`;
         }
         stageNote.hidden = !stageNote.textContent;
-        branchesHeading.textContent = alternateView() ? "Alternate takes" : "Saved clip paths";
-        branchLegend.textContent = alternateView() ? "marked take = used in final cut"
-            : "bright line = output path · dashed arrow = reuse candidate · dashed badge = Plan";
+        branchLegend.textContent = "bright line = output path · dashed arrow = reuse candidate · dashed badge = Plan";
     }
 
     function selectAttribution(parent, slot) {
@@ -1001,14 +970,9 @@ function mount(node) {
         const visibleScenes = (state.payload?.scenes ?? []).filter(
             (scene) => sceneVisible(scene.scene),
         );
-        if (alternateView()) {
-            state.selected = selectedSourceTake();
-            state.scene = state.selected?.scene ?? null;
-            state.revision = state.selected?.revision ?? "";
-            state.deletion = null;
-        } else if (!sceneVisible(state.selected?.scene) && visibleScenes.length) {
+        if (!sceneVisible(state.selected?.scene) && visibleScenes.length) {
             const scene = visibleScenes.at(-1);
-            state.selected = selectedCheckpointRevision({...state.payload, revisions:sourceTakes("original")}, scene.scene);
+            state.selected = selectedCheckpointRevision(state.payload, scene.scene);
             state.scene = Number(state.selected?.scene ?? scene.scene);
             state.revision = String(state.selected?.revision ?? "");
             state.deletion = null;
@@ -1049,15 +1013,13 @@ function mount(node) {
         for (const scene of state.payload?.scenes ?? []) {
             if (!sceneVisible(scene.scene)) continue;
             const original = state.stage === "original";
-            const count = original ? sourceTakes().filter(item => Number(item.scene) === Number(scene.scene)).length : checkpointStageVariants(state.payload, state.stage)
+            const count = original ? scene.revision_count : checkpointStageVariants(state.payload, state.stage)
                 .filter(item => Number(item.scene) === Number(scene.scene)).length;
-            if (alternateView() && !count) continue;
             const noun = original ? "take" : "version";
             const label = `${scene.scene} · ${scene.scene_id} · ${count} ${noun}${count === 1 ? "" : "s"}`;
             const item = button(label, original ? `${formatCheckpointBytes(scene.bytes)} saved for this scene`
                 : `${count} saved ${stageLabel()} versions for this scene`, () => {
-                selectRevision(original ? selectedSourceTake(scene.scene, "")
-                    : selectedCheckpointRevision({...state.payload, revisions:sourceTakes("original")}, scene.scene));
+                selectRevision(selectedCheckpointRevision(state.payload, scene.scene));
             }, "h3cm-scene");
             if (Number(scene.scene) === Number(state.scene)) item.classList.add("h3cm-scene-selected");
             scenes.append(item);
@@ -1127,6 +1089,41 @@ function mount(node) {
                 card.append(element("small", "h3cm-output-path-label", output.tip === item.key ? "Output path · end" : "Output path"));
             }
             cell.append(card); cards.set(item.key, card);
+            if (original) {
+                const alternates = revision.alternates ?? [];
+                const usedAlternate = alternates.find(alternate => alternate.used_in_final_cut);
+                if (usedAlternate) {
+                    const marker = element("small", "h3cm-final-cut-alt",
+                        `Final cut: ALT · ${String(usedAlternate.revision).slice(0, 8)}`);
+                    marker.title = "Picture-only alternate is used in the final cut. Generation context still uses this original checkpoint.";
+                    card.append(marker);
+                }
+                if (alternates.length) {
+                    const group = element("span", "h3cm-alternates");
+                    for (const alternate of alternates) {
+                        const alt = button(
+                            `ALT · ${String(alternate.revision).slice(0, 8)}`,
+                            alternate.prompt_preview || alternate.prompt ||
+                                "Prompt-only editorial alternate",
+                            () => selectRevision(alternate),
+                            "h3cm-alternate",
+                        );
+                        appendSaveOrder(alt, alternate, order);
+                        if (alternate.used_in_final_cut) {
+                            alt.classList.add("h3cm-alternate-used");
+                            alt.append(element("small", "", "used in final cut"));
+                        } else {
+                            alt.append(element("small", "", alternate.ready ? "available take" : "Missing artifacts"));
+                        }
+                        if (state.selected?.scene === alternate.scene
+                                && state.selected?.revision === alternate.revision) {
+                            alt.classList.add("h3cm-revision-selected");
+                        }
+                        group.append(alt);
+                    }
+                    cell.append(group);
+                }
+            }
             for (const {row:branch} of item.ends) {
                 const end = element("div", "h3cm-branch");
                 const header = element("div", "h3cm-branch-head");
@@ -1216,13 +1213,9 @@ function mount(node) {
         state.graphCleanups = [];
         renderPlanContext();
         branches.replaceChildren();
-        if (alternateView()) {
-            renderAlternates();
-            return;
-        }
-        const originals = sourceTakes("original");
+        const originals = state.payload?.revisions ?? [];
         const order = checkpointSaveOrder(state.stage === "original"
-            ? originals
+            ? [...originals, ...originals.flatMap(record => record.alternates ?? [])]
             : checkpointStageVariants(state.payload, state.stage), state.stage);
         const ranges = chapterRanges();
         if (!ranges.length) {
@@ -1274,36 +1267,6 @@ function mount(node) {
         }
     }
 
-    function renderAlternates() {
-        const takes = sourceTakes("alt").filter(record => sceneVisible(record.scene));
-        const order = checkpointSaveOrder(takes, "original");
-        const groups = new Map();
-        takes.sort((a, b) => Number(a.scene) - Number(b.scene)
-            || String(b.created_at ?? "").localeCompare(String(a.created_at ?? ""))
-            || String(a.revision).localeCompare(String(b.revision)));
-        for (const record of takes) {
-            const baseKey = checkpointRevisionKey(record.scene, record.alternate_of_revision);
-            if (!groups.has(baseKey)) {
-                const group = element("section", "h3cm-alt-group");
-                group.append(element("div", "h3cm-alt-title",
-                    `S${record.scene} · ${record.scene_id || ""} · Base ${String(record.alternate_of_revision || "unknown").slice(0, 8)}`));
-                const cards = element("div", "h3cm-alt-takes");
-                group.append(cards); branches.append(group); groups.set(baseKey, cards);
-            }
-            const card = button(`ALT · ${String(record.revision).slice(0, 8)}`,
-                record.prompt_preview || record.prompt || "Picture-only alternate",
-                () => selectRevision(record), "h3cm-revision h3cm-alternate");
-            appendSaveOrder(card, record, order);
-            card.append(element("small", "", record.used_in_final_cut ? "Used in final cut"
-                : record.ready ? "Available take" : "Missing artifacts"));
-            if (record.used_in_final_cut) card.classList.add("h3cm-alternate-used");
-            if (state.selected?.scene === record.scene && state.selected?.revision === record.revision)
-                card.classList.add("h3cm-revision-selected");
-            groups.get(baseKey).append(card);
-        }
-        if (!takes.length) branches.append(element("div", "h3cm-muted", "No ALT takes in this view."));
-    }
-
     function addInspector(label, value) {
         inspector.append(element("dt", "", label), element("dd", "", value));
     }
@@ -1325,8 +1288,7 @@ function mount(node) {
             prompt.textContent = processing ? (state.variantKey
                 ? "The previously browsed processing take is unavailable. Select a saved version; no other take has been substituted."
                 : `No saved ${stageLabel()} version for this source revision. The original clip has not been substituted.`)
-                : alternateView() ? "No ALT selected. Choose an alternate take when one is available."
-                    : "Select a revision from the branch graph.";
+                : "Select a revision from the branch graph.";
             return;
         }
         if (state.attribution) {
@@ -1445,7 +1407,6 @@ function mount(node) {
     function renderDeletion() {
         deletionBody.replaceChildren();
         retireButtons = [];
-        assignmentPanel.hidden = alternateView();
         const processing = state.stage !== "original";
         const activationMode = selectedActivationMode();
         const rollsBack = !processing && activationMode === "rollback";
@@ -1656,11 +1617,12 @@ function mount(node) {
             state.outputTip = savedTip
                 ? (state.payload.revisions ?? []).find(item => checkpointRevisionKey(item.scene, item.revision)
                     === checkpointRevisionKey(savedTip.scene, savedTip.revision)) ?? savedTip
-                : selectedCheckpointRevision({...state.payload, revisions:sourceTakes("original")});
-            let selected = state.stage === "original" ? selectedSourceTake()
-                : selectedCheckpointRevision({...state.payload, revisions:sourceTakes("original")}, state.scene, state.revision);
-            if (state.stage === "original" && !alternateView() && state.initialRefresh && !checkpointLocalSelection(selectionWidget?.value)) {
-                const activeTip = selectedCheckpointRevision({...state.payload, revisions:sourceTakes("original")});
+                : selectedCheckpointRevision(state.payload);
+            let selected = selectedCheckpointRevision(
+                state.payload, state.scene, state.revision);
+            if (state.stage === "original" && selected?.take_kind !== "editorial_alternate"
+                    && state.initialRefresh && !checkpointLocalSelection(selectionWidget?.value)) {
+                const activeTip = selectedCheckpointRevision(state.payload);
                 if (checkpointRevisionLineage(
                         state.payload, activeTip).length >
                         checkpointRevisionLineage(
@@ -1696,7 +1658,7 @@ function mount(node) {
             const connected = activePlanRun();
             const local = checkpointLocalSelection(selectionWidget?.value);
             const preferred = local?.run_name || state.runName || connected;
-            if (local && state.initialRefresh && !alternateView()) {
+            if (local && state.initialRefresh) {
                 state.scene = local.lineage?.at(-1)?.scene ?? null;
                 state.revision = local.lineage?.at(-1)?.revision ?? "";
             }
@@ -2281,7 +2243,6 @@ function mount(node) {
         state.chapterTab = String(node.properties[CHAPTER_PROPERTY] ?? "all");
         state.stage = CHECKPOINT_STAGES.some(item => item.id === node.properties[STAGE_PROPERTY])
             ? node.properties[STAGE_PROPERTY] : "original";
-        state.takeTab = node.properties[TAKE_TAB_PROPERTY] === "alt" ? "alt" : "original";
         state.variantKey = String(node.properties[VARIANT_PROPERTY] ?? "");
         state.initialRefresh = !state.scene || !state.revision;
     };

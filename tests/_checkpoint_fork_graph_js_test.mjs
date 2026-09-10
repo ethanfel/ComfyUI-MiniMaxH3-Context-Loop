@@ -26,6 +26,30 @@ assert.equal(assignedPrefix.lanes,2);
 assert.deepEqual(new Set(assignedPrefix.edges.map(item=>item.key)),new Set(graph.edges.map(item=>item.key)),
     "Reusing a lane must preserve every exact lineage edge");
 
+// The payload may put another resolution's root between a path and its fork.
+const unrelated = [take(1,"f"), take(2,"9"), take(3,"8")];
+const interleavedRows = [{revisions:[a,b,c]}, {revisions:unrelated.slice(0,1)},
+    {revisions:unrelated}, {revisions:[a,d,e]}];
+const interleavedBefore = JSON.stringify(interleavedRows);
+const grouped = checkpointForkGraph(interleavedRows);
+const laneOf = (model, item) => model.nodes.find(node=>node.key===key(item)).lane;
+assert.equal(laneOf(grouped,a),0);
+assert.equal(laneOf(grouped,d),1,"A fork stays next to its own root, above the unrelated family");
+assert.equal(laneOf(grouped,unrelated[0]),2,"The unrelated full path moves as one family");
+assert.equal(laneOf(grouped,unrelated[2]),2);
+assert.deepEqual(grouped.paths.map(path=>path.row),interleavedRows,"Path identity/order is not rewritten by layout");
+assert.deepEqual(grouped.nodes.find(node=>node.key===key(a)).paths,[0,3]);
+assert.equal(JSON.stringify(interleavedRows),interleavedBefore);
+assert.deepEqual(new Set(grouped.edges.map(item=>item.key)),new Set([
+    ...graph.edges.map(item=>item.key),edge(unrelated[0],unrelated[1]),edge(unrelated[1],unrelated[2]),
+]),"Layout never invents ancestry across the intervening branch");
+const deepFork = take(3,"7");
+const nested = checkpointForkGraph([{revisions:[a,b,c]},{revisions:[a,d,e]},
+    {revisions:unrelated},{revisions:[a,b,deepFork]}]);
+assert.equal(laneOf(nested,deepFork),1,"A nested fork stays inside its parent's subtree");
+assert.equal(laneOf(nested,d),2);
+assert.equal(laneOf(nested,unrelated[0]),3);
+
 const reuse = (parent, candidates = [e]) => ({scene:parent.scene + 1,
     parent_scene:parent.scene, parent_revision:parent.revision, candidates});
 const reuseRows = [{revisions:[a,b,c]}, {revisions:[a,d], attribution_slot:reuse(d)},
@@ -36,8 +60,9 @@ const reusable = checkpointForkGraph(reuseRows);
 assert.equal(reusable.nodes.length,4,"Reuse slots are not saved revisions");
 assert.equal(reusable.slots.length,2,"A repeated tip has a single attachment control");
 assert.equal(reusable.slots[0].column,2,"Scene 3 reuse belongs in the scene 3 column");
-assert.equal(reusable.slots[0].lane,1,"A leaf's reuse slot follows horizontally");
-assert.equal(reusable.slots[1].lane,2,"A shared tip with an existing continuation needs a free lane");
+assert.equal(reusable.slots[0].lane,laneOf(reusable,d),"A leaf's reuse slot follows horizontally");
+assert.equal(reusable.slots[1].lane,1,"A proposed attachment stays within its parent's family");
+assert.equal(laneOf(reusable,d),2,"The sibling path follows the first path's attachment lane");
 assert.equal(new Set([...reusable.nodes,...reusable.slots].map(item=>`${item.column}:${item.lane}`)).size,6);
 assert.equal(reusable.edges.filter(item=>item.kind==="reuse").length,2);
 assert.equal(JSON.stringify(reuseRows),reuseBefore);
@@ -92,6 +117,10 @@ const processed = checkpointForkGraph([{profile_path:"demo/pixel", entries:[p,q]
     {profile_path:"another/profile", entries:[p]}], "pixel_upscale");
 assert.equal(processed.nodes.length,4,"Profile identity is part of the key");
 assert.equal(processed.nodes.find(item=>item.entry===q).entry.record,null,"Missing exact take stays a gap");
+const interleavedProcessing = checkpointForkGraph([{profile_path:"demo/pixel",entries:[p,q]},
+    {profile_path:"another/profile",entries:[p,q]}, {profile_path:"demo/pixel",entries:[p,r]}], "pixel_upscale");
+assert.equal(interleavedProcessing.nodes.find(node=>node.key===checkpointGraphKey("pixel_upscale",r,"demo/pixel")).lane,1,
+    "Processing forks are also grouped without crossing a different profile's path");
 assert.equal(checkpointGraphOutput(selection,"demo","main","pixel_upscale").nodes.size,0,"A preview is not a processing output selection");
 const derope = {...selection, processing_source:{stage:"derope",profile_path:"demo/pixel",branch:{lineage:[p,q]}}};
 assert.equal(checkpointGraphOutput(derope,"demo","main","derope").nodes.size,2);

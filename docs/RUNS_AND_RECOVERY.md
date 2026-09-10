@@ -442,8 +442,8 @@ Deletion is permanent; the preview does not load or hash large tensor files.
 Use an alternate when one accepted scene needs a prompt-level visual correction
 but later scenes already depend on its original checkpoint.
 
-1. Open that scene in Plan Studio and expand **Alternate final-cut take**.
-2. Edit the alternate prompt and seed, then enable the draft.
+1. Open that scene in Plan Studio and select the **ALT** prompt tab.
+2. Enable the alternate draft, then edit its prompt and seed.
 3. Queue normally. Loop Start renders only that scene.
 4. Approve the alternate in Review Gate.
 
@@ -452,6 +452,13 @@ whole-chain latent finishing, and deferred latent/pixel/CAT upscale loops.
 It does not replace the active generation
 checkpoint: later scenes keep their original visual/audio ancestry, and final
 audio for the corrected scene remains the original audio.
+
+The **Original** and **ALT** tabs show one prompt editor at a time. Original
+contains the generation prompt and its history (or the linked-editor notice).
+ALT contains **Alternate final-cut take**, its final-cut selector, prompt and
+seed. Switching tabs only changes the view; it does not arm/disarm generation,
+change the final-cut selection, or rewrite either prompt or seed. An enabled
+alternate remains labelled **ALT · armed** even while Original is visible.
 
 Deferred upscale resolves the selected ALT before reading source tensors or
 reference conditioning, for both full-branch and chapter output. It uses the
@@ -471,7 +478,10 @@ or silently swaps an already selected DeRoPE latent for unprocessed media.
 
 Plan Studio marks the selection `ALT`. Checkpoint Manager nests the immutable
 alternate under its base take rather than drawing a new continuation branch.
-Choose **Original** in Plan Studio to restore the base picture at any time.
+The base checkpoint also shows **Final cut: ALT · <revision>** when an alternate
+is used; the inline ALT card is marked **used in final cut**. To restore the base
+picture, choose **Original** in the **Used in final cut** selector inside Plan
+Studio's ALT tab. Merely opening the Original prompt tab does not change it.
 
 An alternate must preserve the scene identity and duration. If a later scene
 exists, set the blend entering that scene to `0`: its saved overlap still shows
