@@ -109,6 +109,10 @@ from .review_inventory import (
     write_review_snapshot as _write_review_snapshot,
 )
 from .prompt_history import PromptHistoryStore
+from .asset_library import command_library, inspect_library
+from .asset_copy import preview_copy
+from .asset_image import inspect_image
+from .asset_capture import inspect_capture, command_capture
 from .prompt_optimizer import optimize_prompt_payload
 from .run_manager import RunArchiveManager, archive_policy_inputs
 from .asset_store import MAX_DIRECT_ASSET_BINDINGS, RunAssetStore
@@ -30990,11 +30994,64 @@ def _project_asset_error_response(exc: Exception):
 async def _project_asset_catalog(request):
     try:
         project = request.query.get("project", "")
+        if request.query.get("capture_frame"):
+            result = await asyncio.to_thread(inspect_capture, _project_asset_store(), project,
+                json.loads(request.query["capture_frame"]), _saved_capture_source)
+            return web.json_response(result)
+        if request.query.get("image_asset"):
+            edit = json.loads(request.query["image_edit"]) if "image_edit" in request.query else None
+            result = await asyncio.to_thread(inspect_image, _project_asset_store(), project,
+                request.query["image_asset"], edit)
+            return web.json_response(result)
+        if request.query.get("copy_source"):
+            enabled = request.query.get("enabled", "true")
+            if enabled not in ("true", "false"):
+                raise ValueError("Copy enabled must be true or false.")
+            result = await asyncio.to_thread(preview_copy, _project_asset_store(), project,
+                request.query["copy_source"], request.query.get("copy_asset", ""),
+                enabled == "true", request.query.get("folder_id", ""))
+            return web.json_response(result)
+        if request.query.get("operation_id"):
+            result = await asyncio.to_thread(inspect_library, _project_asset_store(),
+                project, request.query["operation_id"])
+            return web.json_response(result)
         catalog = await asyncio.to_thread(
             _project_asset_store().public_catalog, project,
             create=request.query.get("create", "true").lower() != "false")
         return web.json_response(catalog)
     except (OSError, TypeError, ValueError) as exc:
+        return _project_asset_error_response(exc)
+
+
+async def _project_asset_library(request):
+    try:
+        body = await request.json()
+        if not isinstance(body, dict):
+            raise ValueError("Asset library command must be a JSON object.")
+        project = body.get("project", "")
+        rejection = _project_write_rejection(request, project, "edit the project library")
+        if rejection is not None:
+            return rejection
+        if body.get("action") == "asset_capture":
+            proof = _request_project_ownership(request)
+            result = await asyncio.to_thread(command_capture, _project_asset_store(), project, body,
+                _saved_capture_source, _capture_video_frame,
+                lambda: _project_write_commit_guard(project, proof, "publish a captured frame"))
+            return web.json_response(result)
+        if body.get("action") in ("asset_copy", "asset_derive"):
+            proof = _request_project_ownership(request)
+            result = await asyncio.to_thread(command_library, _project_asset_store(), project, body,
+                commit_guard=lambda: _project_write_commit_guard(project, proof, "publish project media"))
+            return web.json_response(result)
+        result = await asyncio.to_thread(_owned_project_mutation,
+            project, _request_project_ownership(request), "edit the project library",
+            command_library, _project_asset_store(), project, body)
+        return web.json_response(result)
+    except OSError as exc:
+        # The catalog/receipt may already be durable. Retain the request and
+        # reconcile its operation instead of treating I/O as a rejected write.
+        return web.json_response({"error": str(exc)}, status=500)
+    except (RuntimeError, TypeError, ValueError, json.JSONDecodeError) as exc:
         return _project_asset_error_response(exc)
 
 
@@ -31419,6 +31476,41 @@ async def _project_ownership_command(request):
         }, status=423)
     except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
         return web.json_response({"error": str(exc)}, status=400)
+
+
+def _saved_capture_source(project: Any, request: Any) -> dict[str, Any]:
+    """Resolve only the exact saved take/media identity displayed by the viewer."""
+    project = _strict_run_name(project)
+    if not isinstance(request, dict) or not isinstance(request.get("source"), dict):
+        raise ValueError("Choose a saved clip frame to capture.")
+    source = request["source"]
+    if set(source) != {"scene", "revision", "branch_id", "file"} or type(source["scene"]) is not int:
+        raise ValueError("A saved scene, revision, branch and media file are required.")
+    media = source["file"]
+    if not isinstance(media, dict) or set(media) != {"filename", "subfolder", "type"} or media.get("type") != "output":
+        raise ValueError("Frame capture requires the saved output video identity.")
+    if not all(isinstance(value, str) for value in media.values()):
+        raise ValueError("Saved video paths must be strings.")
+    path = _capture_frame_video_path(media["filename"], media["subfolder"], media["type"])
+    metadata, metadata_path = _load_checkpoint_revision(project, source["scene"], source["revision"], verify_artifacts=False)
+    segment = metadata["segment"]
+    raw = os.path.realpath(_absolute_output_path(segment["segment"]))
+    if path != raw:
+        with branch_scope(project, source["branch_id"]):
+            review_dir = os.path.realpath(os.path.join(_run_dir({"run_name": project}), "reviews"))
+        preview = _checkpoint_review_preview(source["scene"], segment, review_dir, [media["filename"]])
+        if preview is None or os.path.realpath(preview) != path:
+            raise ValueError("Displayed media does not belong to the selected saved revision.")
+    # Validate branch even when the selected source is the immutable raw clip.
+    _working_branch_id(source["branch_id"])
+    offset = _capture_frame_time(request.get("time_seconds"))
+    if offset >= int(segment.get("delivered_frames") or 0) / FPS:
+        raise ValueError("Frame time must be inside the saved clip's delivered duration.")
+    digest = _file_sha256(path)
+    if path == raw and segment.get("segment_sha256") and digest != segment["segment_sha256"]:
+        raise ProjectAssetConflictError("The saved video no longer matches its checkpoint bytes.")
+    return {"path": path, "time_seconds": offset, "sha256": digest,
+        "metadata_sha256": _file_sha256(metadata_path)}
 
 
 def _capture_frame_video_path(filename: Any, subfolder: Any, kind: Any) -> str:
@@ -31903,6 +31995,8 @@ if (PromptServer is not None and web is not None and
     PromptServer.instance.routes.get(
         "/minimax_h3_context_loop/project-assets/sources")(
             _project_asset_sources)
+    PromptServer.instance.routes.post(
+        "/minimax_h3_context_loop/project-assets/library")(_project_asset_library)
     PromptServer.instance.routes.post(
         "/minimax_h3_context_loop/project-assets/upload")(
             _project_asset_upload)
