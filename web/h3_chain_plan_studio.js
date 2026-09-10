@@ -1,6 +1,7 @@
 import {app} from "/scripts/app.js";
 import {api} from "/scripts/api.js";
 import {StudioBranches, BranchDrafts, branchOperationId, branchWidgetTransaction, branchRequestPath, workingBranchId} from "./h3_working_branches.mjs?v=0.7.19";
+import {studioBranchCommands} from "./h3_branch_commands.mjs?v=1";
 import {branchPolicyNodes, captureBranchPolicyInputs, restoreBranchPolicyInputs} from "./h3_plan_restore_core.mjs?v=0.7.19";
 import {
     CONTINUATION_MODES,
@@ -856,6 +857,17 @@ function mount(node) {
                 throw error;
             }
             return data;
+        },
+    });
+
+    node._h3BranchCommands = studioBranchCommands(branches, {
+        owner:() => state.planOwner,
+        available:() => {
+            if (state.disposed || !state.planOwner || !state.plan || !branchWidget) return "Wait for a mounted Plan Studio with working-branch support.";
+            const owner = state.planOwner;
+            if (owner.inputs?.some(input => ["plan_json", "plan_json_input"].includes(input.name) && input.link != null)
+                || String(widget(owner, "plan_json_input")?.value ?? "").trim()) return "Native branch restoration requires a direct Plan JSON widget; connected Plan text is not supported yet.";
+            return "";
         },
     });
 
@@ -6611,6 +6623,7 @@ function mount(node) {
         delete node._h3PromptCompanionSetActiveScene;
         delete node._h3PromptCompanionSetScenePrompt;
         delete node._h3FlushProjectWrites;
+        delete node._h3BranchCommands;
         disposePlayer();
         void finalFlush.catch((error) => console.warn(
             "H3 Plan Studio could not flush project edits while closing:",
