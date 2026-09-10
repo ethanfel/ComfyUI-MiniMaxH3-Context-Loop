@@ -102,6 +102,17 @@ def main():
         assert prepared['summary']['pictures'][0]['revision'] == 'a' * 32
         assert prepared['summary']['frames'] == 48 and prepared['summary']['subtitle_count'] == 1
         assert '18446744073709551615' in prepared['snapshot_json']
+        # Real mirror-only catalog: preparation must not repair the missing primary.
+        asset_module = importlib.import_module(chain.__package__ + '.project_assets')
+        backup = run / 'project_assets/catalog.json'
+        backup.parent.mkdir(parents=True)
+        backup.write_text(json.dumps({**catalog, 'format': asset_module.PROJECT_ASSET_FORMAT,
+                                      'version': 1, 'project': run.name, 'revision': 'saved'}))
+        before_recovery = files(root)
+        recovered = delivery.prepare(chain, body)
+        assert files(root) == before_recovery
+        assert not (root / 'h3_projects' / run.name).exists()
+        assert recovered['summary']['subtitle_count'] == 1
         reject(lambda: delivery.prepare(chain, {**body, 'editorial_revision': 'wrong'}), 'final cut changed')
         reject(lambda: delivery.prepare(chain, {**body, 'selection': {**selection, 'output_mode': None}}), 'workflow-local')
         reject(lambda: delivery.load(chain, prepared['snapshot_json'].replace('Frozen caption', 'Changed caption')), 'changed or damaged')

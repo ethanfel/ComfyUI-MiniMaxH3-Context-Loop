@@ -4,6 +4,8 @@ The delivery interface captures a saved checkpoint lineage, its selected final c
 picture alternates and subtitle cues for later assembly. A subsequent editorial
 edit or lyric catalog change does not change the prepared job. Preparation reads
 the project without activating checkpoints, restoring a Plan or claiming ownership.
+Subtitle catalogs are read without filesystem recovery: a missing or corrupt primary
+can use its valid backup without restoring files during preparation.
 
 Connect **MiniMax H3 Saved Delivery Source** to the manifest input of **H3 Chain
 Assemble**. Paste the exact `snapshot_json` returned by the API into the source
@@ -84,7 +86,9 @@ FFmpeg installed, and `node --test tests/_delivery_snapshot_js_test.mjs`. The Py
 case uses native H3 functions, temporary synthetic projects and real CPU FFmpeg
 assembly. It checks a 48-frame video with audio, frozen ALT pixels and SRT text,
 chapter subtitle offsets, separate branch identities, stale revision rejection,
-source corruption and preparation without project writes. Its async route check
+source corruption and preparation without project writes, including a real
+mirror-only subtitle catalog. `python3 tests/_catalog_readonly_unit_test.py` also
+checks corrupt primary catalogs and unchanged ordinary recovery. Its async route check
 requires working local socket notifications. The JS cases validate dependency
 preservation and rejection of unsupported sources. These checks do not establish
 GPU generation or production workflow parity.

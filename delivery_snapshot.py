@@ -105,8 +105,11 @@ def prepare(chain, body):
         # Validate chosen alternate media during preparation as well as execution.
         pictures = chain._editorial_presentation_segments(run, manifest["segments"], editorial)
         manifest["delivery_pictures"] = copy.deepcopy(pictures)
+        catalog = (chain.ProjectAssetStore(chain._input_root(), chain._output_root())
+                   .load(run, repair=False)
+                   if editorial.get("subtitles", {}).get("mode") == "preview_srt" else {})
         cues = chain._editorial_subtitle_cues(run, editorial, frames,
-                                            timeline_origin_frames=origin)
+                                            timeline_origin_frames=origin, catalog=catalog)
         manifest["delivery_subtitles"] = {"version": 1, "frame_count": frames,
                                           "timeline_origin_frame": origin, "cues": cues}
         prelude = chain._validate_prelude(manifest)
