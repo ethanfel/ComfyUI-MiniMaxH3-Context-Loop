@@ -12,6 +12,7 @@ import json
 import os
 import re
 import shutil
+from contextlib import nullcontext
 
 if __package__:
     from . import project_assets as native
@@ -127,7 +128,7 @@ def finish_copy(store, project, receipt):
     in reverse order. After commit, retries follow the receipt path and no
     publisher can still need the staging bytes.
     """
-    if receipt.get("project") != project or receipt.get("action") not in ("asset_copy", "asset_derive"):
+    if receipt.get("project") != project or receipt.get("action") not in ("asset_copy", "asset_derive", "asset_capture"):
         return
     directory = _directory(store, project, receipt["operation_id"])
     job = _read(os.path.join(directory, "operation.json"))
@@ -226,13 +227,13 @@ def _publish(store, project, request, job):
         store._library_command = None
 
 
-def command_copy(store, project, body):
+def command_copy(store, project, body, *, commit_guard=nullcontext):
     def snapshot(store, project, request):
         return _snapshot(store, project, request["source_project"], request["asset_id"], request["enabled"], request["folder_id"])
-    return command_staged(store, project, body, "asset_copy", FIELDS, snapshot, _stage)
+    return command_staged(store, project, body, "asset_copy", FIELDS, snapshot, _stage, commit_guard=commit_guard)
 
 
-def command_staged(store, project, body, action, fields, snapshot, stage):
+def command_staged(store, project, body, action, fields, snapshot, stage, *, commit_guard=nullcontext):
     """Publish a native media operation's prepared assets with one receipt."""
     project = native._safe_project(project)
     request = {key: body.get(key) for key in fields}
@@ -279,8 +280,9 @@ def command_staged(store, project, body, action, fields, snapshot, stage):
                 native._atomic_json(path, {"request": request, "phase": "staging"})
                 job = stage(store, directory, request, target, source, preview)
                 native._atomic_json(path, job)
-            _publish_files(store, project, directory, job)
-            _publish(store, project, request, job)
+            with commit_guard():
+                _publish_files(store, project, directory, job)
+                _publish(store, project, request, job)
         except (ValueError, TypeError) as exc:
             # A rejected publication removes only this operation's unreferenced
             # media. I/O failures retain their stage for exact retry instead.

@@ -699,6 +699,7 @@ class ProjectAssetStore:
             "library_command_version": 1,
             "library_copy_version": 1,
             "library_image_version": 1,
+            "library_capture_version": 1,
             "library_pending_operations": pending_operations(self, catalog["project"], catalog),
             "library_pending_copies": pending_copies(self, catalog["project"], catalog),
             "library_revision": str(catalog.get("storage_revision") or "empty"),

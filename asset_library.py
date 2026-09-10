@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from contextlib import nullcontext
 
 if __package__:
     from .project_assets import ProjectAssetConflictError, _project_mutation
@@ -42,11 +43,11 @@ def inspect_library(store, project, operation_id=""):
             "pending_operation": pending_operation(store, project, operation_id) if operation_id and not receipt else None}
 
 
-def command_library(store, project, body):
+def command_library(store, project, body, *, commit_guard=nullcontext):
     if isinstance(body, dict) and body.get("action") == "asset_copy":
-        return command_copy(store, project, body)
+        return command_copy(store, project, body, commit_guard=commit_guard)
     if isinstance(body, dict) and body.get("action") == "asset_derive":
-        return command_image(store, project, body)
+        return command_image(store, project, body, commit_guard=commit_guard)
     return _command_library(store, project, body)
 
 

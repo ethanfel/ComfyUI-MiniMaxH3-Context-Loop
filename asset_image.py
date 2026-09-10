@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 import os
 import shutil
+from contextlib import nullcontext
 
 if __package__:
     from . import project_assets as native
@@ -108,5 +109,5 @@ def _stage(store, directory, request, catalog, parent, preview):
         "relative_path": entry["relative_path"], "sha256": entry["sha256"]}]}
 
 
-def command_image(store, project, body):
-    return command_staged(store, project, body, "asset_derive", FIELDS, _snapshot, _stage)
+def command_image(store, project, body, *, commit_guard=nullcontext):
+    return command_staged(store, project, body, "asset_derive", FIELDS, _snapshot, _stage, commit_guard=commit_guard)
