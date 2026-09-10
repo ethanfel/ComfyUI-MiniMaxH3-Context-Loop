@@ -36,6 +36,41 @@ const ROLE_LABELS = {
     audio_reference: "tagged audio reference",
     source_track: "source track",
 };
+const VIDEO_ROLE_HELP = {
+    video: "Gives the model the whole clip to see and reuse: identity, "
+        + "wardrobe, setting, lighting, and composition. Only activates in a "
+        + "scene when that scene's prompt includes this asset's tag. Pick "
+        + "this when you want the generated scene to look like the "
+        + "reference, not just move like it.",
+    motion: "Uses this video as pose, action, and motion-timing evidence "
+        + "for the Target Subject named below. A smaller Reference short "
+        + "edge reduces source appearance influence, but this is semantic "
+        + "motion transfer, not pose extraction: identity, clothing, and "
+        + "background details can still influence the result. Pick this "
+        + "when the reference's movement is what you want to transfer.",
+    source_track: "Not activated by any scene prompt - only one may be "
+        + "enabled per project. This becomes the project's exact Source "
+        + "Timeline (a prerecorded video or audio track, such as dialogue "
+        + "or footage, that must stay unaltered) which Chain Policy's "
+        + "Source reference / Final audio settings decide how to use. Pick "
+        + "this for a fixed track scenes are generated against, not a "
+        + "look or motion to imitate.",
+};
+const TIMELINE_MODE_HELP = {
+    restart_each_scene: "Every scene that uses this reference starts "
+        + "playback at frame 0 of the clip, so every activation looks "
+        + "identical. Use this for a short loop or an appearance/motion "
+        + "reference that should not change across the run - it never "
+        + "requires the clip to be any particular length.",
+    sequential: "Plays the reference forward continuously in lockstep with "
+        + "the Plan, starting from the first scene that activates it, so "
+        + "later scenes see later parts of the clip. The clip must be at "
+        + "least as long as everything generated from that point on, or "
+        + "generation stops with an error telling you to shorten the Plan, "
+        + "supply a longer reference, or switch back to Restart each "
+        + "scene. Use this when the reference is itself a continuous "
+        + "performance or source to walk through scene by scene.",
+};
 
 function displayRole(role) {
     return ROLE_LABELS[role] ?? String(role || "").replaceAll("_", " ");
@@ -178,6 +213,7 @@ function injectStyles() {
         .h3pa-button{padding:6px 9px;border:1px solid var(--h3pa-border);border-radius:6px;
           background:var(--h3pa-panel);color:var(--h3pa-text);cursor:pointer}.h3pa-button:hover{border-color:var(--h3pa-accent)}
         .h3pa-status{min-height:18px;color:var(--h3pa-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+        .h3pa-help{display:block;color:var(--h3pa-muted);white-space:normal;line-height:1.35}
         .h3pa-tabs{display:flex;gap:5px;overflow-x:auto;align-items:center;flex:0 0 auto}.h3pa-tab.active{background:var(--h3pa-selected);border-color:var(--h3pa-accent)}
         .h3pa-folder-tools{display:flex;gap:5px;align-items:center;margin-left:auto;padding-left:7px;border-left:1px solid var(--h3pa-border);flex:0 0 auto}.h3pa-folder-tools select{max-width:190px;min-width:110px;padding:6px 8px;border:1px solid var(--h3pa-border);border-radius:6px;background:var(--h3pa-panel);color:var(--h3pa-text)}
         .h3pa-stage{flex:1 1 auto;min-height:230px;display:grid;grid-template-columns:minmax(0,1fr) 260px;gap:10px;overflow:hidden}
@@ -1450,8 +1486,17 @@ function mount(node) {
                 const option = el("option", "", displayRole(value));
                 option.value = value; option.selected = value === asset.role; role.append(option);
             }
-            role.addEventListener("change", () => updateAsset(asset, {role: role.value}));
+            if (asset.kind === "video" && VIDEO_ROLE_HELP[asset.role]) {
+                role.title = VIDEO_ROLE_HELP[asset.role];
+            }
+            role.addEventListener("change", () => {
+                if (VIDEO_ROLE_HELP[role.value]) role.title = VIDEO_ROLE_HELP[role.value];
+                updateAsset(asset, {role: role.value});
+            });
             roleLabel.append(role); editor.append(roleLabel);
+            if (asset.kind === "video" && VIDEO_ROLE_HELP[asset.role]) {
+                editor.append(el("small", "h3pa-help", VIDEO_ROLE_HELP[asset.role]));
+            }
         }
         if (isAudio && isSourceTrack) {
             const tracks = el("div", "h3pa-audio-tracks");
@@ -1564,8 +1609,16 @@ function mount(node) {
                 option.value = value; option.selected = value === (asset.options?.timeline_mode ?? "restart_each_scene");
                 timeline.append(option);
             }
-            timeline.addEventListener("change", () => updateAsset(asset, {options: {timeline_mode: timeline.value}}));
+            const timelineHelp = el("small", "h3pa-help",
+                TIMELINE_MODE_HELP[asset.options?.timeline_mode ?? "restart_each_scene"]);
+            timeline.title = TIMELINE_MODE_HELP[asset.options?.timeline_mode ?? "restart_each_scene"];
+            timeline.addEventListener("change", () => {
+                timeline.title = TIMELINE_MODE_HELP[timeline.value];
+                timelineHelp.textContent = TIMELINE_MODE_HELP[timeline.value];
+                updateAsset(asset, {options: {timeline_mode: timeline.value}});
+            });
             timelineLabel.append(timeline); editor.append(timelineLabel);
+            editor.append(timelineHelp);
             if (asset.metadata?.has_audio) {
                 const pairedLabel = el("label");
                 const paired = el("input"); paired.type = "checkbox";
