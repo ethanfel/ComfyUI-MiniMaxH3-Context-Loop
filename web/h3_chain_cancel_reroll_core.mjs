@@ -48,13 +48,16 @@ export function activeSceneFromOutput(output) {
     const clipIndex = Number(value.clip_index);
     const clipCount = Number(value.clip_count);
     const endClip = Number(value.end_clip ?? clipCount);
+    const branchId = String(value._branch_id ?? "main");
     if (!Number.isInteger(clipIndex) || clipIndex < 1
         || !Number.isInteger(clipCount) || clipCount < clipIndex
-        || !Number.isInteger(endClip) || endClip < clipIndex || endClip > clipCount) {
+        || !Number.isInteger(endClip) || endClip < clipIndex || endClip > clipCount
+        || (branchId !== "main" && !/^[0-9a-f]{32}$/.test(branchId))) {
         return null;
     }
     return {
         runName: String(value.run_name ?? "").trim(),
+        branchId,
         clipIndex,
         clipCount,
         endClip,

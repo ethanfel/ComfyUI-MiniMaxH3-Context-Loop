@@ -5,7 +5,7 @@ import {
     activeSceneFromOutput,
     applySceneReroll,
     resumeSelection,
-} from "./h3_chain_cancel_reroll_core.mjs?v=0.7.10";
+} from "./h3_chain_cancel_reroll_core.mjs?v=0.7.11";
 import {refreshRestoredPlanEditors} from "./h3_plan_restore_core.mjs?v=0.7.9";
 
 // The compact scene expands Current Shot internally. ComfyUI routes that
@@ -224,7 +224,11 @@ function waitForInterruption(promptId, timeoutMilliseconds = 30000) {
 
 async function verifyPredecessorCheckpoint(record) {
     if (record.scene.clipIndex === 1) return;
-    const query = new URLSearchParams({run_name: record.scene.runName});
+    const query = new URLSearchParams({
+        run_name: record.scene.runName,
+        branch_id: record.scene.branchId,
+        include_graph: "false",
+    });
     const response = await api.fetchApi(
         `/minimax_h3_context_loop/checkpoints?${query.toString()}`,
     );
@@ -256,6 +260,12 @@ function requireVisibleWorkflow(record) {
     if (!startNode || !planNode
         || (record.scene.runName && runName !== record.scene.runName)) {
         throw new Error("Return to the running H3 workflow before requeueing the scene.");
+    }
+    // Branch switches keep the same workflow/node/run identities. Check the
+    // queued scene's branch before cancelling, and again before editing its seed.
+    const plan = parsePlanJson(String(widgetByName(planNode, "plan_json")?.value ?? ""));
+    if ((plan._branch_id ?? "main") !== record.scene.branchId) {
+        throw new Error("Return to the running H3 branch in Plan Studio before requeueing the scene.");
     }
     // ComfyUI may reconstruct graph and node objects when workflow tabs change.
     // Refresh the cached references after validating stable workflow, node-path,
@@ -315,6 +325,7 @@ async function cancelAndReroll() {
         // visible graph; app.queuePrompt always serializes the visible graph.
         requireVisibleWorkflow(record);
         await verifyPredecessorCheckpoint(record);
+        requireVisibleWorkflow(record);
         let seed = randomSceneSeed();
         while (seed === record.scene.seed) seed = randomSceneSeed();
         status.textContent = `Cancelling scene ${record.scene.clipIndex}…`;
