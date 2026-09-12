@@ -15,6 +15,7 @@ from .storage_layout import OrganizedStorageLayout
 from .storage_processing import ProcessingSourceDependencies
 from .storage_project import _hash_file, payload_catalog
 from .storage_resolver import confined
+from .storage_export_names import reserve_base, pending_legacy
 
 FORMAT = 'h3_storage_assembly_v1'
 FILES = dict(video='video.mp4', audio='audio.wav', subtitles='subtitles.srt', metadata='video.json')
@@ -300,6 +301,11 @@ class AssemblyExport(ProcessingSourceDependencies):
             return dict(data=raw, scope=prior['scope'] if prior else saved['scope'],
                 category=prior['category'] if prior else 'cuts', immutable=immutable)
         requests, controls = [], {}
+        legacy = pending_legacy(self.runtime.project, self.operation, saved['files'],
+                                self.layout.export('video', self.operation))
+        with self.runtime.exports.guard(self.proof):
+            export_base = None if legacy else reserve_base(self.runtime.project, 'video', self.operation,
+                self.final_name, suffixes=tuple(SUFFIXES.values()), budget=self.budget)
         for role, item in saved['files'].items():
             path, address = confined(self.runtime.project, item['path']), saved['logical'][role]
             if role == 'metadata':
@@ -307,7 +313,7 @@ class AssemblyExport(ProcessingSourceDependencies):
                 continue
             prior = self.payloads.get(address)
             requests.append(dict(address=address, source=path,
-                target=self.layout.export_file('video', self.operation, role),
+                target=self.layout.export_file('video', self.operation, role) if legacy else export_base+SUFFIXES[role],
                 scope=prior['scope'] if prior else saved['scope'], immutable=False,
                 operation_id=uuid.uuid5(uuid.UUID(self.operation), role).hex))
         def staged_file(receipt):

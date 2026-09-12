@@ -460,7 +460,10 @@ def join_payloads(journal_path, *, after_copy=None):
             root['documents'][address] = dict(scope=scope, category='cuts', immutable=False,
                 file=_join_immutable(destination, 'project/cuts/'+identity+'.json', raw, plan, path.parent))
             changed_scopes.add(scope)
-        recovery._verify_source(plan, source)
+        # This full rehash proves the source still matches the frozen bytes.
+        # Fence final publication against its refreshed attributes, not the
+        # pre-copy attributes (which CIFS can refresh while files are opened).
+        source_signatures = recovery._verify_source(plan, source)
         for scope in changed_scopes:
             root['scope_revisions'][scope] = state._hash((plan['operation_id']+':'+scope).encode())[:32]
         root.update(epoch=root['epoch']+1, generation=root['generation']+1, parent=base.reference)

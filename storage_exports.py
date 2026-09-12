@@ -19,6 +19,7 @@ if __package__:
     from .storage_processing import ProcessingSourceDependencies
     from .storage_project import _hash_file
     from .storage_resolver import confined
+    from .storage_export_names import reserve_base, pending_legacy
 else:
     import storage_state as state
     from branch_scope import current_branch
@@ -27,6 +28,7 @@ else:
     from storage_processing import ProcessingSourceDependencies
     from storage_project import _hash_file
     from storage_resolver import confined
+    from storage_export_names import reserve_base, pending_legacy
 
 FORMAT = 'h3_storage_finished_png_v1'
 CATALOG = 'h3_storage_export_catalog_v1'
@@ -278,10 +280,11 @@ class FinishedPNGExport(ProcessingSourceDependencies):
             raise ValueError('PNG export must be fully prepared before publication.')
         runtime = self.runtime
         layout = OrganizedStorageLayout(str(runtime.project), self.budget)
-        directory = layout.export('png', self.operation)
         requests = []
         with runtime.exports.guard(self.proof):
-            pass
+            directory = layout.export('png', self.operation)
+            if not pending_legacy(runtime.project, self.operation, saved['files'], directory):
+                directory = reserve_base(runtime.project, 'png', self.operation, self.label, budget=self.budget)
         # Human/third-party folder readers must not see a finished index while
         # its frames are still absent. The authoritative root is committed later.
         for name, item in sorted(saved['files'].items(), key=lambda item: (item[0] == 'export.json', item[0])):
@@ -331,7 +334,8 @@ class FinishedPNGExport(ProcessingSourceDependencies):
         return self._result(saved, receipt)
 
     def _result(self, saved, receipt):
-        return dict(directory=str(confined(self.runtime.project,
-                    OrganizedStorageLayout(str(self.runtime.project)).export('png', self.operation))),
+        snapshot = self.runtime.store.committed_snapshot(receipt)
+        directory = self.runtime.store.payload_path(snapshot, self.logical+'/export.json').parent
+        return dict(directory=str(directory),
                     frame_count=saved['record']['frame_count'], metadata=self.record_address,
                     receipt=receipt, storage_pin=self.runtime.output_pin)

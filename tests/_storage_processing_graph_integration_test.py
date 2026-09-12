@@ -198,7 +198,8 @@ class ProcessingGraphTests(unittest.TestCase):
             self.assertIn(segment['png_export_owner'],clip['processing_owners'])
             self.assertEqual(clip['first_frame_number'],cursor)
             cursor += segment['delivered_frames']
-        directory = self.store.project/'exports/png'/index['_storage_export_id']
+        directory = self.store.payload_path(after, addresses[0].removesuffix('export.json')+
+            index['clips'][0]['files'][0]['file']).parent
         self.assertEqual(len(list(directory.glob('frame_*.png'))),cursor-101)
         self.assertEqual(index['frame_count'],cursor-101)
         self.store.verify_payloads()

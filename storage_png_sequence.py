@@ -18,6 +18,7 @@ from .storage_layout import OrganizedStorageLayout
 from .storage_processing import ProcessingSourceDependencies
 from .storage_project import _hash_file, payload_catalog
 from .storage_resolver import confined
+from .storage_export_names import reserve_base, frame_directory, pending_legacy
 
 FORMAT = 'h3_storage_png_family_v1'
 REQUEST = 'h3_storage_png_scene_v1'
@@ -347,7 +348,7 @@ class PNGSequenceExport(ProcessingSourceDependencies):
                 if export_id is None or descriptor['immutable']:
                     raise png.variants.SequenceConflict('Migrated PNG index requires a writable sequence variant.')
             if export_id is not None:
-                physical = confined(self.runtime.project, 'exports/png/'+export_id)
+                physical = confined(self.runtime.project, frame_directory(self.payloads, directory))
                 tracked = set(files)
                 if any(p.name not in tracked for p in physical.glob('frame_*.png')):
                     raise png.variants.SequenceConflict('PNG folder contains untracked frames.')
@@ -440,6 +441,12 @@ class PNGSequenceExport(ProcessingSourceDependencies):
         if saved is None:
             raise ValueError('PNG sequence must be prepared before publication.')
         self._validate_prepared(saved)
+        with self.runtime.exports.guard(self.proof):
+            physical = frame_directory(self.payloads, saved['directory'])
+            legacy = 'exports/png/'+saved['export_id']
+            if physical is None:
+                physical = legacy if pending_legacy(self.runtime.project, self.operation, saved['files'], legacy) else reserve_base(
+                    self.runtime.project, 'png', saved['export_id'], Path(self.base).name, budget=self.budget)
         requests = []
         for name,item in saved['files'].items():
             if not re.fullmatch(r'frame_[0-9]{8,}\.png', name):
@@ -449,7 +456,7 @@ class PNGSequenceExport(ProcessingSourceDependencies):
             if digest != item['sha256'] or signature[2] != item['size']:
                 raise state.StateConflict('Prepared PNG sequence bytes changed.')
             requests.append(dict(address=saved['directory']+'/'+name, source=path,
-                target='exports/png/'+saved['export_id']+'/'+name, scope=self.scope,
+                target=physical+'/'+name, scope=self.scope,
                 operation_id=uuid.uuid5(uuid.UUID(self.operation), name).hex))
         with self.runtime.exports.guard(self.proof):
             pass
@@ -510,7 +517,8 @@ class PNGSequenceExport(ProcessingSourceDependencies):
         return self._result(saved, self.runtime.accepted)
 
     def _result(self, saved, snapshot):
-        directory = str(confined(self.runtime.project, 'exports/png/'+saved['export_id']))
+        first = saved['record']['clips'][0]['files'][0]['file']
+        directory = str(self.runtime.store.payload_path(snapshot, saved['directory']+'/'+first).parent)
         index = str(confined(self.runtime.project, snapshot.state['documents'][saved['directory']+'/export.json']['file']['path']))
         status = '%s PNG scene %d; %d sequence frames; %s -> %s; accepted index -> %s' % (
             'reused' if saved['reused'] else 'saved', self.index, saved['record']['frame_count'],

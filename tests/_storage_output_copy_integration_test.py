@@ -54,11 +54,11 @@ class OutputCopyTests(unittest.TestCase):
     def test_existing_video_or_orphan_subtitle_gets_a_numbered_variant(self):
         directory = self.output/'renders'
         directory.mkdir()
-        video, subtitle = directory/'Final.mp4',directory/'Final_001.srt'
+        video, subtitle = directory/'Final.mp4',directory/'Final_2.srt'
         video.write_bytes(b'existing unrelated video')
         subtitle.write_bytes(b'keep this existing subtitle')
         result = self.export()
-        self.assertEqual(self.copied(result),directory/'Final_002.mp4')
+        self.assertEqual(self.copied(result),directory/'Final_3.mp4')
         self.assertEqual(video.read_bytes(),b'existing unrelated video')
         self.assertEqual(subtitle.read_bytes(),b'keep this existing subtitle')
 
@@ -112,7 +112,7 @@ class OutputCopyTests(unittest.TestCase):
         with patch.object(copy_module,'publish_new_file',side_effect=race):
             result = self.export()
         self.assertEqual(raced[0].read_bytes(),b'other application won this filename')
-        self.assertEqual(self.copied(result),self.output/'renders/Final_001.mp4')
+        self.assertEqual(self.copied(result),self.output/'renders/Final_2.mp4')
 
     def test_unsafe_folders_and_links_reject_before_rendering(self):
         before = self.store.snapshot().reference
@@ -169,7 +169,7 @@ class OutputCopyTests(unittest.TestCase):
             return original(project, address, raw, budget)
         with patch.object(state, '_immutable', side_effect=race):
             result = self.export()
-        self.assertEqual(self.copied(result), self.output/'renders/Final_001.mp4')
+        self.assertEqual(self.copied(result), self.output/'renders/Final_2.mp4')
         self.assertEqual(won[0][0].read_bytes(), won[0][1])
 
     def test_claim_publication_io_error_is_not_treated_as_filename_collision(self):
@@ -206,7 +206,7 @@ class OutputCopyTests(unittest.TestCase):
         original = self.copied(first).read_bytes()
         source = self.f.f.repin()
         second = self.export(source, unique_id='second', overwrite_existing=True)
-        self.assertEqual(self.copied(second), self.output/'renders/Final_001.mp4')
+        self.assertEqual(self.copied(second), self.output/'renders/Final_2.mp4')
         self.assertNotEqual(second['result'], first['result'])
         root = self.store.snapshot().reference
         self.assertEqual(self.export(), first)

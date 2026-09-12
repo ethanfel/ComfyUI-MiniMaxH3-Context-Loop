@@ -18,6 +18,7 @@ if __package__:
     from .storage_branch_controls import BranchControlDocuments
     from .storage_handoff_controls import HandoffControlDocuments
     from .storage_host import ACTIVATION, FORMAT as ACTIVE_FORMAT
+    from .storage_export_names import readable_name
 else:
     import storage_state as state
     import storage_resolver as resolver
@@ -29,6 +30,7 @@ else:
     from storage_branch_controls import BranchControlDocuments
     from storage_handoff_controls import HandoffControlDocuments
     from storage_host import ACTIVATION, FORMAT as ACTIVE_FORMAT
+    from storage_export_names import readable_name
 
 FORMAT = 'h3_offline_migration_v1'
 
@@ -78,6 +80,18 @@ def _inventory(source, rows, destination, budget):
     files = {row['target'].removeprefix(prefix):row for row in rows if row['role'] != 'authority'}
     layout = OrganizedStorageLayout(str(destination), budget)
     controls, targets, metadata = {}, {}, {}
+    export_names, used_names = {}, set()
+    def export_base(kind, identity, label):
+        key = kind, identity
+        if key not in export_names:
+            label = readable_name(label)
+            name, number = label, 1
+            while (kind, name.casefold()) in used_names:
+                number += 1
+                name = label+'_'+str(number)
+            used_names.add((kind, name.casefold()))
+            export_names[key] = 'exports/'+kind+'/'+name
+        return export_names[key]
     for address, row in files.items():
         if row['role'] == 'control':
             scope, category, immutable = control_contract(address)
@@ -112,15 +126,20 @@ def _inventory(source, rows, destination, budget):
             logical = segment.get(field)
             if isinstance(logical, str) and logical.startswith(prefix):
                 put(logical[len(prefix):], paths[role], scope)
-    for address, value in metadata.items():
+    # Root project names win exact labels before matching named-branch exports.
+    # Sorting makes previews/retries deterministic, independent of disk order.
+    for address, value in sorted(metadata.items(), key=lambda item:(item[0].startswith('branches/'), item[0])):
         if value.get('format') not in ('h3_video_png_sequence_v1', 'h3_chain_png_export_v1'):
             continue
         parent = str(Path(address).parent)
+        directory = export_base('png', parent, Path(parent).name)
         for logical in files:
             if logical.startswith(parent+'/'):
                 suffix = logical[len(parent)+1:]
-                put(logical, layout.export('png', _id(parent))+'/'+suffix, 'exports:png_'+_id(parent))
-    for address, row in files.items():
+                target = (export_base('audio', parent, Path(directory).name)+'.wav'
+                          if suffix == 'audio.wav' else directory+'/'+suffix)
+                put(logical, target, 'exports:png_'+_id(parent))
+    for address, row in sorted(files.items(), key=lambda item:(item[0].startswith('branches/'), item[0])):
         if row['role'] != 'payload' or address in targets:
             continue
         suffix = Path(address).suffix
@@ -132,7 +151,11 @@ def _inventory(source, rows, destination, budget):
             target = layout.project_data('reference_cache', 'objects', _id(address)+suffix)
             scope = 'cache:'+_id(address)
         elif '/final/' in address or address.startswith('final/'):
-            target = layout.export('video', _id(str(Path(address).parent)))+'/'+_id(address)+suffix
+            name = Path(address).name
+            ending = '.generated.wav' if name.endswith('.generated.wav') else suffix
+            label = name.removesuffix(ending)
+            kind = 'audio' if suffix == '.wav' and ending != '.generated.wav' else 'video'
+            target = export_base(kind, str(Path(address).parent)+'/'+label, label)+ending
             scope = 'exports:video_'+_id(str(Path(address).parent))
         elif address.startswith(('.plan_studio_thumbnails/', '.plan_studio_source_previews/')):
             target = layout.optional('previews', _id(address)+suffix)

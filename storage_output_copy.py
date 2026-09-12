@@ -39,7 +39,9 @@ class OutputCopy:
         self.output, self.project, self.job = self.runtime.output, self.runtime.project, workspace.job
         self.folder = workspace.request['copy_subfolder']
         validate_folder(self.output, self.folder, self.budget)
-        self.basename = Path(saved['logical']['video']).stem
+        previous = self._read('copy-request.json')
+        self.readable = previous is None or previous.get('naming') == 'readable_v1'
+        self.basename = workspace.final_name if self.readable else Path(saved['logical']['video']).stem
         self.files = {}
         for role in SUFFIXES:
             if role in saved['files']:
@@ -49,6 +51,8 @@ class OutputCopy:
         self.identity = dict(format=FORMAT, operation=self.operation, project=self.project.name,
             assembly_request_sha256=workspace.request_hash, folder=self.folder,
             basename=self.basename, files=self.files)
+        if self.readable:
+            self.identity['naming'] = 'readable_v1'
         self.request_hash = state._hash(state._encode(self.identity))
         self._write('copy-request.json', self.identity)
 
@@ -65,7 +69,8 @@ class OutputCopy:
             self.runtime.exports.after_stage('copy:'+stage)
 
     def _paths(self, ordinal):
-        stem = self.basename+('_%03d' % ordinal if ordinal else '')
+        suffix = ('_'+str(ordinal+1) if self.readable else '_%03d' % ordinal) if ordinal else ''
+        stem = self.basename+suffix
         prefix = self.folder+'/' if self.folder else ''
         names = {role:prefix+stem+SUFFIXES[role] for role in self.files}
         policy = OrganizedStorageLayout(str(self.output), self.budget)

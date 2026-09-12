@@ -65,6 +65,7 @@ class PNGExportTests(unittest.TestCase):
             result = workspace.publish()
             self.assertFalse(bound.processing_writes)
         directory = Path(result['directory'])
+        self.assertEqual(directory.name, 'DLSS_upscale_2')
         self.assertEqual(directory.relative_to(self.store.project).parts[:2], ('exports', 'png'))
         record = json.loads((directory/'export.json').read_text())
         expected_count = sum(s['delivered_frames'] for s in self.source['segments'])
@@ -147,7 +148,7 @@ class PNGExportTests(unittest.TestCase):
         with self.access() as bound:
             workspace = self.workspace(bound)
             workspace.encode()
-            directory = self.store.project/'exports/png'/self.operation
+            directory = self.store.project/'exports/png/DLSS_upscale_2'
             count = sum(s['delivered_frames'] for s in self.source['segments'])
             observations = []
             def observe(stage):
@@ -173,7 +174,7 @@ class PNGExportTests(unittest.TestCase):
             bound.exports.after_stage = stop
             with self.assertRaisesRegex(OSError, 'stop after frame'):
                 workspace.publish()
-        directory = self.store.project/'exports/png'/self.operation
+        directory = self.store.project/'exports/png/DLSS_upscale_2'
         self.assertEqual(len(list(directory.glob('frame_*.png'))), 1)
         self.assertFalse((directory/'export.json').exists())
         self.assertEqual(self.store.snapshot().reference, before)

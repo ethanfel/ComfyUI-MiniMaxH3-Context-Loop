@@ -14,6 +14,7 @@ from .storage_layout import OrganizedStorageLayout
 from .storage_processing import ProcessingSourceDependencies
 from .storage_project import _hash_file, payload_catalog
 from .storage_resolver import confined
+from .storage_export_names import reserve_base, frame_directory, pending_legacy
 
 FORMAT = 'h3_storage_latent_export_v1'
 FAMILY = 'h3_storage_latent_export_family_v1'
@@ -180,7 +181,7 @@ class LatentPNGExport(ProcessingSourceDependencies):
                                 or not self.payloads[directory+'/audio.wav']['immutable'])
             if (not descriptor['immutable'] and isinstance(candidate,str) and re.fullmatch('[0-9a-f]{32}',candidate)
                     and audio_can_append
-                    and (not groups or groups == {'exports/png/'+candidate})):
+                    and (not groups or groups == {frame_directory(self.payloads, directory)})):
                 physical = candidate
             # An immutable imported index cannot become a mutable current one.
             # Its verified prefix can still be independently copied, not decoded.
@@ -396,12 +397,27 @@ class LatentPNGExport(ProcessingSourceDependencies):
         directory = selection['directory']
         layout = OrganizedStorageLayout(str(self.runtime.project), self.budget)
         requests = []
+        with self.runtime.exports.guard(self.proof):
+            png_directory = None
+            if self.video_vae is not None:
+                png_directory = frame_directory(self.payloads, directory)
+                legacy = layout.export('png', selection['export_id'])
+                if png_directory is None:
+                    png_directory = legacy if pending_legacy(self.runtime.project, self.operation, saved['files'], legacy) else reserve_base(
+                        self.runtime.project, 'png', selection['export_id'], Path(self.base).name, budget=self.budget)
+            audio_base = None
+            if any(name == 'audio.wav' and not (item['reused'] and directory == selection['previous_directory'])
+                   for name, item in saved['files'].items()):
+                if pending_legacy(self.runtime.project, self.operation, ('audio.wav',), layout.export('audio', selection['export_id'])):
+                    audio_base = layout.export_file('audio', selection['export_id'], 'audio', revision=self.operation)[:-4]
+                else:
+                    audio_base = reserve_base(self.runtime.project, 'audio', self.operation,
+                        Path(self.base).name, suffixes=('.wav',), budget=self.budget)
         for name, item in saved['files'].items():
             if item['reused'] and directory == selection['previous_directory']:
                 continue
             old = self.payloads.get(directory+'/'+name)
-            target = (layout.export_file('audio',selection['export_id'],'audio',revision=self.operation) if name == 'audio.wav' else
-                      layout.export_file('png',selection['export_id'],'frame',frame_number=int(name[6:-4])))
+            target = audio_base+'.wav' if name == 'audio.wav' else png_directory+'/'+name
             requests.append(dict(address=directory+'/'+name, source=confined(self.runtime.project, item['path']),
                 target=target, scope=old['scope'] if old else self.scope, immutable=name != 'audio.wav',
                 operation_id=uuid.uuid5(uuid.UUID(self.operation), name).hex))
@@ -437,10 +453,11 @@ class LatentPNGExport(ProcessingSourceDependencies):
 
     def _result(self, saved, snapshot):
         selection, record = saved['selection'], saved['record']
-        layout = OrganizedStorageLayout(str(self.runtime.project), self.budget)
-        directory = confined(self.runtime.project, layout.export('png' if self.video_vae is not None else 'audio', selection['export_id']))
         audio = (str(self.runtime.store.payload_path(snapshot, selection['directory']+'/audio.wav'))
                  if record['audio'] else '')
+        directory = (self.runtime.store.payload_path(snapshot,
+            selection['directory']+'/'+record['frame_files'][0]['file']).parent
+            if record['frame_files'] else Path(audio).parent)
         index = confined(self.runtime.project, snapshot.state['documents'][selection['directory']+'/export.json']['file']['path'])
         status = 'Checkpoint export: %d scenes / %d PNGs / %d timeline frames; %s; accepted index -> %s' % (
             len(record['clips']), record['frame_count'], record['timeline_frame_count'], Path(selection['directory']).name, index)

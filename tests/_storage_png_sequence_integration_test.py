@@ -44,13 +44,18 @@ class SequenceTests(unittest.TestCase):
         addresses = [p for p in root.state['documents'] if p.endswith('/export.json')]
         for address in addresses:
             record = state._decode(root.read(address))
-            if record.get('_storage_export_id') == Path(result['result'][0]).name:
+            if not record.get('clips'):
+                continue
+            first = record['clips'][0]['files'][0]['file']
+            physical = self.store.payload_path(root, address.removesuffix('export.json')+first)
+            if physical.parent == Path(result['result'][0]):
                 return address, record
         self.fail('Accepted sequence index was not found')
 
     def test_normal_node_appends_in_same_directory_without_copying_prior_frames(self):
         before_input = copy.deepcopy(self.incoming)
         first = self.export()
+        self.assertEqual(Path(first['result'][0]).name, 'DLSS')
         old_root = self.store.snapshot()
         address, record = self.record(first)
         paths = {p:p.stat().st_ino for p in Path(first['result'][0]).glob('frame_*.png')}
@@ -79,6 +84,22 @@ class SequenceTests(unittest.TestCase):
         self.assertEqual(again['result'], first['result'])
         self.assertEqual(self.store.snapshot().reference, before)
 
+    def test_interrupted_id_named_export_resumes_after_naming_upgrade(self):
+        stage = self.store.__class__.stage_payloads
+        def interrupted(store, requests, **kwargs):
+            def fail(_):
+                raise OSError('old publication interrupted')
+            return stage(store, requests, after_stage=fail)
+        with patch.object(sequence, 'reserve_base', side_effect=lambda project,kind,identity,label,**kw:'exports/png/'+identity), \
+             patch.object(self.store.__class__, 'stage_payloads', interrupted):
+            with self.assertRaisesRegex(OSError, 'old publication'):
+                self.export()
+        old_folder = next((self.store.project/'exports/png').iterdir())
+        with patch.object(fixture.png, 'encode_scene', side_effect=AssertionError('reencoded')):
+            result = self.export()
+        self.assertEqual(Path(result['result'][0]), old_folder)
+        self.store.verify_payloads()
+
     def test_changed_scene_creates_numbered_variant_with_independent_prefix(self):
         first = self.export()
         self.export(self.next_state(2), unique_id='png2')
@@ -86,6 +107,7 @@ class SequenceTests(unittest.TestCase):
         result = self.export(self.next_state(2), video=changed, unique_id='changed2')
         address, record = self.record(result)
         self.assertTrue(address.endswith('/DLSS_2/export.json'))
+        self.assertEqual(Path(result['result'][0]).name, 'DLSS_2')
         self.assertEqual([c['index'] for c in record['clips']], [1,2])
         self.assertNotEqual(first['result'][0], result['result'][0])
         left = Path(first['result'][0])/'frame_00000101.png'
@@ -202,7 +224,7 @@ class SequenceTests(unittest.TestCase):
         with runtime.runtime_access(self.store, pin=self.incoming['_storage_pin'], export_writes=True) as bound:
             w = sequence.PNGSequenceExport(bound, upscale, self.incoming, self.videos[1], operation=operation, export_name='owned')
             w.prepare()
-            target = self.store.project/'exports/png'/w._prepared()['export_id']
+            target = self.store.project/'exports/png/owned'
         with runtime.runtime_access(self.store, ownership_writes=True):
             fixture.ownership.claim_project_ownership(self.f.f.output, self.f.f.run, 'new-sequence-png-owner', force=True)
         before = self.store.snapshot().reference
@@ -228,7 +250,7 @@ class SequenceTests(unittest.TestCase):
                 state.atomic_json(path, dict(value=changed, sha256=state._hash(state._encode(changed))))
                 with self.assertRaises(state.StateConflict):
                     w.publish()
-            self.assertFalse((self.store.project/'exports/png'/original['export_id']).exists())
+            self.assertFalse((self.store.project/'exports/png/tamper').exists())
 
     def test_prefix_edit_during_append_is_detected_before_acceptance(self):
         first = self.export()

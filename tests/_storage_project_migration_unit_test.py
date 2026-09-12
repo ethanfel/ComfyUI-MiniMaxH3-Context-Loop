@@ -1,5 +1,6 @@
 """Real control/media joining: independent copy, crash recovery, exact source."""
 import json
+import os
 from pathlib import Path
 import shutil
 import stat
@@ -224,6 +225,33 @@ class JoinTests(unittest.TestCase):
         try:
             with patch.object(project, '_verify_file', side_effect=change), self.assertRaisesRegex(ValueError, 'Source changed during final'):
                 self.join()
+        finally:
+            source.write_bytes(original)
+        self.join()
+        self.assert_ready()
+
+    def test_final_guard_uses_the_last_full_source_hash_not_pre_copy_attributes(self):
+        self.prepare()
+        source = fixture.resolver.resolve_output(self.f.output, self.f.address(next(iter(self.targets))))
+        original = source.read_bytes()
+        def refresh(index):
+            if index == 1:
+                info = source.stat()
+                os.utime(source, ns=(info.st_atime_ns, info.st_mtime_ns+1_000_000))
+        self.join(after_copy=refresh)
+        self.assertEqual(source.read_bytes(), original)
+        self.assert_ready()
+
+    def test_changed_source_bytes_during_copy_still_block_publication(self):
+        self.prepare()
+        source = self.f.root/'checkpoints/clip_0001.json'
+        original = source.read_bytes()
+        def change(index):
+            if index == 1:
+                source.write_bytes(b'{"seed":999}')
+        try:
+            with self.assertRaisesRegex(ValueError, 'Source state changed'):
+                self.join(after_copy=change)
         finally:
             source.write_bytes(original)
         self.join()

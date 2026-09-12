@@ -65,6 +65,16 @@ silver_estate_final_semantic/
     optional/     # disposable supporting files, created only when needed
 ```
 
+Exports keep readable names: `exports/video/My_export.mp4`, its matching
+`My_export.generated.wav` / `My_export.srt`, and
+`exports/png/My_export/frame_00000001.png`. Standalone WAVs go in
+`exports/audio/My_export.wav`. Name collisions get `_2`, `_3`, etc., without
+overwriting earlier exports. Migration preserves original export labels where
+available; duplicate labels across branches/profiles get the same suffixes.
+Internal IDs still identify jobs and saved takes, not new export filenames.
+Already accepted exports and interrupted jobs remain readable at their existing
+paths; installing this update does not rename them automatically.
+
 Branch/chapter/profile labels no longer make media paths progressively deeper.
 Saved metadata retains its original logical addresses; the accepted index maps
 them to the new physical files. Old unknown files are preserved in `project/legacy`.

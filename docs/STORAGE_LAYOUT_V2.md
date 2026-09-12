@@ -28,9 +28,9 @@ It supersedes the audit's initial sketch of many folders at the project root.
     video_refine/<pass>/<take>/
     custom/<pass>/<take>/
   exports/                          # finished deliverables
-    png/<export>/
-    video/<export>/
-    audio/<export>/                  # optional standalone/versioned soundtracks
+    png/<export-name>/
+    video/<export-name>.mp4
+    audio/<export-name>.wav          # optional standalone/versioned soundtracks
   project/                          # settings, relationships and supporting data
     takes/                          # immutable descriptors and prompt snapshots
     branches/                       # authored settings and selected takes
@@ -75,25 +75,25 @@ or assigning a shared take to a branch does not relocate the media.
 PNG delivery has no redundant `frames` subfolder:
 
 ```text
-exports/png/<export>/
-  export.json
+exports/png/<export-name>/
   frame_00000001.png
   frame_00000002.png
-  audio.wav                         # when exported
-  subtitles.srt                     # when exported
 ```
 
-Video delivery uses `exports/video/<export>/video.mp4`, with its index and any
-audio/subtitles alongside it. Both project and chapter deliveries use these
-locations; scope belongs in the export record, not another nested directory.
-Human-readable profile/export labels and creation order remain available in the
-catalogue/UI. IDs in this document are placeholders, not literal folder names.
+Video delivery uses `exports/video/<export-name>.mp4`, with matching
+`<export-name>.generated.wav` and `<export-name>.srt` sidecars when present.
+Standalone audio uses `exports/audio/<export-name>.wav`. Export names come from
+the chosen label; collisions add `_2`, `_3`, etc. Accepted indexes and ownership
+stay under `project/`; the finished-PNG exporter also publishes `export.json`.
+Both project and chapter deliveries use these locations; scope belongs in the
+export record, not another nested directory. Internal job/take IDs are separate
+from these readable names. Older ID-based exports remain supported.
 
 The long legacy example becomes a directory like:
 
 ```text
 Before: chapters/01_chapter_01/upscaled/h3_video_dlss5/frames/DLSS_upscale_dmd_2/
-Target: exports/png/<full-export-id>/
+Target: exports/png/DLSS_upscale_dmd_2/
 ```
 
 This is a **target**, not a change to the existing folder today. Existing `_2`

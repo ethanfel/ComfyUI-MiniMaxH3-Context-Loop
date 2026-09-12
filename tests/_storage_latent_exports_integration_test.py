@@ -86,17 +86,21 @@ class LatentExportTests(unittest.TestCase):
 
     def record(self, result):
         snapshot = self.store.snapshot()
-        identifier = Path(result['result'][0]).name
         for address in snapshot.state['documents']:
             if address.endswith('/export.json'):
                 value = state._decode(snapshot.read(address))
-                if value.get('_storage_export_id') == identifier:
+                name = value['frame_files'][0]['file'] if value['frame_files'] else 'audio.wav'
+                physical = self.store.payload_path(snapshot, address.removesuffix('export.json')+name)
+                match = physical.parent == Path(result['result'][0]) if value['frame_files'] else str(physical) == result['result'][3]
+                if match:
                     return address, value
         self.fail('No accepted checkpoint export index')
 
     def test_real_renderer_preserves_alt_picture_base_audio_trim_metadata_and_archives(self):
         before, source = self.store.snapshot(), copy.deepcopy(self.manifest)
         result = self.export()
+        self.assertEqual(Path(result['result'][0]).name, 'Checkpoint')
+        self.assertEqual(Path(result['result'][3]).name, 'Checkpoint.wav')
         address, record = self.record(result)
         self.assertEqual(self.manifest, source)
         self.assertAlmostEqual(self.video.calls[0], .7)

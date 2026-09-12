@@ -45,11 +45,13 @@ class AssemblyTests(unittest.TestCase):
         self.assertEqual(self.manifest, original)
         path = Path(result['result'][0])
         self.assertIn('/exports/video/', str(path))
+        self.assertEqual(path.name, 'Final.mp4')
         with av.open(str(path)) as video:
             self.assertEqual(len(list(video.decode(video=0))), original['total_delivered_frames'])
             self.assertFalse(video.streams.audio)
         saved = self.witness()
         wav = self.store.payload_path(snapshot, saved['logical']['audio'], verify=True)
+        self.assertEqual(wav.name, 'Final.generated.wav')
         with wave.open(str(wav),'rb') as audio:
             self.assertEqual(audio.getnframes(), round(original['total_delivered_frames']*audio.getframerate()/24))
             pcm = np.frombuffer(audio.readframes(audio.getnframes()), dtype='<i2')/32768
@@ -70,6 +72,7 @@ class AssemblyTests(unittest.TestCase):
             self.assertEqual(self.assemble()['result'], first['result'])
         self.assertEqual(self.store.snapshot().reference, snapshot.reference)
         second = self.assemble(self.f.repin(), unique_id='second')
+        self.assertEqual(Path(second['result'][0]).name, 'Final_2.mp4')
         self.assertNotEqual(first['result'], second['result'])
         self.assertIn('final/Final_001.mp4', fixture.module('storage_project').payload_catalog(self.store.snapshot()))
         self.assertTrue(Path(first['result'][0]).is_file())
