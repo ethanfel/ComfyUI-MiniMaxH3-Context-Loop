@@ -19,7 +19,7 @@ import shutil
 import subprocess
 import threading
 import uuid
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import datetime, timezone
 from fractions import Fraction
 from functools import wraps
@@ -1654,12 +1654,39 @@ class ProjectAssetStore:
             result.sort(key=lambda item: item['project'].lower())
             result.sort(key=lambda item: item['updated_at'], reverse=True)
             return result[:MAX_INPUT_RESULTS]
-        result = []
-        if not os.path.isdir(self.projects_root):
-            return result
-        with os.scandir(self.projects_root) as projects:
+        # Activated output catalogs are authoritative even when the old input
+        # catalog is absent. Never replace them with a stale input-side copy.
+        if __package__:
+            from .storage_host import project_read
+            from .storage_project_assets import accepted_catalog
+        else:
+            from storage_host import project_read
+            from storage_project_assets import accepted_catalog
+        result, organized = [], set()
+        def summary(name, catalog):
+            return dict(project=name, asset_count=len(catalog.get('assets', [])),
+                unassigned_count=len(catalog.get('reference_slots', [])),
+                folder_count=len(catalog.get('folders', [])),
+                updated_at=str(catalog.get('updated_at') or ''),
+                revision=str(catalog.get('revision') or ''))
+        if os.path.isdir(self.chains_root):
+            with os.scandir(self.chains_root) as projects:
+                for project in projects:
+                    if (not project.is_dir(follow_symlinks=False)
+                            or not _PROJECT_RE.fullmatch(project.name)
+                            or needle and needle not in project.name.lower()):
+                        continue
+                    with project_read(self.output_root, project.name) as bound:
+                        if bound is None:
+                            continue
+                        organized.add(project.name)
+                        catalog = accepted_catalog(bound.reader)
+                        if catalog is not None:
+                            result.append(summary(project.name, catalog))
+        with os.scandir(self.projects_root) if os.path.isdir(self.projects_root) else nullcontext(()) as projects:
             for project in projects:
                 if (not project.is_dir(follow_symlinks=False)
+                        or project.name in organized
                         or needle and needle not in project.name.lower()
                         or not os.path.isfile(os.path.join(
                             project.path, "catalog.json"))):
@@ -1668,15 +1695,7 @@ class ProjectAssetStore:
                     catalog = self.load(project.name)
                 except (OSError, TypeError, ValueError, json.JSONDecodeError):
                     continue
-                result.append({
-                    "project": project.name,
-                    "asset_count": len(catalog.get("assets", [])),
-                    "unassigned_count": len(
-                        catalog.get("reference_slots", [])),
-                    "folder_count": len(catalog.get("folders", [])),
-                    "updated_at": str(catalog.get("updated_at") or ""),
-                    "revision": str(catalog.get("revision") or ""),
-                })
+                result.append(summary(project.name, catalog))
         result.sort(key=lambda item: item["project"].lower())
         result.sort(key=lambda item: item["updated_at"], reverse=True)
         return result[:MAX_INPUT_RESULTS]

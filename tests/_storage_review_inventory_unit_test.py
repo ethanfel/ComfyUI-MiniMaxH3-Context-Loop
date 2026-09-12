@@ -30,11 +30,11 @@ import storage_state as state
 def review_routes(output):
     """Run the real reconnect handlers; substitute only transport/environment."""
     source = Path(__file__).resolve().parents[1]/'chain_nodes.py'
-    names = {'_list_pending_reviews', '_retire_superseded_review_snapshots'}
+    names = {'_list_pending_reviews', '_retire_superseded_review_snapshots', '_saved_review_snapshots'}
     nodes = [node for node in ast.parse(source.read_text()).body
              if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in names]
     assert {node.name for node in nodes} == names
-    namespace = dict(__package__='', Any=Any, os=os, time=time,
+    namespace = dict(__package__='', Any=Any, os=os, time=time, asyncio=asyncio,
         _output_root=lambda: str(output), _strict_run_name=_strict_run_name,
         _load_review_snapshots=review.load_review_snapshots,
         _mark_review_snapshot_decided=review.mark_review_snapshot_decided,

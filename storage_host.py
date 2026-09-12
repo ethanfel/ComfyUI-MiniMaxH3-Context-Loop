@@ -5,7 +5,10 @@ writer grants come from this package and ComfyUI, never from workflow JSON.
 The existing pinned transactions and ownership checks remain authoritative.
 """
 from contextlib import contextmanager, ExitStack
+from contextvars import copy_context
+from concurrent.futures import ThreadPoolExecutor
 from functools import wraps
+import asyncio
 import inspect
 import json
 from pathlib import Path
@@ -26,6 +29,32 @@ else:
 ACTIVATION = 'project/activation.json'
 FORMAT = 'h3_organized_runtime_v1'
 _RUN = re.compile(r'[A-Za-z0-9](?:[A-Za-z0-9._-]{0,94}[A-Za-z0-9])?\Z')
+# These handlers use request data only, never a live execution future/socket.
+# Bound concurrent scans so a carousel cannot start dozens of full NAS reads.
+_READ_WORKERS = ThreadPoolExecutor(max_workers=4, thread_name_prefix='h3-storage-read')
+_BACKGROUND_READS = frozenset(('_project_asset_catalog', '_project_asset_media',
+    '_list_saved_checkpoints', '_working_branch_command'))
+
+
+async def _background_read(function, *args):
+    context = copy_context()
+    return await asyncio.get_running_loop().run_in_executor(
+        _READ_WORKERS, context.run, function, *args)
+
+
+class _ReadRequest(dict):
+    """Detached request data; never move aiohttp's connection to a worker."""
+    def __init__(self, request, body=None):
+        from multidict import CIMultiDict
+        super().__init__()
+        self.method = request.method
+        self.query = dict(request.query)
+        self.headers = CIMultiDict(request.headers)
+        self.content_type = request.content_type
+        self.body = body
+
+    async def json(self):
+        return self.body
 
 
 def activated_project(output, run):
@@ -41,6 +70,22 @@ def activated_project(output, run):
             or value['bootstrap_sha256'] != state._hash(state._read_bytes(project/'storage.json'))):
         raise ValueError('Organized project activation does not match its storage authority.')
     return project
+
+
+@contextmanager
+def project_read(output, run):
+    """Bind one discovery read without granting writes or changing its pin."""
+    current = carriers.runtime.current_runtime(output, run)
+    if current is not None:
+        yield current
+        return
+    project = activated_project(output, run)
+    if project is None:
+        yield None
+        return
+    with state.control_rehearsal_access(project), carriers.runtime.runtime_access(
+            ProjectStore(project)) as bound:
+        yield bound
 
 
 def _modules():
@@ -264,6 +309,18 @@ def storage_http(function):
     @wraps(function)
     async def wrapped(request):
         try:
+            action = inspect.unwrap(function).__name__
+            background = request.method in ('GET', 'HEAD') and action in _BACKGROUND_READS
+            body = None
+            if (action == '_project_ownership_command' and request.method == 'POST'
+                    and request.content_type == 'application/json'):
+                # Consume the connection on its own event loop first. Only
+                # status reads move; claims/takeovers/releases stay unchanged.
+                body = await request.json()
+                background = isinstance(body, dict) and str(body.get('action') or 'status').strip().lower() == 'status'
+            if background:
+                detached = _ReadRequest(request, body)
+                return await _background_read(lambda: asyncio.run(dispatch(detached)))
             return await dispatch(request)
         except (ValueError, TypeError, OSError) as error:
             from aiohttp import web
@@ -305,15 +362,19 @@ def storage_fingerprint(function):
 
 async def storage_session(request):
     """Read-only handshake for existing editors before their first mutation."""
+    return await _background_read(_storage_session_response, dict(request.query))
+
+
+def _storage_session_response(query):
     import folder_paths
     from aiohttp import web
     try:
-        run = request.query.get('run_name', '')
+        run = query.get('run_name', '')
         project = activated_project(folder_paths.get_output_directory(), run)
         if project is None:
             return web.json_response({'organized': False})
         with state.control_rehearsal_access(project), carriers.runtime.runtime_access(
-                ProjectStore(project), selected=request.query.get('branch_id', 'main')) as bound:
+                ProjectStore(project), selected=query.get('branch_id', 'main')) as bound:
             return web.json_response({'organized': True, 'pin': bound.pin},
                 headers={'Cache-Control':'no-store'})
     except (OSError, ValueError, TypeError) as error:

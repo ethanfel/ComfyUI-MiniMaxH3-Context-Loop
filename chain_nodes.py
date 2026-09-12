@@ -29223,6 +29223,32 @@ def _retire_superseded_review_snapshots(
                 run_dir, str(snapshot.get("token") or ""), "superseded", time.time())
 
 
+def _saved_review_snapshots(run_dir: str, run_name: str) -> list[dict[str, Any]]:
+    """Read main and named branches from one accepted project snapshot."""
+    if __package__:
+        from .storage_host import project_read
+    else:
+        from storage_host import project_read
+    if not os.path.isdir(run_dir):
+        return []
+    with project_read(_output_root(), run_name) as bound:
+        snapshots = list(_load_review_snapshots(run_dir))
+        try:
+            branches = WorkingBranches(_output_root(), run_name).listing()["branches"]
+            for branch in branches:
+                if branch["id"] != "main":
+                    directory = (os.path.join(run_dir, "branches", branch["id"])
+                                 if bound is not None else _run_dir({
+                                     "run_name": run_name, "_branch_id": branch["id"]}))
+                    snapshots.extend(dict(item, _branch_id=branch["id"])
+                                     for item in _load_review_snapshots(directory))
+        except (OSError, ValueError, TypeError):
+            if bound is not None:
+                raise
+            _LOG.warning("Could not list working-branch review snapshots for %s", run_name)
+        return snapshots
+
+
 async def _list_pending_reviews(_request):
     if __package__:
         from .storage_runtime import current_runtime
@@ -29288,19 +29314,17 @@ async def _list_pending_reviews(_request):
         run_names = [runtime.run]
     else:
         try:
-            run_names = sorted(os.listdir(runs_dir))
+            run_names = sorted(await asyncio.to_thread(os.listdir, runs_dir))
         except OSError:
             run_names = []
     for run_name in run_names:
         run_dir = os.path.join(runs_dir, run_name)
-        if not os.path.isdir(run_dir):
-            continue
         try:
             _strict_run_name(run_name)
         except ValueError:
             continue
         try:
-            snapshots = list(_load_review_snapshots(run_dir))
+            snapshots = await asyncio.to_thread(_saved_review_snapshots, run_dir, run_name)
         except (OSError, ValueError, TypeError) as exc:
             if runtime is not None:
                 raise
@@ -29309,19 +29333,6 @@ async def _list_pending_reviews(_request):
             unavailable_runs.append({"run_name": run_name, "error": str(exc)})
             _LOG.warning("Could not read review inventory for %s: %s", run_name, exc)
             continue
-        try:
-            branches = WorkingBranches(_output_root(), run_name).listing()["branches"]
-            for branch in branches:
-                if branch["id"] != "main":
-                    directory = (os.path.join(run_dir, "branches", branch["id"])
-                                 if runtime is not None else _run_dir({
-                                     "run_name": run_name, "_branch_id": branch["id"]}))
-                    snapshots.extend(dict(item, _branch_id=branch["id"])
-                                     for item in _load_review_snapshots(directory))
-        except (OSError, ValueError, TypeError):
-            if runtime is not None:
-                raise
-            _LOG.warning("Could not list working-branch review snapshots for %s", run_name)
         for snapshot in snapshots:
             if snapshot.get("status") != "pending":
                 continue

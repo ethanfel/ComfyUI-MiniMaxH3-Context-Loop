@@ -124,6 +124,157 @@ class HostTests(unittest.TestCase):
         with patch.object(fixture.folder_paths, 'get_input_directory', return_value=str(self.f.lab/'input')):
             asyncio.run(run())
 
+    def test_normal_global_review_inventory_opens_activated_project(self):
+        import asyncio
+        from aiohttp.test_utils import TestClient, TestServer
+        from aiohttp import web
+        review = fixture.module('review_inventory')
+        with state.control_rehearsal_access(self.f.store.project):
+            with fixture.runtime.runtime_access(self.f.store, handoff_writes=True, branch_writes=True):
+                branches = fixture.module('working_branches').WorkingBranches(self.f.output, self.f.run)
+                named = branches.create('main', 'Review branch', {'plan_json':json.dumps(self.f.plan)},
+                    operation_id=uuid.uuid4().hex)['id']
+                review.write_review_snapshot(str(self.f.store.project), 'saved-review',
+                    self.f.run, 1, [], None, 1)
+            with fixture.runtime.runtime_access(self.f.store, handoff_writes=True, selected=named):
+                review.write_review_snapshot(str(self.f.store.project/'branches'/named),
+                    'named-review', self.f.run, 2, [], None, 1)
+            before = self.f.store.snapshot().reference
+        async def run():
+            app = web.Application()
+            app.router.add_get('/reviews', chain._list_pending_reviews)
+            async with TestClient(TestServer(app)) as client:
+                response = await client.get('/reviews')
+                value = await response.json()
+                self.assertEqual(response.status, 200, value)
+                self.assertNotIn('unavailable_runs', value)
+                self.assertEqual({item['token'] for item in value['reviews']}, {'saved-review', 'named-review'})
+                self.assertEqual({item['_branch_id'] for item in value['reviews']}, {'main', named})
+                self.assertTrue(all(not item['actionable'] for item in value['reviews']))
+        asyncio.run(run())
+        with state.control_rehearsal_access(self.f.store.project):
+            self.assertEqual(self.f.store.snapshot().reference, before)
+        self.assertIsNone(fixture.runtime._ACTIVE.get())
+        self.assertIsNone(state._ACCESS.get())
+
+    def test_normal_asset_discovery_and_media_without_input_catalog(self):
+        import asyncio
+        import io
+        from PIL import Image
+        from aiohttp import web
+        from aiohttp.test_utils import TestClient, TestServer
+        assets_module = fixture.module('project_assets')
+        inputs = self.f.lab/'asset-input'
+        inputs.mkdir()
+        picture = inputs/'picture.png'
+        Image.new('RGB', (48, 32), (44, 55, 66)).save(picture)
+        with state.control_rehearsal_access(self.f.store.project):
+            with fixture.runtime.runtime_access(self.f.store, asset_writes=True,
+                    asset_input_root=inputs):
+                asset = assets_module.ProjectAssetStore(inputs, self.f.output).import_file(
+                    self.f.run, picture, tag='hero', storage_operation_id=uuid.uuid4().hex,
+                    ownership_proof=self.f.proof)['asset']
+            before = self.f.store.snapshot().reference
+        empty_input = self.f.lab/'empty-input'
+        async def run():
+            app = web.Application()
+            app.router.add_get('/projects', chain._project_asset_projects)
+            app.router.add_get('/catalog', chain._project_asset_catalog)
+            app.router.add_get('/media', chain._project_asset_media)
+            async with TestClient(TestServer(app)) as client:
+                response = await client.get('/projects')
+                value = await response.json()
+                self.assertEqual(response.status, 200, value)
+                self.assertEqual([item['project'] for item in value['items']], [self.f.run])
+                self.assertEqual(value['items'][0]['asset_count'], 1)
+                response = await client.get('/catalog', params={'project':self.f.run})
+                value = await response.json()
+                self.assertEqual(response.status, 200, value)
+                self.assertEqual(value['assets'][0]['id'], asset['id'])
+                for variant in ('original', 'thumbnail', 'poster', 'preview'):
+                    response = await client.get('/media', params={
+                        'project':self.f.run, 'asset':asset['id'], 'variant':variant})
+                    data = await response.read()
+                    self.assertEqual(response.status, 200, data)
+                    self.assertIn('X-H3-Storage-Pin', response.headers)
+                    with Image.open(io.BytesIO(data)) as image:
+                        self.assertEqual(image.size, (48, 32))
+        with patch.object(fixture.folder_paths, 'get_input_directory', return_value=str(empty_input)):
+            asyncio.run(run())
+        # A stale input mirror must neither hide nor duplicate the organized
+        # entry, and ordinary input-only projects remain selectable beside it.
+        input_catalog = inputs/'h3_projects'/self.f.run/'catalog.json'
+        stale = json.loads(input_catalog.read_bytes())
+        stale['assets'] = []
+        stale_bytes = json.dumps(stale).encode()
+        input_catalog.write_bytes(stale_bytes)
+        assets_module.ProjectAssetStore(inputs, self.f.lab/'legacy-output').import_file(
+            'legacy_project', picture)
+        summaries = assets_module.ProjectAssetStore(inputs, self.f.output).project_catalogs()
+        self.assertEqual({item['project']:item['asset_count'] for item in summaries},
+            {self.f.run:1, 'legacy_project':1})
+        self.assertEqual(len(summaries), 2)
+        self.assertEqual(input_catalog.read_bytes(), stale_bytes)
+        self.assertEqual([item['project'] for item in
+            assets_module.ProjectAssetStore(inputs, self.f.output).project_catalogs('legacy_')],
+            ['legacy_project'])
+        with state.control_rehearsal_access(self.f.store.project):
+            self.assertEqual(self.f.store.snapshot().reference, before)
+        self.assertFalse(empty_input.exists())
+        self.assertIsNone(fixture.runtime._ACTIVE.get())
+        self.assertIsNone(state._ACCESS.get())
+
+    def test_slow_read_validation_does_not_block_other_http_requests(self):
+        import asyncio
+        import threading
+        from aiohttp import web
+        from aiohttp.test_utils import TestClient, TestServer
+        verify = state.Snapshot.verify
+        main_thread = threading.get_ident()
+        async def run():
+            app = web.Application()
+            app.router.add_get('/session', host.storage_session)
+            app.router.add_get('/catalog', chain._project_asset_catalog)
+            app.router.add_post('/ownership', chain._project_ownership_command)
+            async def ping(_request):
+                return web.json_response({'ok':True})
+            app.router.add_get('/ping', ping)
+            async with TestClient(TestServer(app)) as client:
+                response = await client.get('/session', params={'run_name':self.f.run})
+                pin = (await response.json())['pin']
+                requests = (
+                    ('GET', '/session', {'params':{'run_name':self.f.run}}),
+                    ('GET', '/catalog', {'params':{'project':self.f.run, 'create':'false'}}),
+                    ('POST', '/ownership', {'json':{'run_name':self.f.run, 'action':'status'},
+                        'headers':{'X-H3-Storage-Pin':json.dumps(pin)}}),
+                )
+                for method, route, options in requests:
+                    entered, release = threading.Event(), threading.Event()
+                    timed_out, threads = [], []
+                    def slow(snapshot):
+                        threads.append(threading.get_ident())
+                        entered.set()
+                        if not release.wait(2):
+                            timed_out.append(True)
+                        return verify(snapshot)
+                    with patch.object(state.Snapshot, 'verify', slow):
+                        pending = asyncio.create_task(client.request(method, route, **options))
+                        try:
+                            self.assertTrue(await asyncio.to_thread(entered.wait, 2), route)
+                            pong = await asyncio.wait_for(client.get('/ping'), .5)
+                            self.assertEqual(pong.status, 200)
+                            self.assertFalse(timed_out, route)
+                            self.assertNotIn(main_thread, threads, route)
+                        finally:
+                            release.set()
+                            response = await pending
+                            data = await response.json()
+                        self.assertEqual(response.status, 200, data)
+        asyncio.run(run())
+        self.assertIsNone(fixture.runtime._ACTIVE.get())
+        self.assertIsNone(fixture.carriers._HOST.get())
+        self.assertIsNone(state._ACCESS.get())
+
     def test_normal_run_manager_archives_loader_and_source_audio(self):
         from comfy_execution.utils import CurrentNodeContext
         from PIL import Image
