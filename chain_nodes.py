@@ -32504,11 +32504,13 @@ async def _project_ownership_command(request):
         action = str(body.get("action") or "status").strip().lower()
         owner_id = body.get("owner_id", "")
         if action == "status":
-            payload = ownership_status(_output_root(), run_name, owner_id)
+            payload = await asyncio.to_thread(
+                ownership_status, _output_root(), run_name, owner_id)
         elif action in ("claim", "force"):
-            before = ownership_status(_output_root(), run_name, owner_id)
-            payload = claim_project_ownership(
-                _output_root(), run_name, owner_id,
+            before = await asyncio.to_thread(
+                ownership_status, _output_root(), run_name, owner_id)
+            payload = await asyncio.to_thread(
+                claim_project_ownership, _output_root(), run_name, owner_id,
                 body.get("owner_label", "Workflow"),
                 force=action == "force")
             if (action == "force" and payload.get("owned_by_requester")
@@ -32517,12 +32519,12 @@ async def _project_ownership_command(request):
                             before.get("epoch", -1)))):
                 _fence_inflight_project_work(run_name)
         elif action == "heartbeat":
-            payload = heartbeat_project_ownership(
-                _output_root(), run_name, owner_id, body.get("epoch"),
+            payload = await asyncio.to_thread(
+                heartbeat_project_ownership, _output_root(), run_name, owner_id, body.get("epoch"),
                 body.get("owner_label", "Workflow"))
         elif action == "release":
-            payload = release_project_ownership(
-                _output_root(), run_name, owner_id, body.get("epoch"))
+            payload = await asyncio.to_thread(
+                release_project_ownership, _output_root(), run_name, owner_id, body.get("epoch"))
         else:
             raise ValueError(
                 "Project ownership action must be status, claim, heartbeat, "

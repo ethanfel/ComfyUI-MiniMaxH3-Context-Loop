@@ -13,7 +13,7 @@ import uuid
 import _storage_branch_controls_unit_test as fixture
 import storage_state as state
 import storage_project as project
-from storage_runtime import runtime_access, current_runtime, accepted_export_access
+from storage_runtime import runtime_access, async_runtime_access, current_runtime, accepted_export_access
 from storage_branch_controls import BranchControlDocuments
 from storage_project_reads import ProjectReadView
 from working_branches import WorkingBranches
@@ -253,6 +253,44 @@ class RuntimeTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'read-only'):
                 CheckpointGraphManager(self.output).graph('demo', adopt_legacy=True)
         self.assertEqual(before, self.store.snapshot().reference)
+
+    def test_async_http_bindings_keep_pins_isolated_and_revoke_after_cancellation(self):
+        with runtime_access(self.store, selected=self.named) as bound:
+            old_pin, old = bound.pin, self.branches().load(self.named)
+        latest = self.publish()
+        async def read(pin, expected):
+            async with async_runtime_access(self.store, selected=self.named, pin=pin):
+                await asyncio.sleep(0)
+                value = await asyncio.to_thread(lambda: self.branches().load(current_branch('demo')))
+                self.assertEqual(value, expected)
+        async def check():
+            await asyncio.gather(read(old_pin, old), read(None, latest))
+            with self.assertRaises(asyncio.CancelledError):
+                async with async_runtime_access(self.store, selected=self.named) as bound:
+                    captured = copy_context()
+                    with self.assertRaisesRegex(ValueError, 'switch bindings'):
+                        async with async_runtime_access(self.store):
+                            self.fail('Nested async binding was accepted.')
+                    raise asyncio.CancelledError()
+            self.assertTrue(bound.closed)
+            self.assertIsNone(bound.reader._operation.get())
+            self.assertIsNone(current_runtime(self.output))
+            self.assertEqual(current_branch('demo'), 'main')
+            with self.assertRaisesRegex(ValueError, 'escaped'):
+                captured.run(bound.check)
+        asyncio.run(check())
+
+    def test_async_http_binding_still_verifies_untouched_control_files(self):
+        from storage_runtime import _ACTIVE
+        async def check():
+            with self.assertRaises(ValueError):
+                async with async_runtime_access(self.store) as bound:
+                    descriptor = next(iter(bound.base.state['documents'].values()))
+                    (self.store.project/descriptor['file']['path']).write_bytes(b'corrupt test fixture')
+            self.assertTrue(bound.closed)
+            self.assertIsNone(_ACTIVE.get())
+            self.assertIsNone(bound.reader._operation.get())
+        asyncio.run(check())
 
     def test_export_successor_reads_only_acknowledged_root_and_returns_exact_commits(self):
         with runtime_access(self.store, export_writes=True) as parent:

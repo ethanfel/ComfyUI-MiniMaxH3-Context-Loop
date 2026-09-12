@@ -39,7 +39,7 @@ def routes(output):
              if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in names]
     assert {node.name for node in nodes} == names
     events = []
-    namespace = dict(vars(ownership), Any=Any, os=os, re=re, json=json, hashlib=hashlib,
+    namespace = dict(vars(ownership), Any=Any, os=os, re=re, json=json, hashlib=hashlib, asyncio=asyncio,
         WorkingBranches=WorkingBranches, CheckpointGraphManager=CheckpointGraphManager,
         _output_root=lambda: str(output), _strict_run_name=_strict_run_name,
         _working_branch_id=branch_id, branch_scope=branch_scope, MAX_SHOTS=10000,

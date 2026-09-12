@@ -3,8 +3,9 @@
 No normal resolver calls this port. Paths returned here may name immutable
 control versions: callers must never give them to a writer or deletion API.
 """
-from contextlib import contextmanager
+from contextlib import contextmanager, asynccontextmanager
 from contextvars import ContextVar
+import asyncio
 import json
 from pathlib import Path
 import re
@@ -53,11 +54,7 @@ class ProjectReadView:
             for trace in self._read_traces.get():
                 trace.add(key)
 
-    @contextmanager
-    def operation(self):
-        if self._operation.get() is not None:
-            yield
-            return
+    def _prepare_operation(self):
         current = self.store.snapshot()  # check current access/format/gate
         snapshot = self.base or current
         if self.base is not None:
@@ -75,14 +72,39 @@ class ProjectReadView:
             parts = address.split('/')
             for length in range(len(parts)):
                 children.setdefault('/'.join(parts[:length]), set()).add(parts[length])
-        session = {'snapshot': snapshot, 'controls': controls, 'physical': physical,
-                   'reverse': reverse, 'children': children}
+        return {'snapshot': snapshot, 'controls': controls, 'physical': physical,
+                'reverse': reverse, 'children': children}
+
+    @contextmanager
+    def operation(self):
+        if self._operation.get() is not None:
+            yield
+            return
+        session = self._prepare_operation()
         token = self._operation.set(session)
         try:
             yield
             # Core legacy readers tolerate malformed JSON. Broken immutable
             # storage must instead fail the whole read, not silently hide takes.
-            snapshot.verify()
+            session['snapshot'].verify()
+        finally:
+            self._operation.reset(token)
+
+    @asynccontextmanager
+    async def async_operation(self):
+        """Same pinned checks, with disk work off the HTTP event loop.
+
+        Bind/reset ContextVars in the request task itself. Thumbnail tasks and
+        streamed requests must keep using their original asyncio event loop.
+        """
+        if self._operation.get() is not None:
+            yield
+            return
+        session = await asyncio.to_thread(self._prepare_operation)
+        token = self._operation.set(session)
+        try:
+            yield
+            await asyncio.to_thread(session['snapshot'].verify)
         finally:
             self._operation.reset(token)
 

@@ -5,6 +5,7 @@ host supplies store access and exact branch-writer callables out of band. Normal
 legacy nodes stay unchanged; a saved pin without host access fails closed.
 """
 import copy
+import asyncio
 from contextlib import contextmanager
 from contextvars import ContextVar
 import json
@@ -264,10 +265,10 @@ def storage_request(function):
                 options['asset_previews'] = True
             if 'asset' in grants:
                 options['asset_input_root'] = host.asset_input_root
-            with runtime.runtime_access(host.store, pin=pin, selected=selected, **options) as bound:
+            async with runtime.async_runtime_access(host.store, pin=pin, selected=selected, **options) as bound:
                 response = await function(request)
                 host.check()
-                bound.check()
+                await asyncio.to_thread(bound.check)
                 if response.status < 400:
                     response.headers['X-H3-Storage-Pin'] = json.dumps(
                         bound.output_pin, sort_keys=True, separators=(',', ':'))

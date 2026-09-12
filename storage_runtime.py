@@ -6,7 +6,8 @@ binding. Outside it, legacy behavior and the combined-layout rejection remain.
 No process-global output directory or filesystem function is replaced.
 """
 import copy
-from contextlib import contextmanager
+import asyncio
+from contextlib import contextmanager, asynccontextmanager
 from contextvars import ContextVar
 from pathlib import Path
 
@@ -120,6 +121,13 @@ class _ReadView(ProjectReadView):
         with super().operation():
             yield
             self.runtime.check()
+
+    @asynccontextmanager
+    async def async_operation(self):
+        await asyncio.to_thread(self.runtime.check)
+        async with super().async_operation():
+            yield
+            await asyncio.to_thread(self.runtime.check)
 
 
 class ProjectRuntime:
@@ -354,5 +362,21 @@ The host must opt into branch/ownership writes separately; browser JSON cannot g
     finally:
         # Child tasks/threads inherit ContextVars. Resetting the parent's token
         # alone does not revoke their captured operation after the request ends.
+        runtime.closed = True
+        _ACTIVE.reset(token)
+
+
+@asynccontextmanager
+async def async_runtime_access(store, **options):
+    """HTTP binding without blocking the server on index/verification reads."""
+    if _ACTIVE.get() is not None:
+        raise ValueError('A runtime operation cannot switch bindings while active.')
+    runtime = await asyncio.to_thread(ProjectRuntime, store, **options)
+    token = _ACTIVE.set(runtime)
+    try:
+        with branch_scope(runtime.run, runtime.selected):
+            async with runtime.reader.async_operation():
+                yield runtime
+    finally:
         runtime.closed = True
         _ACTIVE.reset(token)

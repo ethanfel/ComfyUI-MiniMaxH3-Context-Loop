@@ -224,6 +224,42 @@ class HostTests(unittest.TestCase):
         self.assertIsNone(fixture.runtime._ACTIVE.get())
         self.assertIsNone(state._ACCESS.get())
 
+    def test_thumbnail_handler_keeps_its_original_event_loop(self):
+        import asyncio
+        import threading
+        from PIL import Image
+        from aiohttp import web
+        from aiohttp.test_utils import TestClient, TestServer
+        thumbnail = self.f.lab/'thumbnail.jpg'
+        Image.new('RGB', (8, 8)).save(thumbnail)
+        checks = []
+        verify = state.Snapshot.verify
+        main_thread = threading.get_ident()
+        def verify_off_thread(snapshot):
+            checks.append(threading.get_ident())
+            self.assertNotEqual(threading.get_ident(), main_thread)
+            return verify(snapshot)
+        async def run():
+            request_loop = asyncio.get_running_loop()
+            async def ensure(record):
+                self.assertIs(asyncio.get_running_loop(), request_loop)
+                self.assertEqual(record['run_name'], self.f.run)
+                await asyncio.sleep(0)
+                return str(thumbnail)
+            app = web.Application()
+            app.router.add_get('/thumbnail', chain._plan_studio_checkpoint_thumbnail)
+            with patch.object(chain, '_plan_studio_checkpoint_thumbnail_record',
+                    return_value={'run_name':self.f.run}), patch.object(chain,
+                    '_ensure_plan_studio_checkpoint_thumbnail', ensure), patch.object(
+                    state.Snapshot, 'verify', verify_off_thread):
+                async with TestClient(TestServer(app)) as client:
+                    response = await client.get('/thumbnail', params={'run_name':self.f.run})
+                    self.assertEqual(response.status, 200, await response.read())
+                    self.assertIn('X-H3-Storage-Pin', response.headers)
+        asyncio.run(run())
+        self.assertTrue(checks)
+        self.assertIsNone(fixture.runtime._ACTIVE.get())
+
     def test_slow_read_validation_does_not_block_other_http_requests(self):
         import asyncio
         import threading
@@ -236,6 +272,7 @@ class HostTests(unittest.TestCase):
             app.router.add_get('/session', host.storage_session)
             app.router.add_get('/catalog', chain._project_asset_catalog)
             app.router.add_post('/ownership', chain._project_ownership_command)
+            app.router.add_get('/run', chain._load_saved_run)
             async def ping(_request):
                 return web.json_response({'ok':True})
             app.router.add_get('/ping', ping)
@@ -246,6 +283,10 @@ class HostTests(unittest.TestCase):
                     ('GET', '/session', {'params':{'run_name':self.f.run}}),
                     ('GET', '/catalog', {'params':{'project':self.f.run, 'create':'false'}}),
                     ('POST', '/ownership', {'json':{'run_name':self.f.run, 'action':'status'},
+                        'headers':{'X-H3-Storage-Pin':json.dumps(pin)}}),
+                    ('GET', '/run', {'params':{'run_name':self.f.run, 'include_assets':'false'}}),
+                    ('POST', '/ownership', {'json':{'run_name':self.f.run, 'action':'claim',
+                        'owner_id':'cpu-generation-test-owner'},
                         'headers':{'X-H3-Storage-Pin':json.dumps(pin)}}),
                 )
                 for method, route, options in requests:
