@@ -705,7 +705,9 @@ export function h3FrameLength(seconds) {
         throw new Error("Duration must be a finite positive number.");
     }
     const requested = Math.max(5, Math.ceil(numeric * FPS - 1e-9));
-    const length = requested + ((5 - (requested % 17)) % 17);
+    // JS remainder can be negative; Python modulo in _h3_frame_length cannot.
+    // Always advance to the next valid length, including near the upper bound.
+    const length = requested + ((5 - (requested % 17) + 17) % 17);
     if (length > MAX_H3_FRAMES) {
         throw new Error(
             `Duration rounds to ${length} frames; H3's largest valid length is ${MAX_H3_FRAMES}.`,
