@@ -29,6 +29,14 @@ export function authoringSignature(authoring) {
     const plan = parsePlanJson(value.plan_json);
     delete plan._branch_id; // Routing is compared separately from authored settings.
     value.plan_json = plan;
+    // The base-seed widget can serialize a safe integer as either a number
+    // or decimal text. Compare those equally without rounding uint64 seeds.
+    const seed = value.base_seed;
+    if ((typeof seed === "number" && Number.isSafeInteger(seed) && seed >= 0)
+            || (typeof seed === "string" && /^\d+$/.test(seed.trim()))) {
+        const exact = BigInt(typeof seed === "string" ? seed.trim() : seed);
+        if (exact <= 18446744073709551615n) value.base_seed = exact.toString();
+    }
     const ordered = item => Array.isArray(item) ? item.map(ordered)
         : item && typeof item === "object"
             ? Object.fromEntries(Object.keys(item).sort().map(key => [key, ordered(item[key])])) : item;

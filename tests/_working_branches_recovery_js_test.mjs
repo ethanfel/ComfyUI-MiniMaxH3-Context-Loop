@@ -14,6 +14,25 @@ const memoryStorage = () => {
     return {getItem:key=>values.get(key) ?? null, setItem:(key,value)=>values.set(key,value), removeItem:key=>values.delete(key)};
 };
 {
+    const saved = {...authoring('5056228374170984401'), base_seed:'0'};
+    const live = {...saved, base_seed:0};
+    assert.equal(authoringSignature(saved), authoringSignature(live),
+        'the base-seed widget numeric/string representation is not an authoring edit');
+    assert.equal(saved.base_seed, '0', 'comparison must not rewrite saved settings');
+    for (const seed of [1, Number.MAX_SAFE_INTEGER]) {
+        assert.equal(authoringSignature({...saved,base_seed:seed}),
+            authoringSignature({...saved,base_seed:String(seed)}));
+    }
+    assert.notEqual(authoringSignature({...saved,base_seed:'18446744073709551614'}),
+        authoringSignature({...saved,base_seed:'18446744073709551615'}), 'adjacent uint64 seeds remain distinct');
+    assert.notEqual(authoringSignature({...saved,base_seed:9007199254740992}),
+        authoringSignature({...saved,base_seed:'9007199254740992'}), 'unsafe numeric seeds must not imply exact equality');
+    const addedScene = parsePlanJson(live.plan_json);
+    addedScene.shots.push({id:'new_scene',prompt:'new scene',seed:'5056228374170984401'});
+    assert.notEqual(authoringSignature(saved),authoringSignature({...live,plan_json:planToJson(addedScene)}),
+        'adding a scene is still a real Plan difference requiring an explicit save');
+}
+{
     const saved = authoring('18446744073709551614');
     const parsed = JSON.parse(saved.plan_json);
     parsed.prompt_prefix = 'Shared\r\nwords';
@@ -99,8 +118,10 @@ async function delayedLoad(t) {
     const t=fixture();
     const live=t.getLive();
     live.plan_json=planToJson(parsePlanJson(live.plan_json));
+    live.base_seed=0;
+    t.disk.get('main').authoring.base_seed='0';
     await t.controller.refresh('demo');
-    assert.equal(t.controller.conflict,'','a saved string Plan loads without a false conflict');
+    assert.equal(t.controller.conflict,'','equivalent Plan and base-seed formatting loads without a false conflict');
     t.controller.observe();
     assert.equal(t.drafts.read('demo','main'),null,'normalization alone must not manufacture a recovery draft');
     t.drafts.save('demo','main',{authoring:t.disk.get('main').authoring,revision:'1'});
