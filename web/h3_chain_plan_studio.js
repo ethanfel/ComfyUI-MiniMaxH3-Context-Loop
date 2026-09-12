@@ -152,6 +152,26 @@ const MOTION_VOLUME_PROPERTY = "h3_plan_studio_motion_volume";
 const CHECKPOINT_CACHE_PROPERTY = "h3_plan_studio_checkpoint_cache_v1";
 const MIN_WIDTH = 820;
 const MIN_HEIGHT = 690;
+const SIZE_PROPERTY = "h3_plan_studio_size";
+
+function studioNodeSize(size) {
+    const width = Number(size?.[0]), height = Number(size?.[1]);
+    if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return null;
+    return [Math.max(width, MIN_WIDTH), Math.max(height, MIN_HEIGHT)];
+}
+
+function restoreStudioNodeSize(node) {
+    // The DOM can mount before configure() restores a workflow tab. Keep the
+    // editor's viewport independent of the host's temporary widget-fit size.
+    const size = studioNodeSize(node.properties?.[SIZE_PROPERTY])
+        ?? studioNodeSize(node.size) ?? [MIN_WIDTH, MIN_HEIGHT];
+    node.properties ??= {};
+    node.properties[SIZE_PROPERTY] = [...size];
+    if (node.size?.[0] !== size[0] || node.size?.[1] !== size[1]) {
+        node.setSize?.(size);
+        node.graph?.setDirtyCanvas?.(true, true);
+    }
+}
 const PLAN_SETTING_WIDGETS = Object.freeze([
     "plan_json", "run_name", "generation_fingerprint", "width", "height",
     "context_length", "encode_mode", "anchor_mode", "crop", "audio_mode",
@@ -6532,7 +6552,7 @@ function mount(node) {
         serialize:false, hideOnZoom:false, getMinHeight:() => 540,
     });
     domWidget.serialize = false;
-    node.setSize?.([Math.max(Number(node.size?.[0]) || 0, MIN_WIDTH), Math.max(Number(node.size?.[1]) || 0, MIN_HEIGHT)]);
+    restoreStudioNodeSize(node);
     const connectionsChanged = node.onConnectionsChange;
     node.onConnectionsChange = function () {
         const result = connectionsChanged?.apply(this, arguments);
@@ -6704,6 +6724,32 @@ app.registerExtension({
     name:"minimax_h3_context_loop.plan_studio",
     async beforeRegisterNodeDef(nodeType, nodeData) {
         if (nodeData.name !== NODE_NAME) return;
+        const configured = nodeType.prototype.onConfigure;
+        nodeType.prototype.onConfigure = function (info) {
+            // Copy before other configure callbacks can resize the node or
+            // mutate properties. Old workflows use their ordinary node size.
+            const size = studioNodeSize(info?.properties?.[SIZE_PROPERTY])
+                ?? studioNodeSize(info?.size);
+            const result = configured?.apply(this, arguments);
+            this.properties ??= {};
+            if (size) this.properties[SIZE_PROPERTY] = size;
+            else delete this.properties[SIZE_PROPERTY];
+            restoreStudioNodeSize(this);
+            return result;
+        };
+        const resized = nodeType.prototype.onResize;
+        nodeType.prototype.onResize = function (size) {
+            const result = resized?.apply(this, arguments);
+            // Construction/configuration sizes are not a user's resize. Do
+            // not let them replace the viewport loaded from the workflow.
+            const next = studioNodeSize(size);
+            if (next && this._h3PlanStudioMounted && !app.configuringGraph
+                    && size?.[0] >= MIN_WIDTH && size?.[1] >= MIN_HEIGHT) {
+                this.properties ??= {};
+                this.properties[SIZE_PROPERTY] = next;
+            }
+            return result;
+        };
         const created = nodeType.prototype.onNodeCreated;
         nodeType.prototype.onNodeCreated = function () {
             const result = created?.apply(this, arguments); setTimeout(() => mount(this), 0); return result;
@@ -6711,6 +6757,9 @@ app.registerExtension({
     },
     async nodeCreated(node) { if (nodeType(node) === NODE_NAME) mount(node); },
     async afterConfigureGraph() {
-        for (const node of allNodes(app.graph)) if (nodeType(node) === NODE_NAME) setTimeout(() => node._h3PlanStudioRefresh?.(), 0);
+        for (const node of allNodes(app.graph)) if (nodeType(node) === NODE_NAME) {
+            restoreStudioNodeSize(node);
+            setTimeout(() => node._h3PlanStudioRefresh?.(), 0);
+        }
     },
 });
