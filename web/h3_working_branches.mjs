@@ -1,3 +1,5 @@
+import {parsePlanJson} from "./h3_chain_plan_core.mjs?v=0.7.9";
+
 // Shared request/selection protocol. Branch names are labels, never paths.
 export function workingBranchId(value) {
     const id = String(value || "main");
@@ -22,7 +24,9 @@ export function branchSelectionJson(value, id) {
 export function authoringSignature(authoring) {
     if (!authoring) return "";
     const value = structuredClone(authoring);
-    const plan = JSON.parse(value.plan_json);
+    // Compare the same representation Studio actually loads. Legacy string
+    // prompts and current line arrays are equivalent; preserve exact seeds.
+    const plan = parsePlanJson(value.plan_json);
     delete plan._branch_id; // Routing is compared separately from authored settings.
     value.plan_json = plan;
     const ordered = item => Array.isArray(item) ? item.map(ordered)
@@ -145,15 +149,23 @@ export class StudioBranches {
         this.conflict = "";
     }
 
-    readDraft() {
+    readDraft({includeResolved = false} = {}) {
         this.draftRecovery = null;
+        this.draftStatus = "";
         try {
             const saved = this.drafts?.read(this.run, this.selected);
-            const draft = [saved, ...(saved?.older ?? [])].find(value => value &&
-                (value.recovery || authoringSignature(value.authoring) !== authoringSignature(this.capture())));
+            const revision = this.records.find(record => record.id === this.selected)?.revision;
+            const candidates = [saved, ...(saved?.older ?? [])];
+            const resolved = value => !includeResolved && value?.resolved_revision
+                && value.resolved_revision === revision;
+            const signature = authoringSignature(this.capture());
+            const draft = candidates.find(value => value && !resolved(value) &&
+                (value.recovery || authoringSignature(value.authoring) !== signature));
             if (draft) {
                 this.draftRecovery = draft;
                 this.draftStatus = "A local recovery draft is available; restore it before editing, or reload the saved branch.";
+            } else if (candidates.some(resolved)) {
+                this.draftStatus = "Previous local edits remain in browser recovery.";
             }
         } catch (error) { this.draftStatus = `Local recovery unavailable: ${error.message}`; }
     }
@@ -321,6 +333,17 @@ export class StudioBranches {
             this.draftRecovery = null;
             this.observedSignature = authoringSignature(record.authoring);
             this.draftStatus = "Saved branch loaded. Previous local edits remain in browser recovery.";
+            // Explicitly choosing the saved branch resolves the recovery
+            // warning, not its backup. Refresh/reopen must not trap the user
+            // again; Restore local draft can still retrieve every version.
+            try {
+                const draft = this.drafts?.read(this.run, this.selected);
+                if (draft) this.drafts.save(this.run, this.selected,
+                    {...draft, resolved_revision:record.revision,
+                        older:(draft.older ?? []).map(value => ({...value, resolved_revision:record.revision}))});
+            } catch (error) {
+                this.draftStatus += ` Recovery acknowledgement could not be saved: ${error.message}`;
+            }
         }, {save:false, flush:false, navigation:true});
     }
 

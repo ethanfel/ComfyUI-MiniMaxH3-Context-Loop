@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import vm from "node:vm";
+import {parsePlanJson, planToJson, promptValueToText} from "../web/h3_chain_plan_core.mjs";
 import {StudioBranches, BranchDrafts, authoringSignature, branchWidgetTransaction} from "../web/h3_working_branches.mjs";
 import {workingBranchId} from "../web/h3_working_branches.mjs";
 import {branchPolicyNodes, captureBranchPolicyInputs, restoreBranchPolicyInputs} from "../web/h3_plan_restore_core.mjs";
@@ -12,6 +13,27 @@ const memoryStorage = () => {
     const values = new Map();
     return {getItem:key=>values.get(key) ?? null, setItem:(key,value)=>values.set(key,value), removeItem:key=>values.delete(key)};
 };
+{
+    const saved = authoring('18446744073709551614');
+    const parsed = JSON.parse(saved.plan_json);
+    parsed.prompt_prefix = 'Shared\r\nwords';
+    parsed.shots[0].prompt = 'Line 1\r\n\r\nLine 3';
+    saved.plan_json = JSON.stringify(parsed);
+    const live = {...saved, plan_json:planToJson(parsePlanJson(saved.plan_json))};
+    assert.equal(authoringSignature(saved), authoringSignature(live),
+        'opening string prompts as line arrays must not create an edit conflict');
+    for (const edit of [
+        p => { p.shots[0].prompt.push('real edit'); },
+        p => { p.shots[0].seed = '18446744073709551615'; },
+        p => { p.shots[0].steps = 8; },
+        p => { p.chapters[0].resolution = {width:960,height:544}; },
+    ]) {
+        const changed = parsePlanJson(live.plan_json); edit(changed);
+        assert.notEqual(authoringSignature(saved), authoringSignature({...live,plan_json:planToJson(changed)}));
+    }
+    const numericSeed = {...saved, plan_json:saved.plan_json.replace('"18446744073709551614"','18446744073709551614')};
+    assert.equal(authoringSignature(numericSeed), authoringSignature(saved), 'legacy uint64 literals stay exact');
+}
 {
     // Exercise the real Studio serialization, not only the controller fixture.
     const source=fs.readFileSync(new URL('../web/h3_chain_plan_studio.js',import.meta.url),'utf8');
@@ -72,6 +94,18 @@ async function delayedLoad(t) {
     t.controller.request=async body=>body.action==='load'
         ? new Promise(resolve=>{finish=()=>resolve(structuredClone(t.disk.get(body.branch_id)));started();}) : original(body);
     return {ready,finish:()=>finish(),original};
+}
+{
+    const t=fixture();
+    const live=t.getLive();
+    live.plan_json=planToJson(parsePlanJson(live.plan_json));
+    await t.controller.refresh('demo');
+    assert.equal(t.controller.conflict,'','a saved string Plan loads without a false conflict');
+    t.controller.observe();
+    assert.equal(t.drafts.read('demo','main'),null,'normalization alone must not manufacture a recovery draft');
+    t.drafts.save('demo','main',{authoring:t.disk.get('main').authoring,revision:'1'});
+    t.controller.readDraft();
+    assert.equal(t.controller.draftRecovery,null,'old formatting-only recovery entries do not block editing');
 }
 {
     // A stale authoring/cut snapshot must not trap the user on a named branch.
@@ -237,6 +271,30 @@ for(const binding of [null,{run_name:'demo',branch_id:'main',revision:'old'}]) {
     await t.controller.reloadSaved(); assert.equal(t.controller.conflict,'');
     assert.equal(JSON.parse(t.getLive().plan_json).shots[0].seed,'18446744073709551614');
     assert.equal(JSON.parse(t.drafts.read('demo','main').authoring.plan_json).shots[0].seed,'stale');
+    await t.controller.refresh('demo');
+    assert.equal(t.controller.draftRecovery,null,'explicit reload stays resolved after refresh');
+    const reopened=fixture({storage:t.storage,binding:t.getBinding()});
+    await reopened.controller.refresh('demo');
+    assert.equal(reopened.controller.draftRecovery,null,'reopening must not resurrect an acknowledged conflict');
+    await reopened.controller.switchTo(id,{save:false});
+    await reopened.controller.switchTo('main',{save:false});
+    assert.equal(reopened.controller.draftRecovery,null,'navigating away and back keeps old backups resolved');
+    reopened.controller.readDraft({includeResolved:true});
+    assert.equal(JSON.parse(reopened.controller.draftRecovery.authoring.plan_json).shots[0].seed,'stale',
+        'the previous local edits remain explicitly recoverable');
+    reopened.controller.readDraft();
+    reopened.disk.get('main').revision='newer';
+    await reopened.controller.refresh('demo');
+    assert.ok(reopened.controller.draftRecovery,'acknowledgement does not apply to a newer server revision');
+    reopened.disk.get('main').revision='1';
+    await reopened.controller.refresh('demo');
+    reopened.drafts.save('demo','main',{authoring:authoring('new unsaved edit'),revision:'1'});
+    reopened.controller.readDraft();
+    assert.ok(reopened.controller.draftRecovery,'a new draft still needs recovery');
+    reopened.setLive(authoring('new unsaved edit'));
+    reopened.controller.readDraft();
+    assert.equal(reopened.controller.draftRecovery,null);
+    assert.doesNotMatch(reopened.controller.draftStatus,/restore it before editing/,'clear a stale recovery warning');
 }
 {
     const storage=memoryStorage(); storage.setItem=()=>{throw Error('quota exceeded');};
@@ -310,3 +368,34 @@ assert.equal(authoringSignature(reordered),authoringSignature(authoring('2')));
     assert.match(source,/branches\?\.busy && !force/);
 }
 console.log('Branch recovery: stale workflows, edits during switch, revision binding, lost responses, crash drafts, quota errors and rollback pass');
+
+{
+    // Real restore + real widget setter, not a mock that conceals edit effects.
+    const source=fs.readFileSync(new URL('../web/h3_chain_plan_studio.js',import.meta.url),'utf8');
+    const functions=['applyWorkingBranch','writePlanSetting'].map(name =>
+        source.match(new RegExp(`^    (?:async )?function ${name}\\([^]*?^    }$`,'m'))[0]).join('\n');
+    const oldPlan=parsePlanJson(authoring('old').plan_json);
+    const branchWidget={name:'working_branch_id',value:'main'};
+    const planWidget={name:'plan_json',value:planToJson(oldPlan)};
+    const node={properties:{},widgets:[branchWidget,planWidget,
+        ...Object.entries({width:1344,height:768,default_steps:20}).map(([name,value])=>({name,value}))]};
+    const state={plan:oldPlan,planOwner:node,planNode:null,promptEditors:[],history:{loadToken:1},
+        checkpointToken:1,presentationToken:1};
+    const context=vm.createContext({node,state,branchWidget,branches:{selected:'main'},Map,
+        branchPolicyNodes,restoreBranchPolicyInputs,branchWidgetTransaction,workingBranchId,
+        parsePlanJson,planToJson,promptValueToText,CHECKPOINT_CACHE_PROPERTY:'cache',
+        PLAN_SETTING_WIDGETS:['width','height','default_steps','plan_json'],
+        widget:(target,name)=>target.widgets.find(w=>w.name===name),disposePlayer(){},dirty(){},renderShell(){},
+        runName:()=> 'demo',settingsSignature:()=> '',
+        writePlan:()=>{throw Error('Restore must not invoke the editing path');},
+        loadPlan:()=>{state.plan=parsePlanJson(planWidget.value);},
+    });
+    vm.runInContext(functions,context);
+    const saved={...authoring('18446744073709551615'),default_steps:8,width:960,height:544};
+    await context.applyWorkingBranch({id,authoring:saved});
+    assert.equal(authoringSignature({...saved,plan_json:planWidget.value}),authoringSignature(saved));
+    assert.equal(oldPlan.defaults,undefined,'the outgoing Plan is untouched');
+    assert.equal(state.plan.defaults,undefined,'do not inject defaults absent from the saved Plan');
+    assert.equal(state.plan.shots[0].seed,'18446744073709551615');
+    assert.equal(node.widgets.find(w=>w.name==='default_steps').value,8);
+}

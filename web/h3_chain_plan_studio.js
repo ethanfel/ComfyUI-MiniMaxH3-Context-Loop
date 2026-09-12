@@ -1,6 +1,6 @@
 import {app} from "/scripts/app.js";
 import {api} from "/scripts/api.js";
-import {StudioBranches, BranchDrafts, branchOperationId, branchWidgetTransaction, branchRequestPath, workingBranchId} from "./h3_working_branches.mjs?v=0.7.19";
+import {StudioBranches, BranchDrafts, branchOperationId, branchWidgetTransaction, branchRequestPath, workingBranchId} from "./h3_working_branches.mjs?v=0.7.20";
 import {branchPolicyNodes, captureBranchPolicyInputs, restoreBranchPolicyInputs} from "./h3_plan_restore_core.mjs?v=0.7.19";
 import {
     CONTINUATION_MODES,
@@ -904,9 +904,12 @@ function mount(node) {
         });
         reload.disabled = !branches.ready;
         const recover = button("Restore local draft", "Recover this browser's last unsaved branch settings", () => {
-            branches.readDraft();
+            branches.readDraft({includeResolved:true});
             if (branches.draftRecovery && confirm("Replace the currently displayed prompts/settings with this browser's recovery draft? Saved branch settings and generated files are unchanged.")) {
                 void branches.restoreDraft();
+            } else {
+                branches.readDraft();
+                renderShell();
             }
         });
         recover.disabled = !branchDrafts || !branches.ready;
@@ -932,7 +935,7 @@ function mount(node) {
         const recovery = branches.records.find(item => item.id === currentBranch())?.authoring_recovery;
         if (recovery) bar.append(element("span", "h3studio-message", recovery.message));
         bar.append(element("span", "h3studio-message h3studio-branch-draft", branchDraftError || branches.draftStatus));
-        if (branches.error) bar.append(element("span", "h3studio-error", branches.error));
+        if (branches.error && branches.error !== branches.conflict) bar.append(element("span", "h3studio-error", branches.error));
         return bar;
     }
 
@@ -1040,10 +1043,6 @@ function mount(node) {
     }
 
     function writePlanSetting(name, value, rerender = true) {
-        if (name === "default_steps") {
-            setPlanDefaultSteps(state.plan, value);
-            writePlan();
-        }
         const targets = state.planNode ? [state.planNode, node] : [node];
         for (const target of targets) {
             const targetWidget = widget(target, name);
@@ -4112,6 +4111,12 @@ function mount(node) {
                 if (!Number.isFinite(parsed)) parsed = Number(fallback);
                 parsed = Math.max(Number(minimum), Math.min(Number(maximum), parsed));
                 if (integer) parsed = Math.trunc(parsed);
+                // Only an explicit default edit rewrites Plan JSON. Branch
+                // restoration uses writePlanSetting while loading its snapshot.
+                if (name === "default_steps") {
+                    setPlanDefaultSteps(state.plan, parsed);
+                    writePlan();
+                }
                 writePlanSetting(name, parsed);
             });
             return control;
@@ -6591,7 +6596,7 @@ function mount(node) {
         if (state.disposed || payload?.owned_by_requester !== true) return;
         const currentRun = runName();
         const history = state.history;
-        const prefix = `${currentRun}\u0000`;
+        const prefix = `${currentRun}\u0000${currentBranch()}\u0000`;
         if (!currentRun || payload.run_name !== currentRun
                 || !history.sceneKey.startsWith(prefix)
                 || !isProjectReadOnlyError(history.error, currentRun)) return;

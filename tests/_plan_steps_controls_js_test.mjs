@@ -57,7 +57,8 @@ control.value = "8"; events.change();
 assert.equal(state.plan.defaults.steps, 8); assert.equal(writes, 1);
 assert.equal(state.plan.shots[0].steps, 12, "No silent overwrite of explicit scene steps");
 
-// Exercise Studio's actual handler and connected-owner mirror.
+// Studio's generic setter is also used by branch restore: it must not rewrite
+// the previously loaded Plan or schedule an editorial save.
 const owner = {widgets:[{name:"default_steps",value:20}]};
 state.plan = structuredClone(document); state.planNode = owner;
 Object.assign(context, {widget:(target,name) => target.widgets.find(w => w.name === name),
@@ -66,8 +67,19 @@ Object.assign(context, {widget:(target,name) => target.widgets.find(w => w.name 
 });
 vm.runInContext(extract(studio, /^    function writePlanSetting\([^]*?^    }/m), context);
 context.writePlanSetting("default_steps", 6);
-assert.equal(state.plan.defaults.steps, 6);
+assert.equal(state.plan.defaults.steps, 20);
 assert.equal(owner.widgets[0].value, 6); assert.equal(node.widgets[0].value, 6);
+assert.equal(state.plan.shots[0].steps, 12);
+
+// The explicit Studio UI edit still updates the JSON default and both widgets.
+Object.assign(context, {element:() => control,
+    value:(_name,fallback) => planDefaultSteps(state.plan, fallback)});
+vm.runInContext(extract(studio, /^        const numberControl = \([^]*?^        };/m) +
+    '\nnumberControl("default_steps", 20, 1, 10000);', context);
+const writesBefore = writes;
+control.value = "6"; events.change();
+assert.equal(state.plan.defaults.steps, 6);
+assert.equal(writes, writesBefore + 1);
 assert.equal(state.plan.shots[0].steps, 12);
 
 // Connected fingerprint sockets must survive the real widget-collapse path.

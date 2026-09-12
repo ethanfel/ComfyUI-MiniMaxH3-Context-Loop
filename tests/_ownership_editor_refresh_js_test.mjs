@@ -33,12 +33,13 @@ for (const filename of ["h3_chain_scene_prompt_editor.js", "h3_chain_rich_scene_
     let run = "project_a";
     const context = vm.createContext({
         state:{disposed:false, active:7, status,
-            history:{sceneKey:"project_a\u0000scene_8", error:denied.message, loadToken:0,
+            history:{sceneKey:"project_a\u0000main\u0000scene_8", error:denied.message, loadToken:0,
                 status, textarea:{value:"Unsubmitted prompt", selectionStart:4, selectionEnd:9}}},
         isProjectReadOnlyError:ownerContext.isProjectReadOnlyError,
         planRunName:() => run, runName:() => run,
-        historySceneKey:(runName, id) => `${runName}\u0000${id}`,
-        historyKey:id => `${run}\u0000${id}`,
+        planBranchId:() => 'main', currentBranch:() => 'main',
+        historySceneKey:(runName, id) => `${runName}\u0000main\u0000${id}`,
+        historyKey:id => `${run}\u0000main\u0000${id}`,
         renderHistory(){},
         historyRequest:async (query, body = null) => {
             requests.push({query, body});

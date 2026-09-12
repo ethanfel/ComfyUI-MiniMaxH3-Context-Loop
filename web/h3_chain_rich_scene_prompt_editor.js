@@ -1,5 +1,6 @@
 import {app} from "/scripts/app.js";
 import {api} from "/scripts/api.js";
+import {workingBranchId} from "./h3_working_branches.mjs?v=0.7.20";
 import {
     projectMutationOptions, subscribeProjectOwnership, isProjectReadOnlyError,
 } from "./h3_project_ownership.mjs?v=0.7.4";
@@ -685,6 +686,7 @@ function mount(node) {
         let live;
         try { live = parsePlanJson(String(state.planWidget.value ?? "")); }
         catch (_error) { return false; }
+        if (workingBranchId(live._branch_id) !== planBranchId()) return false;
         const index = rebaseScenePrompt(state.plan, live, state.active);
         if (index < 0) return false;
         state.active = index;
@@ -792,8 +794,12 @@ function mount(node) {
         }
     }
 
-    function historySceneKey(runName, shotId) {
-        return `${runName}\u0000${shotId}`;
+    function planBranchId() {
+        return workingBranchId(state.plan?._branch_id);
+    }
+
+    function historySceneKey(runName, shotId, branchId = planBranchId()) {
+        return `${runName}\u0000${branchId}\u0000${shotId}`;
     }
 
     function promptUndoForScene(shotId, text, {external = false} = {}) {
@@ -826,7 +832,9 @@ function mount(node) {
     }
 
     async function historyRequest(query = {}, body = null) {
-        const suffix = new URLSearchParams(query).toString();
+        const branchId = workingBranchId(body?.branch_id ?? query.branch_id ?? planBranchId());
+        const suffix = new URLSearchParams({...query, branch_id:branchId}).toString();
+        if (body != null) body = {...body, branch_id:branchId};
         const response = await api.fetchApi(`/minimax_h3_context_loop/prompt-history${suffix ? `?${suffix}` : ""}`,
             body == null ? undefined : await projectMutationOptions(
                 node, body.run_name ?? query.run_name ?? "", {
@@ -944,16 +952,18 @@ function mount(node) {
     }
 
     async function mutateHistoryRevision(action, revisionId, fields = {}) {
-        await flushHistoryDraft();
         const history = state.history;
         const shot = state.plan?.shots?.[state.active];
         if (!shot) return;
         const shotId = String(shot.id || `clip_${String(state.active + 1).padStart(4, "0")}`);
         const runName = planRunName();
         const key = historySceneKey(runName, shotId);
+        const branchId = planBranchId();
+        await flushHistoryDraft();
+        if (history.sceneKey !== key || historySceneKey(planRunName(), shotId) !== key) return;
         try {
             const payload = await historyRequest({}, {
-                action, run_name:runName, scene_id:shotId, revision:revisionId, ...fields,
+                action, run_name:runName, branch_id:branchId, scene_id:shotId, revision:revisionId, ...fields,
             });
             if (history.sceneKey !== key) return;
             history.data = payload.history;
@@ -1004,7 +1014,7 @@ function mount(node) {
         const runName = planRunName();
         if (!runName) return;
         const history = state.history;
-        history.pendingDraft = {key:historySceneKey(runName, shotId), runName, shotId, prompt};
+        history.pendingDraft = {key:historySceneKey(runName, shotId), runName, branchId:planBranchId(), shotId, prompt};
         if (history.saveTimer != null) window.clearTimeout(history.saveTimer);
         history.saveTimer = window.setTimeout(() => { history.saveTimer = null; void flushHistoryDraft(); }, 650);
     }
@@ -1022,7 +1032,7 @@ function mount(node) {
         if (history.loadPromise && history.sceneKey === draft.key) await history.loadPromise;
         const parent = history.sceneKey === draft.key ? history.revisionId : null;
         const request = historyRequest({}, {action:"save", run_name:draft.runName, scene_id:draft.shotId,
-            prompt:draft.prompt, parent_revision:parent});
+            branch_id:draft.branchId, prompt:draft.prompt, parent_revision:parent});
         history.savePromise = request;
         try {
             const payload = await request;
@@ -1041,13 +1051,16 @@ function mount(node) {
     }
 
     async function selectHistoryRevision(revisionId) {
-        await flushHistoryDraft();
         const shot = state.plan?.shots?.[state.active];
         if (!shot || !state.editor) return;
         const shotId = String(shot.id || `clip_${String(state.active + 1).padStart(4, "0")}`);
-        const key = historySceneKey(planRunName(), shotId);
+        const runName = planRunName();
+        const key = historySceneKey(runName, shotId);
+        const branchId = planBranchId();
+        await flushHistoryDraft();
+        if (state.history.sceneKey !== key || historySceneKey(planRunName(), shotId) !== key) return;
         try {
-            const payload = await historyRequest({}, {action:"activate", run_name:planRunName(), scene_id:shotId, revision:revisionId});
+            const payload = await historyRequest({}, {action:"activate", run_name:runName, branch_id:branchId, scene_id:shotId, revision:revisionId});
             if (state.history.sceneKey !== key) return;
             state.history.data = payload.history;
             state.history.revisionId = payload.revision.id;
@@ -2329,11 +2342,13 @@ function mount(node) {
         const values = event.detail?.output?.h3_chain_active_scene;
         const scene = Array.isArray(values) ? values.at(-1) : null;
         if (!scene || String(scene.run_name ?? "") !== planRunName()) return;
+        if (workingBranchId(scene._branch_id) !== planBranchId()) return;
         const shot = state.plan?.shots?.[state.active];
         const shotId = String(shot?.id ?? "");
         if (!shotId || String(scene.shot_id ?? "") !== shotId) return;
+        const key = historySceneKey(planRunName(), shotId);
         window.setTimeout(() => {
-            if (state.history.sceneKey === historySceneKey(planRunName(), shotId)) {
+            if (state.history.sceneKey === key && historySceneKey(planRunName(), shotId) === key) {
                 void loadHistory(shotId, promptValueToText(shot.prompt), false);
             }
         }, 50);
@@ -2359,7 +2374,7 @@ function mount(node) {
     globalThis.addEventListener?.(
         PROJECT_ASSET_CATALOG_CHANGED_EVENT, onProjectAssetCatalogChanged,
     );
-    node._h3FlushProjectWrites = async (expectedRun = runName()) => {
+    node._h3FlushProjectWrites = async (expectedRun = planRunName()) => {
         const run = String(expectedRun ?? "").trim();
         const draftRun = String(state.history.pendingDraft?.runName ?? "");
         if (!run || !draftRun || draftRun === run) await flushHistoryDraft();
@@ -2369,7 +2384,7 @@ function mount(node) {
         if (state.disposed || payload?.owned_by_requester !== true) return;
         const currentRun = planRunName();
         const history = state.history;
-        const prefix = `${currentRun}\u0000`;
+        const prefix = `${currentRun}\u0000${planBranchId()}\u0000`;
         if (!currentRun || payload.run_name !== currentRun
                 || !history.sceneKey.startsWith(prefix)
                 || !isProjectReadOnlyError(history.error, currentRun)) return;
