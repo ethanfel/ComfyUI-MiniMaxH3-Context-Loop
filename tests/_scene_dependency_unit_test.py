@@ -477,6 +477,7 @@ try:
     assert selected_state["previous_frames"] is source_frames
     assert selected_state["previous_latent"]["samples"][0] is source_video
     assert selected_state["previous_latent"]["samples"][1] is immediate_audio
+    assert selected_state["_visual_context_exact_prefix"] is False
     assert [item["index"] for item in selected_state["segments"]] == [1, 2, 3]
     assert nonlinear_state["previous_latent"]["samples"][0] is immediate_video
     assert chain._visual_context_state(nonlinear_state) is selected_state
@@ -532,6 +533,111 @@ try:
     assert recovered.shape[0] == 5
     assert torch.equal(window_vae.decoded, selected_video)
     assert windowed_state["previous_latent"]["samples"][1] is immediate_audio
+finally:
+    chain._st_load = original_loader
+    chain._streams_from_latent = original_streams
+
+# A valid editorial end can be on any native prefix phase, even though the
+# reusable window inside it must still start/end on the stricter crop lattice.
+# Reproduce scene 16: 153 delivered + 5 context, using scene 15 trimmed from
+# 272 delivered frames to 234 (239 raw / 71 latent steps).
+trimmed_builder_plan = chain._normalize_plan(
+    json.dumps({"shots": [
+        {"id": "scene_%d" % scene, "prompt": "scene %d" % scene,
+         "length": 158 if scene == 16 else 277,
+         "audio_context_length": 0,
+         **({"visual_context_blocks": [{"source": "scene_15", "frames": 5}]}
+            if scene == 16 else {})}
+        for scene in range(1, 17)
+    ]}),
+    "trimmed-builder-test", 960, 544, 5, "video", "head", "disabled",
+    "generated_audio", 0, 1.0, 20, 11, 18, "body:auto:v1", 0,
+    "audio_feathered_av")
+assert trimmed_builder_plan["shots"][15]["delivered_frames"] == 153
+trimmed_source = {
+    "index": 15, "id": "scene_15", "raw_frames": 277,
+    "delivered_frames": 272, "checkpoint": "scene_15.safetensors",
+}
+trim_video = torch.arange(82, dtype=torch.float32).reshape(
+    1, 1, 82, 1, 1).expand(1, 24, 82, 34, 60).clone()
+trim_audio = torch.arange(462, dtype=torch.float32).reshape(
+    1, 1, 1, 462).expand(1, 32, 2, 462).clone()
+trim_frames = torch.zeros(39, 2, 2, 3)
+chain._streams_from_latent = lambda value: value["samples"]
+try:
+    # Cover all five native prefix phases and the unchanged full-length path,
+    # with both legacy unbatched and current batched checkpoint latents.
+    for unbatched in (False, True):
+        chain._st_load = lambda _path: {
+            "video": trim_video[0] if unbatched else trim_video,
+            "audio": trim_audio, "context_frames": trim_frames,
+        }
+        for out_frames, expected_steps in (
+                (234, 71), (204, 62), (216, 65), (225, 68),
+                (246, 74), (272, 82)):
+            editorial = {"trims": [{"scene_id": "scene_15",
+                                     "out_frame": out_frames}]}
+            source = chain._editorial_trimmed_segment(trimmed_source, editorial)
+            assert source.get("_editorial_video_steps", 82) == expected_steps
+            selected = chain._visual_context_state({
+                "plan": trimmed_builder_plan, "index": 16,
+                "segments": [source],
+            })
+            video, audio_latent = selected["previous_latent"]["samples"]
+            assert selected["_visual_context_exact_prefix"] is True
+            assert tuple(video.shape) == (1, 24, 2, 34, 60)
+            start = selected["_visual_context_resolved_start_frame"]
+            assert start + 5 <= out_frames
+            first_step = chain._h3_native_frame_boundary_step(start + 5)
+            assert torch.equal(video, trim_video[:, :, first_step:first_step + 2])
+            expected_audio_steps = source.get("_editorial_audio_steps", 462)
+            assert torch.equal(audio_latent, trim_audio[..., :expected_audio_steps])
+            if out_frames == 234:
+                assert start == 216
+                assert first_step == 65
+                # The old saved RGB tail cannot cover 216..220: decode only
+                # the chosen latent crop, never re-encode the original movie.
+                assert selected["previous_frames"].shape[0] == 0
+                decoder = WindowVAE()
+                assert chain._previous_context_frames(selected, decoder, 5).shape[0] == 5
+                assert torch.equal(decoder.decoded, trim_video[:, :, 65:67])
+
+    # Shape and crop-alignment validation must not be relaxed by the fix.
+    chain._st_load = lambda _path: {
+        "video": trim_video[:, :, :-1], "audio": trim_audio,
+        "context_frames": trim_frames,
+    }
+    try:
+        chain._visual_context_state({
+            "plan": trimmed_builder_plan, "index": 16,
+            "segments": [trimmed_source],
+        })
+    except ValueError as exc:
+        assert "cannot map frames" in str(exc)
+    else:
+        raise AssertionError("malformed checkpoint shape was accepted")
+    chain._st_load = lambda _path: {
+        "video": trim_video, "audio": trim_audio, "context_frames": trim_frames,
+    }
+    invalid_plan = json.loads(json.dumps(trimmed_builder_plan))
+    invalid_plan["shots"][15]["visual_context_blocks"][0]["start_frame"] = 217
+    try:
+        chain._visual_context_state({
+            "plan": invalid_plan, "index": 16,
+            "segments": [chain._editorial_trimmed_segment(trimmed_source,
+                {"trims": [{"scene_id": "scene_15", "out_frame": 234}]})],
+        })
+    except ValueError as exc:
+        assert "native" in str(exc)
+    else:
+        raise AssertionError("misaligned context crop was accepted")
+    assert trimmed_source["raw_frames"] == 277
+    assert trimmed_source["delivered_frames"] == 272
+    assert "_editorial_out_frames" not in trimmed_source
+    assert torch.equal(trim_video, torch.arange(82).reshape(
+        1, 1, 82, 1, 1).expand_as(trim_video))
+    assert torch.equal(trim_audio, torch.arange(462).reshape(
+        1, 1, 1, 462).expand_as(trim_audio))
 finally:
     chain._st_load = original_loader
     chain._streams_from_latent = original_streams

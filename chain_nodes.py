@@ -10954,7 +10954,9 @@ def _visual_context_state(
         end_step = _h3_native_frame_boundary_step(raw_start + wanted)
         target_start = _h3_native_frame_boundary_step(prefix_frames)
         target_end = _h3_native_frame_boundary_step(prefix_frames + wanted)
-        raw_end = _h3_native_frame_boundary_step(raw_frames)
+        # Editorial end cuts can stop at any native prefix boundary. Only
+        # the reusable crop above must match the stricter context phases.
+        raw_end = _h3_prefix_frame_boundary_step(raw_frames)
         if (start_step is None or end_step is None
                 or target_start is None or target_end is None
                 or raw_end is None or int(video.shape[2]) != raw_end
@@ -11115,9 +11117,9 @@ def _visual_context_state(
             last_block["start_frame"]),
         "_visual_context_resolved_lead_start_frame": int(
             lead_block["start_frame"] if lead_block is not None else -1),
-        "_visual_context_exact_prefix": bool(
-            len(block_runtime) > 1
-            or any(block["authored_start"] for block in block_runtime)),
+        # A single builder block with an automatic start is also a cropped
+        # prefix, not a full source clip, when recovering missing RGB frames.
+        "_visual_context_exact_prefix": not legacy_whole_source,
         "visual_context_source_segment": last_block["segment"],
         "visual_context_block_segments": block_segments,
         **({"visual_context_lead_segment": lead_block["segment"]}
