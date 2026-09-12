@@ -5,7 +5,6 @@ import importlib.util
 import json
 import pathlib
 import os
-import subprocess
 import sys
 import tempfile
 from unittest import TestCase
@@ -158,89 +157,6 @@ def check_partial_assembly(chain, upscale, partial):
     assert pathlib.Path(result["result"][0]).is_file()
     assert "/chapters/02_second/" in result["result"][0].replace("\\", "/")
     assert partial == before and partial_path.read_bytes() == saved_partial
-
-
-def check_processing_workflow_metadata(chain, upscale, base_state, images):
-    """Real save/resume/MP4 assembly retains the graph that processed each clip."""
-    state = dict(base_state, profile="workflow-provenance", segments=[])
-    source = chain._json_document(state["source_manifest"])
-    state["source_manifest"] = source
-    archive = pathlib.Path(chain._output_root()) / "source-workflow.json"
-    source_workflow = {"nodes": [{"id": 1, "type": "OriginalGeneration"}]}
-    chain._atomic_json(str(archive), source_workflow)
-    source["archives"] = {"workflow": chain._relative_output_path(str(archive))}
-    state["source_manifest_hash"] = upscale._source_hash(source)
-    workflow = {"nodes": [{"id": 5, "type": "DLSS5", "widgets_values": [2, "quality"]}]}
-    api = {"5": {"class_type": "DLSS5", "inputs": {"scale": 2, "preset": "quality"}}}
-    saver = upscale.MiniMaxH3ChainUpscaleSegmentSave()
-    hidden = saver.INPUT_TYPES()["hidden"]
-    assert hidden["prompt"] == "PROMPT" and hidden["extra_pnginfo"] == "EXTRA_PNGINFO"
-    first = saver.save(state, images, prompt=api,
-                       extra_pnginfo={"workflow": workflow})["result"][0]
-
-    def tags(path):
-        return json.loads(subprocess.check_output([
-            "ffprobe", "-v", "error", "-show_entries", "format_tags", "-of", "json",
-            str(path)], text=True))["format"]["tags"]
-
-    segment_tags = tags(chain._absolute_output_path(first["segment"]))
-    assert json.loads(segment_tags["workflow"]) == workflow
-    assert json.loads(segment_tags["prompt"]) == api
-    checkpoint_path = pathlib.Path(chain._absolute_output_path(first["revision_metadata"]))
-    original_checkpoint = checkpoint_path.read_bytes()
-    checkpoint = json.loads(original_checkpoint)
-    assert checkpoint["execution"] == {"workflow": workflow, "api_prompt": api}
-    assert first["execution_hash"] == chain._fingerprint(checkpoint["execution"])
-
-    partial = upscale._upscale_manifest(state, [first], complete=False)
-    converted = upscale._assembly_manifest(partial, partial["segments"])
-    assert "workflow" not in converted["archives"]
-    assert converted["source_archives"] == source["archives"]
-    partial_tags = chain._manifest_media_metadata(converted)
-    assert json.loads(partial_tags["workflow"]) == workflow
-    assert json.loads(partial_tags["h3_source_workflow"]) == source_workflow
-
-    # A subsequent queue changes actual node values without changing recipe_json.
-    # Resume must preserve scene 1's old workflow, not substitute scene 2's graph.
-    config = state["profile_config"]
-    resumed = upscale.MiniMaxH3ChainUpscaleAdapter().adapt(
-        source, state["profile"], config["backend"], json.dumps(config["recipe"]),
-        2, 0, config["save_latent"], config["segment_crf"])[1]
-    assert resumed["segments"][0]["execution_hash"] == first["execution_hash"]
-    api2 = chain._json_document(api)
-    api2["5"]["inputs"]["preset"] = "balanced"
-    workflow2 = chain._json_document(workflow)
-    workflow2["nodes"][0]["widgets_values"][1] = "balanced"
-    frames = torch.zeros((source["segments"][1]["raw_frames"], *images.shape[1:]))
-    second = saver.save(resumed, frames, prompt=api2,
-                        extra_pnginfo={"workflow": workflow2})["result"][0]
-    manifest = upscale._upscale_manifest(resumed, [first, second], complete=True)
-    final = chain.MiniMaxH3ChainAssemble().assemble(manifest, "none", "provenance", 96)
-    final_path = pathlib.Path(final["result"][0])
-    final_tags = tags(final_path)
-    assert json.loads(final_tags["workflow"]) == workflow2
-    assert json.loads(final_tags["prompt"]) == api2
-    assert json.loads(final_tags["h3_source_workflow"]) == source_workflow
-    table = json.loads(final_tags["h3_processing_workflows"])
-    assert table["standard_tags_scene"] == 2
-    assert table["executions"][first["execution_hash"]]["api_prompt"] == api
-    assert table["executions"][second["execution_hash"]]["api_prompt"] == api2
-    assert checkpoint_path.read_bytes() == original_checkpoint
-    assert json.loads(archive.read_text()) == source_workflow
-    sidecar = json.loads(final_path.with_suffix(".json").read_text())
-    assert sidecar["source_archives"] == source["archives"]
-    assert sidecar["processing_executions"][0]["execution_hash"] == first["execution_hash"]
-
-    # Legacy data cannot recover processing settings: never mislabel the source.
-    legacy = chain._json_document(converted)
-    legacy["segments"][0].pop("execution_hash")
-    legacy["archives"] = legacy.pop("source_archives")
-    legacy_tags = chain._manifest_media_metadata(legacy)
-    assert "workflow" not in legacy_tags and "prompt" not in legacy_tags
-    assert json.loads(legacy_tags["h3_source_workflow"]) == source_workflow
-    # Original generation exports keep their existing recovery behavior.
-    original_tags = chain._manifest_media_metadata(source)
-    assert json.loads(original_tags["workflow"]) == source_workflow
 
 
 def main():
@@ -1022,7 +938,6 @@ def main():
         assert "source prefix protected" in fallback_prepared[3]
 
         hq_images = torch.zeros((5, 64, 64, 3), dtype=torch.float32)
-        check_processing_workflow_metadata(chain, upscale, upscale_state, hq_images)
         saved_result = upscale.MiniMaxH3ChainUpscaleSegmentSave().save(
             upscale_state, hq_images)
         hq_segment = saved_result["result"][0]

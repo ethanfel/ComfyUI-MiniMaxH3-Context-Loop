@@ -111,8 +111,7 @@ def _settings(chain, root, source, lineage, metadata, overrides=None):
     # can supply generation settings; never run any node from that document.
     if address:
         path = _inside(root, Path(chain._absolute_output_path(address)))
-        archive_root = Path(chain._absolute_output_path(str(root / "recovery_archives")))
-        if path.is_relative_to(archive_root) and path.is_file():
+        if path.is_relative_to(root.resolve() / "recovery_archives") and path.is_file():
             prompt = chain._read_json(str(path))
             recipe = _recipe_settings(prompt, settings)
             settings.update(recipe)
@@ -165,25 +164,15 @@ def _settings(chain, root, source, lineage, metadata, overrides=None):
 
 def _asset_index(chain, root, run):
     """Index only this project's archives/input copies, not other projects."""
-    if __package__:
-        from .storage_runtime import current_runtime
-        from .storage_project import payload_catalog
-    else:
-        from storage_runtime import current_runtime
-        from storage_project import payload_catalog
-    runtime = current_runtime(chain._output_root(), run)
     roots = [root / "project_assets", root / "references",
              Path(chain._input_root()) / "h3_projects" / run]
     records = []
     for base in roots:
-        indexed = runtime is not None and base.is_relative_to(root)
         _inside(root if base.is_relative_to(root) else Path(chain._input_root()), base)
-        if not indexed and not base.is_dir():
+        if not base.is_dir():
             continue
         for name in ("catalog.json", "manifest.json"):
             path = _inside(base, base / name)
-            if indexed:
-                path = runtime.reader.path(path)
             if not path.is_file():
                 continue
             document = chain._read_json(str(path))
@@ -194,21 +183,13 @@ def _asset_index(chain, root, run):
                         relative = Path(value["relative_path"])
                         # RunAssetStore paths include the leading references/.
                         parent = root if name == "manifest.json" else base
-                        media = _inside(base, parent / relative)
-                        if indexed:
-                            media = runtime.reader.path(media)
-                        records.append((value["sha256"], media, value))
+                        records.append((value["sha256"], _inside(base, parent / relative), value))
                     for item in value.values():
                         collect(item)
                 elif isinstance(value, list):
                     for item in value:
                         collect(item)
             collect(document)
-    if runtime is not None:
-        for address, record in payload_catalog(runtime.base).items():
-            if address.startswith(('project_assets/', 'references/')):
-                records.append((record['file']['sha256'],
-                    runtime.reader.path(root/address), {}))
     return roots, records
 
 
@@ -254,8 +235,7 @@ def _timing_state(chain, root, source, metadata, scene, length):
     if not address:
         raise ReferenceRecoveryUnavailable("Timed references need this take's saved Plan timing snapshot.")
     path = _inside(root, Path(chain._absolute_output_path(address)))
-    archive_root = Path(chain._absolute_output_path(str(root / "recovery_archives")))
-    if not path.is_relative_to(archive_root) or not path.is_file():
+    if not path.is_relative_to(root.resolve() / "recovery_archives") or not path.is_file():
         raise ReferenceRecoveryUnavailable("Timed references need an immutable Plan snapshot, not today's Plan.")
     plan = chain._read_json(str(path))
     shots = plan.get("shots") or []
@@ -288,22 +268,8 @@ def recover_reference_cache(chain, source, manifest, scene_count, video_vae, aud
                 "scene": scene, "scene_count": scene_count, "prompt": prompt,
                 "width": width, "height": height, "length": length, "settings": settings}
     key = chain._fingerprint(identity)
-    # Rebuilt conditioning is disposable, not a new generation checkpoint.
-    # On organized projects keep it in the existing content-keyed global cache;
-    # Segment Save will adopt any cache actually used by a new generation in
-    # that scene's transaction. Never publish an unpinned legacy run directory.
-    if __package__:
-        from .storage_runtime import current_runtime
-    else:
-        from storage_runtime import current_runtime
-    organized = current_runtime(chain._output_root(), run) is not None
-    if organized:
-        cached = chain._find_reference_cache(key, scene, scene_count, prompt, width, height, length)
-        if cached is not None and not cache_payload_missing(chain, cached):
-            cached = chain._load_reference_cache_descriptor(chain._reference_cache_descriptor(cached))
-            return cached, "reused references rebuilt from saved media"
     pointer = _inside(root, root / "reference_cache" / ("rebuilt_" + key + ".json"))
-    if not organized and pointer.is_file():
+    if pointer.is_file():
         saved = chain._read_json(str(pointer))
         if saved.get("identity") != identity:
             raise ReferenceRecoveryUnavailable("Rebuilt reference cache identity changed.")
@@ -390,10 +356,9 @@ def recover_reference_cache(chain, source, manifest, scene_count, video_vae, aud
         vae=video_vae, audio_vae=audio_vae, pictures=pictures, videos=videos, audios=audios,
         semantic_presentation=presentation)
     cached = chain._find_reference_cache(key, scene, scene_count, prompt, width, height, length)
-    if not organized:
-        cached = chain._adopt_reference_cache_for_run({"run_name": run, "shots": [{}] * scene_count}, cached)
-        with chain.checkpoint_run_lock(chain._output_root(), run):
-            chain._atomic_json(str(pointer), {"identity": identity, "reference_cache": chain._reference_cache_descriptor(cached)})
+    cached = chain._adopt_reference_cache_for_run({"run_name": run, "shots": [{}] * scene_count}, cached)
+    with chain.checkpoint_run_lock(chain._output_root(), run):
+        chain._atomic_json(str(pointer), {"identity": identity, "reference_cache": chain._reference_cache_descriptor(cached)})
     detail = "rebuilt references from verified saved media (no scene regeneration)"
     if defaults:
         detail += "; legacy presentation defaults: " + ", ".join("%s=%s" % (key, settings[key]) for key in defaults)

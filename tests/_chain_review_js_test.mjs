@@ -410,9 +410,8 @@ assert.match(reviewSource, /planNode, policyInputs, inputs/);
 assert.match(reviewSource, /refreshRestoredPlanEditors\(planNode\)/);
 assert.match(
     backendSource,
-    /policy_inputs = archive_policy_inputs\(\{"compatibility": compatibility\}\)/,
+    /"policy_inputs": archive_policy_inputs\(\{\s*"compatibility": compatibility/,
 );
-assert.match(backendSource, /"policy_inputs": policy_inputs/);
 assert.match(checkpointLoadSource, /if \(selections\.length\)/);
 assert.ok(
     checkpointLoadSource.indexOf("restoreSavedPlanInputs")

@@ -262,11 +262,6 @@ def main():
         chain._PENDING_REVIEWS.clear()
 
         class FakeRequest:
-            method = "POST"
-            query = {}
-            headers = {}
-            content_type = "application/json"
-
             async def json(self):
                 return {"token": "tok-restart", "action": "approve"}
 
@@ -292,7 +287,7 @@ def main():
             assert decision.status == 409
             assert json.loads(decision.text)["recovery"] is True
 
-        asyncio.run(scenario())
+        asyncio.new_event_loop().run_until_complete(scenario())
         # After the review is decided, the restart listing is empty again.
         review_inv.mark_review_snapshot_decided(
             run_dir, "tok-restart", "approve", 11.0)
@@ -304,7 +299,7 @@ def main():
                        listing["reviews"]), \
                 "a decided review must not resurface on restart"
 
-        asyncio.run(decided_scenario())
+        asyncio.new_event_loop().run_until_complete(decided_scenario())
 
     # Live candidate-batch state takes precedence over a same-token durable
     # recovery snapshot, while unrelated durable recovery remains visible.
@@ -351,7 +346,7 @@ def main():
                 assert len(recovered) == 1 and recovered[0]["durable"] is True
                 assert recovered[0]["actionable"] is False
 
-        asyncio.run(live_precedence_scenario())
+        asyncio.new_event_loop().run_until_complete(live_precedence_scenario())
         chain._ACTIVE_CANDIDATE_BATCHES.clear()
 
     # Accepting a scene retires only older pending recovery snapshots for that
@@ -392,7 +387,7 @@ def main():
             tokens = {item["token"] for item in json.loads(response.text)["reviews"]}
             assert "tok-old-1" not in tokens
             assert "tok-scene-2" in tokens and "tok-other" in tokens
-        asyncio.run(retired_inventory_scenario())
+        asyncio.new_event_loop().run_until_complete(retired_inventory_scenario())
 
     print("M5 durable review: saved candidates survive restart, approve "
           "creates next_scene handoff, approve & stop queues nothing, "

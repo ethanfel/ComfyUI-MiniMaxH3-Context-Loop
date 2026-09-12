@@ -1,27 +1,8 @@
 # Chain storage simplification and compatibility plan
 
-Status: read-only inventory delivered; legacy path centralization, organized
-layout policy and a [copy-only relocation bridge](STORAGE_BRIDGE_REHEARSAL.md)
-implemented for rehearsals, including opt-in organized payload reservations,
-save/export fencing, reviewed workflow-copy handling and independent legacy
-recovery of post-relocation work. Legacy control schemas and paths remain.
-An isolated [control-state transaction rehearsal](STORAGE_CONTROL_STATE.md) now
-versions exact documents under one atomic root. Actual branch load/save/fork/
-default operations can use an explicit copy-only document port. A
-[combined-store rehearsal](STORAGE_PROJECT_REHEARSAL.md) has now joined all
-copied controls/media, tested pinned graph/catalogue reads, and recovered new
-work to an independent V1 copy. Normal UI/node activation and remaining feature
-transactions are outstanding. Real CIFS testing found a pointer-replacement
-failure: that mount must not be qualified from local filesystem results.
-An opt-in [immutable commit log](STORAGE_COMMIT_LOG.md) now passes actual server
-CIFS tests and full-copy state/media checks. Copy migration/recovery journals
-now use that protocol when explicitly selected, with interrupted-copy and
-failed-marker recovery tests. Remaining runtime boundaries and production
-preview/quiesce/cutover still need integration.
-**No production V2 activation or migration yet**.
-Date: 2026-09-11. Implementation baseline: nightly `326453d`.
+Status: proposed implementation plan; **no runtime changes or migration yet**.
+Date: 2026-09-10. Baseline: nightly `62948e3`.
 Evidence: [chain storage audit](STORAGE_LAYOUT_AUDIT.md).
-Current layout contract: [organized storage layout](STORAGE_LAYOUT_V2.md).
 
 ## 1. Objective and release policy
 
@@ -125,67 +106,45 @@ Branch, chapter and profile labels are metadata. Changing a label does not move
 media. Original, ALT, DeRoPE, latent-upscale and pixel-upscale takes use the same
 storage service, but retain distinct semantics and capabilities.
 
-### 3.2 Organized physical layout
+### 3.2 Proposed physical layout
 
 ```text
 <existing-project-folder>/
   storage.json                       # small atomic storage-generation pointer
-  media/
-    generation/<storage-id>/          # video/checkpoint/audio/overlap roles
-    alternate/<storage-id>/           # ALT picture; original audio stays shared
-    derope/<pass-id>/<storage-id>/
-    latent_upscale/<pass-id>/<storage-id>/
-    pixel_upscale/<pass-id>/<storage-id>/
-    video_refine/<pass-id>/<storage-id>/
-    custom/<pass-id>/<storage-id>/
-  exports/
-    png/<export-id>/                  # export.json + frame_00000001.png, etc.
-    video/<export-id>/                # export.json + video.mp4/audio.wav/subtitles.srt
-  project/
-    takes/<storage-id>.json           # immutable descriptor and original identity
-    takes/<storage-id>.prompt.txt
-    passes/<pass-id>/                 # immutable recipe/source and resume states
-    cuts/<cut-id>.json                # immutable chapter/project delivery snapshots
-    assets/                          # essential imported reference media
-    reference_cache/                 # essential saved conditioning objects
-    recovery/<snapshot-id>/           # original recovery documents, byte preserved
-    history/                         # prompt/branch authoring history and indexes
-    reviews/                         # durable review state, not a preview cache
+  takes/<storage-id>/
+    take.json                        # immutable descriptor and original identity
+    video.mp4                        # optional artifact roles
+    checkpoint.safetensors           # capabilities say full AV / audio / tail etc.
+    audio.wav
+    overlap.mp4
+    prompt.txt
+  passes/<pass-id>/
+    pass.json                        # immutable recipe/source contract
+    states/<state-id>.json            # immutable result/resume snapshots
+  cuts/<cut-id>.json                  # immutable chapter/project delivery snapshot
+  exports/<export-id>/
+    export.json                      # media inventory; updates are transactional
+    video.mp4                        # when this is a video delivery
+    frames/frame_00000001.png         # when this is a PNG delivery
+    audio.wav
+    subtitles.srt
+  recovery/<snapshot-id>/             # original recovery documents, byte preserved
+  assets/                            # imported media; staged adoption, not a purge
+  reference_cache/                    # keep existing content-object support
+  cache/                             # only genuinely rebuildable previews
+  state/
     roots/<generation-id>.json        # immutable state/index root
     branches/<branch-id>/<state-id>.json
     aliases/<map-id>.json             # durable compatibility maps
     legacy/<document-id>.json         # preserved historical document bytes
+    history/                         # prompt/branch authoring history and indexes
     jobs/<job-id>/                    # migration/publication journals and staging
     tombstones/                      # retirement/deletion receipts
-    optional/                        # only genuinely disposable derived data
-      previews/
-      thumbnails/
-      diagnostics/
 ```
 
-The three main areas are **media, exports and project data**. Do not create empty
-stage/support folders preemptively. Optional features do not scatter folders in
-the project root. Recovery, references and saved conditioning are supporting data
-but **not disposable**; they must not move into `project/optional`.
-
-This supersedes the audit's initial flat `takes/passes/cuts/state` sketch. New
-branch state goes under `project/branches`, not the occupied legacy
-`branches/main.json`. `storage.json` is separate from authored Plan JSON. Do not
-add storage settings to the Plan schema.
-
-Media roles have fixed leaf names (`video.mp4`, `checkpoint.safetensors`,
-`audio.wav`, `overlap.mp4`) only when that take actually owns those artifacts.
-Capabilities, not filename presence, determine full-latent availability. Stage
-comes from recorded generation/processing semantics, never from a profile label.
-Keep outputs of a processing pass together; a later pass referencing an earlier
-take does not copy it into its own folder. A combined upscale/DeRoPE pass retains
-both operations in its recipe even though its primary stage is DeRoPE.
-
-Whole-video workflows using third-party savers need an explicit export boundary.
-For example, the shipped SeedVR2 full-chain workflow does not currently publish
-H3 per-scene processing checkpoints. Do not pretend it has scene-level resume or
-reroute arbitrary third-party saver paths implicitly. See the layout contract's
-workflow coverage table.
+This refines the audit's sketch: new branch state goes under `state/branches`,
+not the already occupied legacy `branches/main.json`. `storage.json` is separate
+from authored Plan JSON. Do not add storage settings to the Plan schema.
 
 Existing root names used by unknown integrations are never overwritten. Reserve
 and validate new namespaces; collision is a preflight blocker. Initial upgrades
@@ -202,8 +161,8 @@ An artifact may be owned by one take and referenced by others. The service must
 resolve that ownership without copying the payload into every take directory.
 General content deduplication is deferred; preserve known existing sharing first.
 
-For reference, `<project>/exports/png/<32-hex>/frame_00000001.png` removes branch,
-chapter, profile and redundant `frames` folders from PNG delivery paths. Enforce a configurable
+For reference: `<project>/takes/<32-hex>/checkpoint.safetensors` removes branch,
+chapter and profile names from the physical take path. Enforce a configurable
 full-path budget, including staging suffixes and the actual output root; report
 over-budget paths before writing. Do not silently truncate identity keys or user
 labels. Human-readable naming remains available for explicit external deliveries.
@@ -235,7 +194,6 @@ Proposed modules and responsibilities; names can be finalized in the schema PR:
 
 | Module | Responsibility |
 |---|---|
-| `storage_layout.py` | Pure organized-layout paths, stage/workflow routing policy and full-path budgets; no activation or writes |
 | `storage_contract.py` | Versioned record schemas, IDs, artifact roles and capabilities |
 | `storage_legacy.py` | Existing layout discovery and exact legacy-document adapters |
 | `storage_resolver.py` | Validated logical/legacy lookup to a physical file |
@@ -417,12 +375,6 @@ not decode media. Two overlapping assembly jobs cannot delete each other's
 temporary files. No storage migration is included.
 
 ### P2 — Centralize existing storage without moving it
-
-In progress: `storage_legacy.py` now supplies generation/pointer/archive/chapter
-paths, processing profile directories and both PNG export roots. Processing
-catalogue/deletion directory lookups and DeRoPE profile validation share the
-legacy boundary. `storage_layout.py` defines the organized physical policy, but
-does not activate it. See [implementation scope](STORAGE_LAYOUT_V2.md).
 
 Tasks:
 
@@ -648,11 +600,8 @@ do not silently switch to an in-place destructive move.
 ### Step 5 — Atomic cutover
 
 - Under the maintenance fence, check ownership, project epoch and inventory
-  again. Publish one authority transition to the prepared immutable state root.
-  For the tested CIFS mount this must use a write-once bootstrap plus immutable
-  commit records; never replace an occupied `storage.json`. Migration gate and
-  journal transitions must use the same no-overwrite discipline.
-- Use flush/fsync/publication appropriate to the tested filesystem; do not
+  again. Publish one `storage.json` pointer to the prepared immutable state root.
+- Use flush/fsync/atomic replacement appropriate to the tested filesystem; do not
   claim durability based only on a successful rename. A failed acknowledgement
   leaves an uncertain commit requiring reread and reconciliation.
 - Before this commit, V1 is authority; after it, V2 is authority. Never allow
@@ -712,20 +661,6 @@ its exclusively owned PNGs, including edited pixels; migration itself never
 performs that deletion. Shared or legacy-unattributed frames remain protected.
 Tombstones cannot be replayed as copy recipes or resurrect retired exports.
 
-For explicit catalogue cleanup of an owned payload that is already missing, or
-an exclusively owned PNG that was edited, record its exact observed condition in
-the quarantine receipt alongside the original accepted descriptor/hash. Recheck
-both under the publication fence. Do not normalize the output hash, accept an
-unreadable file as missing, or extend PNG edit permission to arbitrary model or
-checkpoint bytes. Such cleanup removes the current catalogue reference; it does
-not physically purge data. Undo restores the pre-deletion catalogue and observed
-condition: edited bytes stay edited and missing bytes remain missing. Surface
-that limitation in preview/undo results, and reject undo if the retained physical
-state changed again. Ordinary integrity verification must still report the
-original mismatch after undo. A previously missing metadata control cannot be
-used to infer ownership; it must first be recovered or handled by a separately
-validated repair operation.
-
 ## 10. Release gates and operational validation
 
 Before enabling existing-project migration:
@@ -763,14 +698,13 @@ The project is not complete at “new folders created.” It is complete when:
 6. Users can inspect ownership/retention and find deliverables without decoding
    branch/chapter/profile directory conventions.
 
-## 11. Implementation status and next gates
+## 11. First implementation batch
 
-The **P0 + read-only P1 slice** delivered an initial fixture, Storage Inspector,
-inventory format and consumer checklist in `326453d`. The organized physical
-policy and initial P2 adapters follow without changing existing paths.
+Start with **P0 + the read-only portion of P1**, followed by the isolated assembly
+staging fix. Deliver the fixture suite, Storage Inspector, before/after inventory
+format and consumer checklist. Then implement P2's path adapter before designing
+any migration UI that can write.
 
-Finish P2's remaining consumers and the isolated P1 assembly-staging fix. Complete
-the fixture matrix and versioned/alias/write-fencing gates before enabling fresh
-V2 projects, followed by explicit existing-folder migration. Do not infer that
-these gates are complete from passing legacy regressions. No automatic migration
-or cleanup is enabled by either foundation batch.
+This order provides useful clarity immediately while keeping existing folders
+unchanged. No migrator, cleanup or new-format writer should be enabled until its
+preceding compatibility gates are demonstrated.

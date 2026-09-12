@@ -3,7 +3,6 @@
 import assert from "node:assert/strict";
 import {
     orderedPromptRevisions,
-    promptHistoryOperationId,
     promptRevisionHelp,
     promptRevisionLabel,
     promptRevisionNavigation,
@@ -20,10 +19,6 @@ const history = {
         {id: "e", parent_id: "c", archived_at: "2026-08-12T12:05:00Z", created_at: "2026-08-12T12:04:00Z"},
     ],
 };
-
-assert.equal(promptHistoryOperationId({getRandomValues: bytes => bytes.fill(7)}), "07".repeat(16));
-assert.match(promptHistoryOperationId({}), /^[0-9a-f]{32}$/);
-assert.notEqual(promptHistoryOperationId(), promptHistoryOperationId());
 
 assert.deepEqual(
     orderedPromptRevisions(history).map((item) => item.id),

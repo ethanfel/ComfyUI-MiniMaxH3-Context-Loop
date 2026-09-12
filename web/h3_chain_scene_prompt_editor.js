@@ -23,12 +23,11 @@ import {
 } from "./h3_prompt_assistant_core.mjs?v=0.7.7";
 import {PromptAssistantClient} from "./h3_prompt_assistant_client.mjs?v=0.7.0";
 import {
-    promptHistoryOperationId,
     promptRevisionHelp,
     promptRevisionLabel,
     promptRevisionNavigation,
     promptRevisionTree,
-} from "./h3_prompt_history_core.mjs?v=0.7.1";
+} from "./h3_prompt_history_core.mjs?v=0.7.0";
 import {
     availableReferenceRecords,
     convertTaggedPictureReference,
@@ -1011,8 +1010,6 @@ function mount(node) {
     }
 
     async function historyRequest(query = {}, body = null) {
-        if (body != null) body = {...body,
-            operation_id:body.operation_id ?? promptHistoryOperationId()};
         const suffix = new URLSearchParams(query).toString();
         const response = await api.fetchApi(
             `/minimax_h3_context_loop/prompt-history${suffix ? `?${suffix}` : ""}`,

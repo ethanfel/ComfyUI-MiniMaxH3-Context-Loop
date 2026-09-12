@@ -13,11 +13,6 @@ import re
 import shutil
 import uuid
 
-if __package__:
-    from .storage_resolver import resolve_output, logical_output, StorageError
-else:
-    from storage_resolver import resolve_output, logical_output, StorageError
-
 
 FORMAT = "h3_reference_cache_v3"
 
@@ -56,7 +51,7 @@ def objects_digest(objects):
 class ReferenceTensorStore:
     def __init__(self, output_root, objects_root, file_sha256):
         self.output_root = os.path.realpath(output_root)
-        self.root = str(resolve_output(self.output_root, objects_root))
+        self.root = os.path.realpath(objects_root)
         self.file_sha256 = file_sha256
         if os.path.commonpath((self.output_root, self.root)) != self.output_root:
             raise ValueError("H3 reference objects escape the output directory.")
@@ -72,18 +67,13 @@ class ReferenceTensorStore:
 
     def _record(self, path, digest):
         return {"tensor_sha256": digest,
-                "tensors": logical_output(self.output_root, path),
+                "tensors": os.path.relpath(path, self.output_root),
                 "tensors_sha256": self.file_sha256(path)}
 
     def verify(self, record):
         objects_digest({"object": record})
         expected = self._path(record["tensor_sha256"])
-        try:
-            actual = str(resolve_output(self.output_root, record["tensors"]))
-        except StorageError:
-            raise
-        except ValueError as exc:
-            raise ValueError("H3 reference tensor object is outside its cache store (invalid address).") from exc
+        actual = os.path.realpath(os.path.join(self.output_root, record["tensors"]))
         if actual != expected:
             raise ValueError("H3 reference tensor object is outside its cache store.")
         if (not os.path.isfile(expected) or
@@ -127,7 +117,7 @@ class ReferenceTensorStore:
     def adopt(self, source_store, record):
         source = source_store.verify(record)
         target = self._path(record["tensor_sha256"])
-        local = {**record, "tensors": logical_output(self.output_root, target)}
+        local = {**record, "tensors": os.path.relpath(target, self.output_root)}
         if os.path.isfile(target):
             self.verify(local)
             return local

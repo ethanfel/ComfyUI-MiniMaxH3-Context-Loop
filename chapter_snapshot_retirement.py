@@ -58,9 +58,6 @@ class ChapterSnapshotManager:
             raise ValueError("Invalid chapter snapshot identity.")
         identity = {k: v for k, v in data.items()
                     if k not in ("sealed_at", "chapter_manifest_id", "chapter_manifest_path")}
-        if identity.get("storage_chapter_version") == 1:
-            identity.pop("_storage_pin", None)
-            identity.pop("_project_ownership", None)
         if (_fingerprint(identity)[:32] != path.stem
                 or data.get("chapter_manifest_id") != path.stem
                 or artifact_address(data.get("chapter_manifest_path")) != address):
@@ -92,19 +89,11 @@ class ChapterSnapshotManager:
 
     def retirement_preview(self, run_name, address):
         run = _strict_run_name(run_name)
-        from .storage_runtime import current_runtime
-        runtime = current_runtime(self.root, run)
-        if runtime is not None:
-            return runtime.retention.preview_chapter(address)
         with checkpoint_run_lock(str(self.root), run):
             return self._preview(run, address)
 
-    def retire(self, run_name, address, expected_snapshot="", *, ownership_proof=None):
+    def retire(self, run_name, address, expected_snapshot=""):
         run = _strict_run_name(run_name)
-        from .storage_runtime import current_runtime
-        runtime = current_runtime(self.root, run)
-        if runtime is not None:
-            return runtime.retention.retire_chapter(address, expected_snapshot, proof=ownership_proof)
         with checkpoint_run_lock(str(self.root), run):
             preview = self._preview(run, address)
             if not expected_snapshot or expected_snapshot != preview["snapshot"]:

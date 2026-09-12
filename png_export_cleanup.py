@@ -8,22 +8,20 @@ from contextlib import contextmanager, ExitStack
 from copy import deepcopy
 import re
 
-from .png_export_ownership import FORMAT as CATALOG_FORMAT, RUNTIME_CATALOG
+from .png_export_ownership import FORMAT as CATALOG_FORMAT
 from .png_video_export import FORMAT, _folder_lock
-from .storage_resolver import mapped_directories
 
 
 @contextmanager
 def locked_exports(manager, run):
     directories = set()
-    for relative in ("png_exports.json", RUNTIME_CATALOG):
-        catalog = manager._path("h3_chains/%s/%s" % (run, relative))
-        if catalog.exists():
-            value = manager._read(catalog)
-            if (value.get("format") != CATALOG_FORMAT or value.get("run_name") != run
-                    or not isinstance(value.get("directories"), list)):
-                raise ValueError("Invalid PNG export catalog; preview deletion after repairing it.")
-            directories.update(manager._path(item) for item in value["directories"])
+    catalog = manager._path("h3_chains/%s/png_exports.json" % run)
+    if catalog.exists():
+        value = manager._read(catalog)
+        if (value.get("format") != CATALOG_FORMAT or value.get("run_name") != run
+                or not isinstance(value.get("directories"), list)):
+            raise ValueError("Invalid PNG export catalog; preview deletion after repairing it.")
+        directories.update(manager._path(item) for item in value["directories"])
     # Older default exports predate the catalog. Never recurse into arbitrary
     # output folders or infer ownership merely from their folder names.
     run_dir = manager._path("h3_chains/" + run)
@@ -31,7 +29,6 @@ def locked_exports(manager, run):
                     "chapters/*/upscaled/*/frames/*/export.json"):
         for path in run_dir.glob(pattern):
             directories.add(manager._path(manager._address(path)).parent)
-        directories.update(mapped_directories(manager.root, run_dir, pattern.rsplit("/", 1)[0]))
     with ExitStack() as stack:
         records = {}
         for directory in sorted(directories):
@@ -72,7 +69,7 @@ def plan(manager, metadata, docs, exports):
         matching = [clip for clip in clips if owner in clip.get("processing_owners", [])]
         if not matching:
             continue
-        if manager._exists(path.parent / ".png_pending.json"):
+        if (path.parent / ".png_pending.json").exists():
             raise ValueError("PNG publication is pending; finish/recover this export before deleting its take.")
         next_record = deepcopy(record)
         removed = []
@@ -111,7 +108,7 @@ def plan(manager, metadata, docs, exports):
                                deleted_scenes=sorted(set(record.get("deleted_scenes", [])) | set(removed)))
         updates[path] = next_record
         marker = manager._path(manager._address(path.parent / ".png_variant.json"))
-        if manager._exists(marker):
+        if marker.exists():
             # Its prefix is only a copy/recovery recipe, not a surviving take.
             # Once a scene is explicitly deleted, never replay that snapshot.
             value = manager._read(marker)

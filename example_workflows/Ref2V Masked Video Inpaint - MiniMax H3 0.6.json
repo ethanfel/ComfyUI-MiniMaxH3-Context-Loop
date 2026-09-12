@@ -182,7 +182,7 @@
       ],
       "size": [
         360,
-        256
+        216
       ],
       "flags": {},
       "order": 5,
@@ -206,16 +206,6 @@
         {
           "name": "source_timeline",
           "type": "H3_SOURCE_TIMELINE",
-          "link": null
-        },
-        {
-          "name": "tagged_references",
-          "type": "H3_TAGGED_REFERENCES",
-          "link": null
-        },
-        {
-          "name": "reference_schedule",
-          "type": "H3_REFERENCE_SCHEDULE",
           "link": null
         }
       ],
@@ -255,7 +245,7 @@
       "type": "MiniMaxH3ChainCurrent",
       "pos": [
         3820,
-        3168
+        3128
       ],
       "size": [
         460,
@@ -386,7 +376,7 @@
       "type": "MiniMaxH3ChainAssemble",
       "pos": [
         4390,
-        4220
+        4180
       ],
       "size": [
         440,
@@ -1184,7 +1174,7 @@
       "type": "ModelAttentionBackend",
       "pos": [
         3820,
-        3668
+        3628
       ],
       "size": [
         360,
@@ -1344,7 +1334,7 @@
       ],
       "size": [
         1080,
-        972
+        948
       ],
       "flags": {},
       "order": 23,
@@ -1468,8 +1458,7 @@
         20,
         5,
         "guide",
-        "",
-        "main"
+        ""
       ]
     },
     {
@@ -1477,7 +1466,7 @@
       "type": "MiniMaxH3ChainManifestLoad",
       "pos": [
         3820,
-        4220
+        4180
       ],
       "size": [
         440,
@@ -1603,8 +1592,7 @@
         "Node name for S&R": "MiniMaxH3ChainLoopEnd"
       },
       "widgets_values": [
-        "off",
-        "recursive"
+        "off"
       ]
     },
     {
@@ -1682,7 +1670,7 @@
       "type": "LoadVideo",
       "pos": [
         3820,
-        1648
+        1608
       ],
       "size": [
         400,
@@ -1714,7 +1702,7 @@
       "type": "GetVideoComponents",
       "pos": [
         3820,
-        3876
+        3836
       ],
       "size": [
         360,
@@ -1920,7 +1908,7 @@
       "type": "LoadImageMask",
       "pos": [
         3820,
-        2128
+        2088
       ],
       "size": [
         400,
@@ -2135,7 +2123,7 @@
       "type": "LoadImage",
       "pos": [
         3820,
-        2648
+        2608
       ],
       "size": [
         400,
@@ -2216,7 +2204,7 @@
       "type": "MiniMaxH3ProjectAssetManager",
       "pos": [
         1200,
-        1252
+        1228
       ],
       "size": [
         1080,
@@ -2944,7 +2932,7 @@
         40,
         90,
         3600,
-        2082
+        2070
       ],
       "color": "#315566",
       "font_size": 24,
@@ -2956,7 +2944,7 @@
         3780,
         90,
         540,
-        3990
+        3950
       ],
       "color": "#393f58",
       "font_size": 24,
@@ -3038,7 +3026,7 @@
       "title": "RECOVERY • DISABLED / NO SAMPLING",
       "bounding": [
         3780,
-        4130,
+        4090,
         1090,
         490
       ],

@@ -1,15 +1,3 @@
-export function promptHistoryOperationId(cryptoSource = globalThis.crypto) {
-    // ComfyUI is often served over LAN HTTP, where randomUUID is unavailable.
-    // This is a retry identity, never an ownership credential or write grant.
-    const bytes = new Uint8Array(16);
-    if (typeof cryptoSource?.getRandomValues === "function") {
-        cryptoSource.getRandomValues(bytes);
-    } else {
-        for (let i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256);
-    }
-    return Array.from(bytes, value => value.toString(16).padStart(2, "0")).join("");
-}
-
 function chronologicalPromptRevisions(history) {
     return [...(history?.revisions ?? [])].sort((left, right) => {
         const time = String(left.created_at ?? "").localeCompare(

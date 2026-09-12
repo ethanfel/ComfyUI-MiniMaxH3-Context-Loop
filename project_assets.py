@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import copy
 import hashlib
-import inspect
 import json
 import logging
 import mimetypes
@@ -19,7 +18,7 @@ import shutil
 import subprocess
 import threading
 import uuid
-from contextlib import contextmanager, nullcontext
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from fractions import Fraction
 from functools import wraps
@@ -27,12 +26,8 @@ from typing import Any
 
 if __package__:
     from .audio_track_contract import audio_track_bindings
-    from .storage_resolver import resolve_output
-    from .storage_writes import writer_scope, reserve_directory
 else:  # Standalone catalog tools and storage tests.
     from audio_track_contract import audio_track_bindings
-    from storage_resolver import resolve_output
-    from storage_writes import writer_scope, reserve_directory
 
 try:
     import av
@@ -93,45 +88,11 @@ def _project_mutation(method):
     Media extraction happens before import and does not hold this lock.
     """
     @wraps(method)
-    def locked(self, project, *args, storage_operation_id=None, ownership_proof=None, **kwargs):
-        if self._catalog_edit is not None:
-            self._catalog_edit.check(project, method.__name__)
-            if method.__name__ == "load":
-                catalog = self._catalog_edit.load(create=kwargs.get("create", False))
-                if kwargs.get("create", False) and not self._catalog_edit.has_catalog:
-                    return self._save_catalog(catalog)
-                return catalog
-            return method(self, project, *args, **kwargs)
-        view = self._read_view(project)
-        if view is not None:
-            if method.__name__ != "load":
-                if __package__:
-                    from .storage_runtime import current_runtime
-                else:
-                    from storage_runtime import current_runtime
-                runtime = current_runtime(self.output_root, _safe_project(project))
-                if runtime is None or view is not runtime.reader:
-                    raise ValueError("Project asset editing requires the current runtime's reader.")
-                bound = inspect.signature(method).bind(self, project, *args, **kwargs)
-                bound.apply_defaults()
-                inputs = {key:value for key,value in bound.arguments.items() if key != 'self'}
-                return runtime.assets.edit(self, method, inputs, storage_operation_id, ownership_proof)
-            with view.operation():
-                return self._load_accepted_catalog(project, *args, **kwargs)
-        if method.__name__ == "import_project_asset":
-            # Legacy imports resolve source dependencies before taking any
-            # destination catalog lock; opposite-direction imports must not
-            # deadlock by holding both projects' locks. Nested writes retain
-            # their original per-catalog guards. Migrated imports above use
-            # one staged destination transaction and independently pinned reads.
-            return method(self, project, *args, **kwargs)
+    def locked(self, project, *args, **kwargs):
         directory, _name = self._project_dir(project)
         # Share nightly's existing lock and retain its cross-process CAS
         # checks, instead of adding a second, independent locking system.
-        with writer_scope(self.output_root, _name), _catalog_lock(os.path.join(directory, "catalog.json")):
-            if os.path.lexists(os.path.join(directory, ".h3-assets-pending.json")):
-                raise ProjectAssetConflictError(
-                    "Finish the pending migrated asset edit before using this input catalog.")
+        with _catalog_lock(os.path.join(directory, "catalog.json")):
             return method(self, project, *args, **kwargs)
     return locked
 
@@ -139,17 +100,6 @@ def _project_mutation(method):
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(
         timespec="seconds").replace("+00:00", "Z")
-
-
-def _project_read(method):
-    @wraps(method)
-    def pinned(self, project, *args, **kwargs):
-        view = self._read_view(project)
-        if view is None:
-            return method(self, project, *args, **kwargs)
-        with view.operation():
-            return method(self, project, *args, **kwargs)
-    return pinned
 
 
 def _safe_name(value: Any, fallback: str = "asset", limit: int = 128) -> str:
@@ -526,64 +476,11 @@ def _slot_contract(slot: dict[str, Any]) -> dict[str, Any]:
 class ProjectAssetStore:
     """Own project media below input/h3_projects and mirror it to a run."""
 
-    def __init__(self, input_root: str, output_root: str, *, rehearsal_view=None):
+    def __init__(self, input_root: str, output_root: str):
         self.input_root = os.path.realpath(os.path.abspath(input_root))
         self.output_root = os.path.realpath(os.path.abspath(output_root))
         self.projects_root = os.path.join(self.input_root, "h3_projects")
         self.chains_root = os.path.join(self.output_root, "h3_chains")
-        self._catalog_edit = None
-        self._preview_target = None
-        if __package__:
-            from .storage_runtime import current_runtime
-        else:
-            from storage_runtime import current_runtime
-        runtime = current_runtime(self.output_root)
-        self._rehearsal_view = rehearsal_view or (runtime.reader if runtime else None)
-        if (self._rehearsal_view is not None
-                and str(self._rehearsal_view.output) != self.output_root):
-            raise ValueError("Project asset reader belongs to a different output directory.")
-
-    def _read_view(self, project):
-        if __package__:
-            from .storage_runtime import current_runtime
-        else:
-            from storage_runtime import current_runtime
-        name = _safe_project(project)
-        runtime = current_runtime(self.output_root, name)
-        view = self._rehearsal_view or (runtime.reader if runtime else None)
-        if view is not None and view.project.name != name:
-            raise ValueError("Project asset reader belongs to a different project.")
-        return view
-
-    def _load_accepted_catalog(self, project, *, create=False):
-        if __package__:
-            from .storage_project_assets import accepted_catalog
-        else:
-            from storage_project_assets import accepted_catalog
-        view = self._read_view(project)
-        catalog = accepted_catalog(view)
-        if catalog is None:
-            if create or os.path.isfile(os.path.join(self._project_dir(project)[0], "catalog.json")):
-                raise ValueError("No accepted project asset catalog. Refresh its recovery backup explicitly first.")
-            return self._empty_catalog(_safe_project(project))
-        # No input-side restore on a read, even when the input catalog is
-        # missing, malformed or newer than the selected storage snapshot.
-        return self._normalize_catalog(catalog, _safe_project(project))
-
-    def refresh_backup(self, project, *, operation_id, ownership_proof=None):
-        """Publish an exact input-catalog/media snapshot to a hosted copy.
-
-        This only refreshes the recovery mirror. It never edits input originals,
-        adopts uncatalogued files, purges old versions or activates migration.
-        """
-        if __package__:
-            from .storage_runtime import current_runtime
-        else:
-            from storage_runtime import current_runtime
-        runtime = current_runtime(self.output_root, _safe_project(project))
-        if runtime is None or self._read_view(project) is not runtime.reader:
-            raise ValueError("Asset backup refresh requires the current explicit storage runtime.")
-        return runtime.assets.refresh(self.input_root, operation_id, ownership_proof)
 
     def _project_dir(self, project: Any) -> tuple[str, str]:
         name = _safe_project(project)
@@ -592,33 +489,10 @@ class ProjectAssetStore:
             raise ValueError("Project asset path escapes the ComfyUI input directory.")
         return path, name
 
-    def inspect_input_repair(self, project):
-        """Inspect the explicit migrated backup; never restore on a read."""
-        if __package__:
-            from .storage_runtime import current_runtime
-        else:
-            from storage_runtime import current_runtime
-        runtime = current_runtime(self.output_root, _safe_project(project))
-        if runtime is None:
-            raise ValueError("Input repair inspection requires a hosted migrated project.")
-        return runtime.assets.inspect_inputs(self)
-
-    def repair_inputs(self, project, inspection, *, storage_operation_id, ownership_proof=None):
-        if __package__:
-            from .storage_runtime import current_runtime
-        else:
-            from storage_runtime import current_runtime
-        runtime = current_runtime(self.output_root, _safe_project(project))
-        if runtime is None:
-            raise ValueError("Input repair requires a hosted migrated project.")
-        return runtime.assets.repair_inputs(self, inspection, storage_operation_id, ownership_proof)
-
-    def _backup_dir(self, project: Any, *, create=False) -> tuple[str, str]:
+    def _backup_dir(self, project: Any) -> tuple[str, str]:
         name = _safe_project(project)
-        path = str(resolve_output(self.output_root, os.path.join(
-            self.chains_root, name, "project_assets")))
-        if create:
-            path = reserve_directory(self.output_root, path, "assets")
+        path = os.path.realpath(os.path.join(
+            self.chains_root, name, "project_assets"))
         if not _inside(self.output_root, path):
             raise ValueError("Project backup path escapes the ComfyUI output directory.")
         return path, name
@@ -679,10 +553,6 @@ class ProjectAssetStore:
             if create:
                 return self._save_catalog(catalog)
             return catalog
-        return self._normalize_catalog(catalog, name)
-
-    @staticmethod
-    def _normalize_catalog(catalog, name):
         if (not isinstance(catalog, dict)
                 or catalog.get("format") != PROJECT_ASSET_FORMAT
                 or int(catalog.get("version", -1)) != PROJECT_ASSET_VERSION
@@ -704,10 +574,6 @@ class ProjectAssetStore:
         return catalog
 
     def _save_catalog(self, catalog: dict[str, Any]) -> dict[str, Any]:
-        if self._catalog_edit is not None:
-            self._catalog_edit.check(catalog.get("project"), "_save_catalog")
-        elif self._read_view(catalog.get("project")) is not None:
-            raise ValueError("Project asset editing is not enabled by a storage read binding.")
         directory, name = self._project_dir(catalog.get("project"))
         path = os.path.join(directory, "catalog.json")
         expected_storage_revision = str(
@@ -759,11 +625,7 @@ class ProjectAssetStore:
             "reference_slots": [_slot_contract(item) for item in slots],
         })
         document["storage_revision"] = uuid.uuid4().hex
-        if self._catalog_edit is not None:
-            return self._catalog_edit.save(document, expected_storage_revision)
         with _catalog_lock(path), _catalog_file_lock(path):
-            if os.path.lexists(os.path.join(directory, ".h3-assets-pending.json")):
-                raise ProjectAssetConflictError("Finish the pending migrated asset edit before saving this catalog.")
             if os.path.isfile(path):
                 with open(path, "r", encoding="utf-8") as handle:
                     current = json.load(handle)
@@ -790,7 +652,7 @@ class ProjectAssetStore:
                     "loaded. Refresh the Carousel before editing.")
             for group in ("images", "videos", "audio", "previews", ".uploads"):
                 os.makedirs(os.path.join(directory, group), exist_ok=True)
-            backup, _name = self._backup_dir(name, create=True)
+            backup, _name = self._backup_dir(name)
             os.makedirs(backup, exist_ok=True)
             # The input-side catalog is authoritative and atomically durable.
             # Publish it first so an interrupted mirror refresh can never make
@@ -823,8 +685,6 @@ class ProjectAssetStore:
         checkpoints, generated clips, assembled videos, and other output
         files are never traversed.
         """
-        if self._read_view(project) is not None:
-            raise ValueError("Project duplication requires a separate input write binding.")
         source_directory, source_name = self._project_dir(project)
         target_directory, target_name = self._project_dir(new_project)
         if source_name == target_name:
@@ -932,16 +792,6 @@ class ProjectAssetStore:
             raise
 
     def _asset_path(self, project: Any, entry: dict[str, Any]) -> str:
-        if self._catalog_edit is not None:
-            return self._catalog_edit.asset_path(project, entry)
-        view = self._read_view(project)
-        if view is not None:
-            if __package__:
-                from .storage_project_assets import accepted_asset_path
-            else:
-                from storage_project_assets import accepted_asset_path
-            with view.operation():
-                return str(accepted_asset_path(view, entry))
         directory, _name = self._project_dir(project)
         relative = str(entry.get("relative_path") or "")
         path = os.path.realpath(os.path.join(directory, relative))
@@ -949,7 +799,6 @@ class ProjectAssetStore:
             raise FileNotFoundError("Project asset file is missing: %s" % relative)
         return path
 
-    @_project_read
     def asset(self, project: Any, asset_id: Any) -> tuple[dict[str, Any], str]:
         catalog = self.load(project)
         wanted = str(asset_id or "")
@@ -959,18 +808,7 @@ class ProjectAssetStore:
             raise FileNotFoundError("Project asset %s was not found." % wanted)
         return dict(entry), self._asset_path(project, entry)
 
-    def upload_path(self, project: Any, filename: Any, *, ownership_proof=None) -> str:
-        if self._catalog_edit is not None:
-            return self._catalog_edit.render_path(project, filename)
-        if self._read_view(project) is not None:
-            if __package__:
-                from .storage_runtime import current_runtime
-            else:
-                from storage_runtime import current_runtime
-            runtime = current_runtime(self.output_root, _safe_project(project))
-            if runtime is None or self._read_view(project) is not runtime.reader:
-                raise ValueError("Asset upload staging requires the current explicit runtime.")
-            return runtime.assets.upload_path(self, filename, ownership_proof)
+    def upload_path(self, project: Any, filename: Any) -> str:
         directory, _name = self._project_dir(project)
         os.makedirs(os.path.join(directory, ".uploads"), exist_ok=True)
         basename = _safe_name(os.path.basename(str(filename or "asset")), "asset")
@@ -1115,26 +953,20 @@ class ProjectAssetStore:
         filename = "%s_%s%s" % (
             digest[:16], _safe_name(stem, kind, 80), suffix)
         destination = os.path.join(directory, group, filename)
-        if self._catalog_edit is not None:
-            # Probe only the verified staged copy. The actual input path and
-            # accepted backup are published by one recoverable transaction.
-            staged_path = self._catalog_edit.import_media(source, group+'/'+filename, digest, size)
-            metadata = _probe_media(staged_path, kind)
-        else:
-            os.makedirs(os.path.dirname(destination), exist_ok=True)
-            if not os.path.isfile(destination) or _file_sha256(destination) != digest:
-                temporary = "%s.%s.tmp" % (destination, uuid.uuid4().hex)
+        os.makedirs(os.path.dirname(destination), exist_ok=True)
+        if not os.path.isfile(destination) or _file_sha256(destination) != digest:
+            temporary = "%s.%s.tmp" % (destination, uuid.uuid4().hex)
+            try:
+                shutil.copy2(source, temporary)
+                if _file_sha256(temporary) != digest:
+                    raise ValueError("Imported asset failed its SHA-256 check.")
+                os.replace(temporary, destination)
+            finally:
                 try:
-                    shutil.copy2(source, temporary)
-                    if _file_sha256(temporary) != digest:
-                        raise ValueError("Imported asset failed its SHA-256 check.")
-                    os.replace(temporary, destination)
-                finally:
-                    try:
-                        os.unlink(temporary)
-                    except FileNotFoundError:
-                        pass
-            metadata = _probe_media(destination, kind)
+                    os.unlink(temporary)
+                except FileNotFoundError:
+                    pass
+        metadata = _probe_media(destination, kind)
         tag = (_capture_family_tag(catalog, tag, stem)
                if source_kind == "frame_capture" else _unique_tag(catalog, tag, stem))
         now = _utc_now()
@@ -1160,8 +992,6 @@ class ProjectAssetStore:
             entry["folder_id"] = folder_id
         catalog["assets"].append(entry)
         catalog = self._save_catalog(catalog)
-        if self._catalog_edit is not None:
-            return {"catalog": catalog, "asset": entry}
         backup, _name = self._backup_dir(name)
         backup_path = os.path.join(backup, group, filename)
         os.makedirs(os.path.dirname(backup_path), exist_ok=True)
@@ -1374,34 +1204,6 @@ class ProjectAssetStore:
         saved = self._save_catalog(catalog)
         return {"catalog": saved, "asset": dict(derived), "reused": False}
 
-    @_project_mutation
-    def register_captured_frame(
-            self, project: Any, rendered_path: Any, *, tag: Any = "",
-            role: Any = "", folder_id: Any = None, source: Any = None,
-            time_seconds: Any = 0.0) -> dict[str, Any]:
-        """Keep capture family naming and source provenance in one catalog edit."""
-        result = self.import_file(project, rendered_path, role=role, tag=tag,
-            original_name="frame_capture.png", source_kind="frame_capture", folder_id=folder_id)
-        catalog = result["catalog"]
-        entry = next(a for a in catalog["assets"] if a["id"] == result["asset"]["id"])
-        entry["transform"] = dict(kind="frame_capture", source=source, time_seconds=time_seconds)
-        return {"catalog": self._save_catalog(catalog), "asset": dict(entry)}
-
-    @_project_mutation
-    def register_model_image(
-            self, project: Any, parent_asset_id: Any, rendered_path: Any, *,
-            tag: Any = "", folder_id: Any = None,
-            transform: dict[str, Any] | None = None, operation_id: Any = "",
-            reference_templates: Any = None) -> dict[str, Any]:
-        """Publish model lineage and connected slots in the same catalog edit."""
-        result = self.register_derived_image(
-            project, parent_asset_id, rendered_path, tag=tag, folder_id=folder_id,
-            transform=transform, operation_id=operation_id)
-        if reference_templates is not None:
-            result["catalog"] = self.sync_reference_slots(project, reference_templates)
-        return result
-
-    @_project_mutation
     def derive_image(
             self, project: Any, asset_id: Any, *, crop: Any, target: Any,
             resample: Any = "lanczos", tag: Any = "", folder_id: Any = None,
@@ -1557,13 +1359,6 @@ class ProjectAssetStore:
             for item in catalog["assets"]}
         saved = self._save_catalog(catalog)
 
-        if self._catalog_edit is not None:
-            # The transaction retains old accepted media for saved references
-            # and recovery. Input cleanup happens only after both catalogs are
-            # committed, never while executing against a staged catalog.
-            return {"catalog": saved, "asset": removed, "deleted_files": 0,
-                    "retained_for_recovery": True}
-
         deleted_files = 0
         relative = str(removed.get("relative_path") or "")
         if relative and relative not in remaining_paths:
@@ -1642,51 +1437,12 @@ class ProjectAssetStore:
     def project_catalogs(self, query: Any = "") -> list[dict[str, Any]]:
         """List existing live Carousel projects, including empty catalogs."""
         needle = str(query or "").strip().lower()
-        pinned = self._source_catalogs()
-        if pinned is not None:
-            result = [dict(project=item['project'], source_pin=item['source_pin'],
-                asset_count=len(item['catalog']['assets']),
-                unassigned_count=len(item['catalog'].get('reference_slots', [])),
-                folder_count=len(item['catalog'].get('folders', [])),
-                updated_at=str(item['catalog'].get('updated_at') or ''),
-                revision=str(item['catalog'].get('revision') or ''))
-                for item in pinned if not needle or needle in item['project'].lower()]
-            result.sort(key=lambda item: item['project'].lower())
-            result.sort(key=lambda item: item['updated_at'], reverse=True)
-            return result[:MAX_INPUT_RESULTS]
-        # Activated output catalogs are authoritative even when the old input
-        # catalog is absent. Never replace them with a stale input-side copy.
-        if __package__:
-            from .storage_host import project_read
-            from .storage_project_assets import accepted_catalog
-        else:
-            from storage_host import project_read
-            from storage_project_assets import accepted_catalog
-        result, organized = [], set()
-        def summary(name, catalog):
-            return dict(project=name, asset_count=len(catalog.get('assets', [])),
-                unassigned_count=len(catalog.get('reference_slots', [])),
-                folder_count=len(catalog.get('folders', [])),
-                updated_at=str(catalog.get('updated_at') or ''),
-                revision=str(catalog.get('revision') or ''))
-        if os.path.isdir(self.chains_root):
-            with os.scandir(self.chains_root) as projects:
-                for project in projects:
-                    if (not project.is_dir(follow_symlinks=False)
-                            or not _PROJECT_RE.fullmatch(project.name)
-                            or needle and needle not in project.name.lower()):
-                        continue
-                    with project_read(self.output_root, project.name) as bound:
-                        if bound is None:
-                            continue
-                        organized.add(project.name)
-                        catalog = accepted_catalog(bound.reader)
-                        if catalog is not None:
-                            result.append(summary(project.name, catalog))
-        with os.scandir(self.projects_root) if os.path.isdir(self.projects_root) else nullcontext(()) as projects:
+        result = []
+        if not os.path.isdir(self.projects_root):
+            return result
+        with os.scandir(self.projects_root) as projects:
             for project in projects:
                 if (not project.is_dir(follow_symlinks=False)
-                        or project.name in organized
                         or needle and needle not in project.name.lower()
                         or not os.path.isfile(os.path.join(
                             project.path, "catalog.json"))):
@@ -1695,7 +1451,15 @@ class ProjectAssetStore:
                     catalog = self.load(project.name)
                 except (OSError, TypeError, ValueError, json.JSONDecodeError):
                     continue
-                result.append(summary(project.name, catalog))
+                result.append({
+                    "project": project.name,
+                    "asset_count": len(catalog.get("assets", [])),
+                    "unassigned_count": len(
+                        catalog.get("reference_slots", [])),
+                    "folder_count": len(catalog.get("folders", [])),
+                    "updated_at": str(catalog.get("updated_at") or ""),
+                    "revision": str(catalog.get("revision") or ""),
+                })
         result.sort(key=lambda item: item["project"].lower())
         result.sort(key=lambda item: item["updated_at"], reverse=True)
         return result[:MAX_INPUT_RESULTS]
@@ -1705,22 +1469,6 @@ class ProjectAssetStore:
         needle = str(query or "").strip().lower()
         excluded = (_safe_project(exclude_project)
                     if str(exclude_project or "").strip() else "")
-        pinned = self._source_catalogs()
-        if pinned is not None:
-            result, remaining = [], MAX_INPUT_RESULTS
-            for item in sorted(pinned, key=lambda item: item['project'].lower()):
-                if item['project'] == excluded:
-                    continue
-                assets = [dict(entry) for entry in item['catalog']['assets']
-                    if not needle or needle in ' '.join((item['project'], str(entry.get('tag') or ''),
-                        str(entry.get('original_name') or ''), str(entry.get('role') or ''))).lower()][:remaining]
-                if assets:
-                    result.append(dict(project=item['project'], source_pin=item['source_pin'],
-                        revision=str(item['catalog'].get('revision') or ''), assets=assets))
-                    remaining -= len(assets)
-                if remaining == 0:
-                    break
-            return result
         result = []
         remaining = MAX_INPUT_RESULTS
         if not os.path.isdir(self.projects_root):
@@ -1764,10 +1512,9 @@ class ProjectAssetStore:
                     })
         return sorted(result, key=lambda item: item["project"].lower())
 
-    @_project_mutation
     def import_project_asset(
             self, project: Any, source_project: Any, asset_id: Any, *,
-            slot_id: Any = "", source_pin=None) -> dict[str, Any]:
+            slot_id: Any = "") -> dict[str, Any]:
         """Copy one asset from another live Carousel into this project."""
         target_name = _safe_project(project)
         source_name = _safe_project(source_project)
@@ -1775,29 +1522,17 @@ class ProjectAssetStore:
             raise ValueError(
                 "Choose another Run. Use Duplicate for an asset already in "
                 "this Carousel.")
+        source_entry, source_path = self.asset(source_name, asset_id)
         wanted_slot = str(slot_id or "")
-        bundle = None
-        if self._catalog_edit is not None:
-            bundle = self._catalog_edit.source_bundle(
-                source_name, str(asset_id or ""), source_pin, tracks=not wanted_slot)
-            selected = bundle["media"][str(asset_id)]
-            source_entry, source_path = selected["entry"], selected["path"]
-        else:
-            if source_pin is not None:
-                raise ValueError("Pinned source import requires an explicit migrated runtime.")
-            source_entry, source_path = self.asset(source_name, asset_id)
         options = dict(source_entry.get("options") or {})
-        bindings = (bundle["bindings"] if bundle is not None else audio_track_bindings(
-            options.get("audio_tracks"), self.load(source_name)["assets"]))
-        options.pop("audio_tracks", None)
+        bindings = audio_track_bindings(
+            options.pop("audio_tracks", None), self.load(source_name)["assets"])
         # Resolve every dependency before copying anything. Track bindings are
         # project-local IDs; they cannot be copied verbatim to another Run.
-        dependencies = ({identity:(item["entry"],item["path"])
-            for identity,item in bundle["media"].items() if identity != str(source_entry["id"])}
-            if bundle is not None else {
+        dependencies = {
             value: self.asset(source_name, value)
             for value in (bindings or {}).values()
-            if value and value != str(source_entry["id"])} if not wanted_slot else {})
+            if value and value != str(source_entry["id"])} if not wanted_slot else {}
         if wanted_slot:
             result = self.bind_reference_slot(
                 target_name, wanted_slot, source_path,
@@ -1811,8 +1546,8 @@ class ProjectAssetStore:
                 original_name=source_entry.get("original_name", ""),
                 source_kind="project",
                 options=options)
-        mapped = {str(source_entry["id"]): result["asset"]["id"]}
         if bindings and not wanted_slot:
+            mapped = {str(source_entry["id"]): result["asset"]["id"]}
             for value, (entry, path) in dependencies.items():
                 track_options = dict(entry.get("options") or {})
                 track_options.pop("audio_tracks", None)
@@ -1837,79 +1572,9 @@ class ProjectAssetStore:
                 result["bound_slot_id"] = bound_slot_id
         result["source_project"] = source_name
         result["source_asset_id"] = str(source_entry.get("id") or "")
-        if bundle is not None:
-            imported = self.load(target_name)
-            for original_id, new_id in mapped.items():
-                entry = next(item for item in imported["assets"] if item["id"] == new_id)
-                original = bundle["media"][original_id]["entry"]
-                entry["imported_from"] = dict(project=source_name, asset_id=original_id,
-                    source_pin=bundle["source_pin"], sha256=original["sha256"], size=original["size"])
-            result["catalog"] = self._save_catalog(imported)
-            result["asset"] = next(item for item in result["catalog"]["assets"]
-                                   if item["id"] == mapped[str(source_entry["id"])])
-            result["source_pin"] = bundle["source_pin"]
-        return result
-
-    def _source_catalogs(self):
-        if __package__:
-            from .storage_runtime import current_runtime
-        else:
-            from storage_runtime import current_runtime
-        runtime = current_runtime(self.output_root)
-        view = self._rehearsal_view or (runtime.reader if runtime else None)
-        if view is not None:
-            with view.operation():
-                if __package__:
-                    from .storage_project_assets import accepted_catalog
-                else:
-                    from storage_project_assets import accepted_catalog
-                catalog = accepted_catalog(view)
-                if runtime is not None:
-                    if view is not runtime.reader:
-                        raise ValueError('Asset listing must use the current exact runtime reader.')
-                    if __package__:
-                        from .storage_asset_sources import catalogs
-                    else:
-                        from storage_asset_sources import catalogs
-                    return [dict(item, foreign=item['project'] != runtime.run)
-                            for item in catalogs(runtime, catalog) if item['catalog'] is not None]
-                return [] if catalog is None else [dict(project=view.project.name, catalog=catalog, source_pin=None)]
-        return None
-
-    @_project_mutation
-    def import_backup_asset(self, project, source_project, asset_id, *, source_pin,
-                            slot_id="", role="", tag="", original_name="", options=None):
-        """Copy one pinned foreign backup with the existing backup-import options."""
-        if self._catalog_edit is None:
-            raise ValueError('Pinned backup import requires an explicit migrated runtime.')
-        bundle = self._catalog_edit.source_bundle(_safe_project(source_project),
-            str(asset_id or ''), source_pin, tracks=False)
-        selected = bundle['media'][str(asset_id)]
-        params = dict(role=role, tag=tag, original_name=original_name,
-                      source_kind='chains', options=options)
-        if slot_id:
-            result = self.bind_reference_slot(project, slot_id, selected['path'], **params)
-        else:
-            result = self.import_file(project, selected['path'], **params)
-        catalog = self.load(project)
-        imported = next(entry for entry in catalog['assets'] if entry['id'] == result['asset']['id'])
-        original = selected['entry']
-        imported['imported_from'] = dict(project=bundle['project'], asset_id=original['id'],
-            source_pin=bundle['source_pin'], sha256=original['sha256'], size=original['size'])
-        result['catalog'] = self._save_catalog(catalog)
-        result['asset'] = dict(imported)
-        result['source_project'], result['source_pin'] = bundle['project'], bundle['source_pin']
         return result
 
     def backups(self) -> list[dict[str, Any]]:
-        pinned = self._source_catalogs()
-        if pinned is not None:
-            # Retain the existing single-project response when no foreign
-            # source grant exists. Source pins travel with cross-project rows.
-            return [dict(run_name=item['project'], revision=str(item['catalog'].get('revision') or ''),
-                assets=[dict(entry) for entry in item['catalog']['assets']],
-                **({'source_pin': item['source_pin']} if item.get('foreign') else {}))
-                for item in pinned]
         result = []
         if not os.path.isdir(self.chains_root):
             return result
@@ -1917,10 +1582,7 @@ class ProjectAssetStore:
             for run in runs:
                 if not run.is_dir(follow_symlinks=False):
                     continue
-                if run.name.startswith("."):
-                    continue
-                path = str(resolve_output(self.output_root,
-                    os.path.join(run.path, "project_assets", "catalog.json")))
+                path = os.path.join(run.path, "project_assets", "catalog.json")
                 if not os.path.isfile(path):
                     continue
                 try:
@@ -1939,10 +1601,6 @@ class ProjectAssetStore:
         return sorted(result, key=lambda item: item["run_name"].lower())
 
     def backup_asset_path(self, run_name: Any, asset_id: Any) -> tuple[dict[str, Any], str]:
-        view = self._read_view(run_name)
-        if view is not None:
-            with view.operation():
-                return self.asset(run_name, asset_id)
         backup, name = self._backup_dir(run_name)
         path = os.path.join(backup, "catalog.json")
         if not os.path.isfile(path):
@@ -1960,24 +1618,16 @@ class ProjectAssetStore:
         return dict(entry), source
 
     def _preview_path(self, project: Any, entry: dict[str, Any], suffix: str) -> str:
-        if self._preview_target is not None:
-            return self._preview_target(project, entry, suffix)
-        if self._read_view(project) is not None:
-            raise ValueError("Project asset preview writes require a separate input write binding.")
         directory, _name = self._project_dir(project)
         return os.path.join(directory, "previews", "%s_%s%s" % (
             entry["id"], str(entry.get("sha256") or "")[:12], suffix))
 
     def ensure_poster(self, project: Any, asset_id: Any) -> str:
-        if self._preview_target is None and self._read_view(project) is not None:
-            return self._accepted_preview(project, asset_id, "poster")
         return self._ensure_still_preview(
             project, asset_id, ".jpg", (960, 540), 86)
 
     def ensure_thumbnail(self, project: Any, asset_id: Any) -> str:
         """Return a small cached still used by large carousel collections."""
-        if self._preview_target is None and self._read_view(project) is not None:
-            return self._accepted_preview(project, asset_id, "thumbnail")
         return self._ensure_still_preview(
             project, asset_id, ".thumb.jpg", (320, 180), 78)
 
@@ -2049,8 +1699,6 @@ class ProjectAssetStore:
             (suffix == ".webm" and codec in ("vp8", "vp9", "av1")))
 
     def ensure_browser_media(self, project: Any, asset_id: Any) -> str:
-        if self._preview_target is None and self._read_view(project) is not None:
-            return self._accepted_preview(project, asset_id, "preview")
         entry, source = self.asset(project, asset_id)
         if entry["kind"] != "video" or self._browser_video(entry, source):
             return source
@@ -2086,15 +1734,3 @@ class ProjectAssetStore:
             except FileNotFoundError:
                 pass
         return target
-
-    def _accepted_preview(self, project, asset_id, variant):
-        if __package__:
-            from .storage_asset_previews import preview
-            from .storage_runtime import current_runtime
-        else:
-            from storage_asset_previews import preview
-            from storage_runtime import current_runtime
-        runtime = current_runtime(self.output_root, _safe_project(project))
-        if runtime is None or self._read_view(project) is not runtime.reader:
-            raise ValueError("Asset preview requires the current pinned runtime reader.")
-        return preview(runtime, self, project, asset_id, variant)

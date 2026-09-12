@@ -37,14 +37,8 @@ explanation.
 |---|---|
 | [Complete Plan format](../H3_CHAIN_FORMAT_GUIDE.md) | Every Plan and per-scene field, exact timing, prompt syntax, and JSON forms |
 | [Version 0.5 architecture](V0_5_ARCHITECTURE.md) | Frozen Source Timeline, policy, dependency, migration, and preflight contracts |
-| [Migrate a chain](MIGRATE_STORAGE.md) | Copy, verify and enable organized storage; use the migrated project and switch back safely |
 | [Chain storage audit](STORAGE_LAYOUT_AUDIT.md) | Current folder ownership, measured storage, path complexity and a staged simplification proposal |
 | [Storage migration plan](STORAGE_MIGRATION_PLAN.md) | Compatibility invariants, feature tests, phased implementation, existing-folder migration and rollback gates |
-| [Organized storage layout](STORAGE_LAYOUT_V2.md) | Media/export/project hierarchy, workflow-stage coverage, optional data and legacy-adapter progress |
-| [Storage bridge rehearsal](STORAGE_BRIDGE_REHEARSAL.md) | Historical copy-only relocation, organized payload writers and recovery tests; see the migration guide for current usage |
-| [Atomic control-state rehearsal](STORAGE_CONTROL_STATE.md) | Pinned documents and branch load/save/fork integration, grouped publication, scope conflicts and epoch fencing |
-| [Combined project rehearsal](STORAGE_PROJECT_REHEARSAL.md) | Full-copy media/control join, pinned readers, handoff transactions, reverse recovery and platform evidence |
-| [Immutable commit log](STORAGE_COMMIT_LOG.md) | No-overwrite control commits, live CIFS crash/retry tests and remaining migration-journal gates |
 | [Storage Inspector](STORAGE_INSPECTOR.md) | Read-only disk inventory, report format, consumer baseline and remaining migration gates |
 | [Reference Video Fade](REFERENCE_VIDEO_FADE.md) | Experimental denoising-time control of Ref2VA video influence |
 | [Visual-context drift research](VISUAL_CONTEXT_DRIFT_RESEARCH.md) | Evidence, experiments, and validation protocol for recursive drift |

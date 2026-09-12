@@ -2,7 +2,6 @@
 """Standalone scheduler compiler test without importing a ComfyUI checkout."""
 
 import importlib.util
-import inspect
 import json
 import math
 import pathlib
@@ -319,7 +318,9 @@ assert video_inputs["timeline_mode"][0] == [
     "restart_each_scene", "sequential"]
 assert "state" in chain.MiniMaxH3ScheduledReferenceToVideo.INPUT_TYPES()[
     "optional"]
-apply_arguments = inspect.signature(chain.MiniMaxH3ScheduledReferenceToVideo.apply).parameters
+apply_arguments = (
+    chain.MiniMaxH3ScheduledReferenceToVideo.apply.__code__.co_varnames[
+        :chain.MiniMaxH3ScheduledReferenceToVideo.apply.__code__.co_argcount])
 assert "state" in apply_arguments and "prompt_compliance" in apply_arguments
 assert "timeline_mode" not in chain._reference_entry_contract({
     "kind": "video", "tag": "motion", "scenes": "all",

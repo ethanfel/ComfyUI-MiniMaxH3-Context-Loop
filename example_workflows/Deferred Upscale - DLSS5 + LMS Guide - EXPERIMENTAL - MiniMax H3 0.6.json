@@ -51,7 +51,7 @@
       ],
       "size": [
         360,
-        516
+        492
       ],
       "flags": {},
       "order": 1,
@@ -100,8 +100,7 @@
         1,
         1,
         true,
-        18,
-        "resume"
+        18
       ]
     },
     {
@@ -109,7 +108,7 @@
       "type": "VAELoader",
       "pos": [
         1500,
-        796
+        772
       ],
       "size": [
         360,
@@ -143,7 +142,7 @@
       "type": "MiniMaxH3ChainUpscalePixelCurrent",
       "pos": [
         1500,
-        2196
+        2172
       ],
       "size": [
         500,
@@ -230,7 +229,7 @@
       "type": "UNETLoader",
       "pos": [
         1500,
-        1004
+        980
       ],
       "size": [
         360,
@@ -263,7 +262,7 @@
       "type": "MiniMaxH3SigmaShift",
       "pos": [
         1500,
-        2596
+        2572
       ],
       "size": [
         360,
@@ -381,7 +380,7 @@
       "type": "CLIPLoader",
       "pos": [
         1500,
-        1236
+        1212
       ],
       "size": [
         360,
@@ -415,7 +414,7 @@
       "type": "DLSS5Settings",
       "pos": [
         1500,
-        1492
+        1468
       ],
       "size": [
         360,
@@ -710,7 +709,7 @@
       "type": "KSamplerSelect",
       "pos": [
         1500,
-        1988
+        1964
       ],
       "size": [
         360,
@@ -1378,7 +1377,7 @@
         1460,
         90,
         580,
-        2678
+        2654
       ],
       "color": "#393f58",
       "font_size": 24,

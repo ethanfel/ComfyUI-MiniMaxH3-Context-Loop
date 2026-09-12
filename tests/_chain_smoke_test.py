@@ -21,7 +21,6 @@ import threading
 import time
 import wave
 from datetime import datetime
-from unittest.mock import patch
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -174,10 +173,7 @@ def main():
     assert chain._expand_filename_date(
         "render_%date:yyyy-MM-dd%_%hour%-%minute%-%second%", fixed_now
     ) == "render_2026-08-11_14-05-09"
-    # Collision checking resolves managed output paths. Keep this fixture in
-    # its own declared output root, not outside the real ComfyUI output tree.
-    with tempfile.TemporaryDirectory() as version_dir, patch.object(
-            chain, '_output_root', return_value=version_dir):
+    with tempfile.TemporaryDirectory() as version_dir:
         original = pathlib.Path(version_dir) / "render.mp4"
         original.touch()
         (pathlib.Path(version_dir) / "render_001.mp4").touch()

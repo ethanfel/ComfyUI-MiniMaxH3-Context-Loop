@@ -38,11 +38,6 @@ def branch_scope(run, selected="main"):
 
 
 def working_directory(project_directory, run, selected=None):
-    if __package__:
-        from .storage_resolver import storage_state
-    else:
-        from storage_resolver import storage_state
-    storage_state(project_directory)
     selected = branch_id(current_branch(run) if selected is None else selected)
     root = os.path.realpath(project_directory)
     if selected == "main":
@@ -90,12 +85,8 @@ def scoped_node(function):
         return function
     signature = inspect.signature(function)
 
-    def bound_inputs(args, kwargs):
-        bound = signature.bind_partial(*args, **kwargs)
-        bound.apply_defaults()
-        return bound.arguments
-
-    def selected_inputs(inputs):
+    def selected_inputs(args, kwargs):
+        inputs = signature.bind_partial(*args, **kwargs).arguments
         selected = next((found for item in inputs.values()
                          if (found := _selection(item))), None)
         # Upstream Plan nodes execute before Studio. Carry its branch in the
@@ -125,33 +116,19 @@ def scoped_node(function):
 
     @wraps(function)
     def wrapped(*args, **kwargs):
-        if __package__:
-            from .storage_carriers import node_operation, stamp, prepare_inputs
-        else:
-            from storage_carriers import node_operation, stamp, prepare_inputs
-        inputs = prepare_inputs(bound_inputs(args, kwargs), function)
-        bound = inspect.BoundArguments(signature, inputs)
-        selected = selected_inputs(inputs)
-        with node_operation(inputs, selected, function=function) as runtime:
-            if not selected:
-                return stamp(function(*bound.args, **bound.kwargs), runtime)
-            with branch_scope(*selected):
-                return _stamp(stamp(function(*bound.args, **bound.kwargs), runtime), selected)
+        selected = selected_inputs(args, kwargs)
+        if not selected:
+            return function(*args, **kwargs)
+        with branch_scope(*selected):
+            return _stamp(function(*args, **kwargs), selected)
 
     @wraps(function)
     async def async_wrapped(*args, **kwargs):
-        if __package__:
-            from .storage_carriers import node_operation, stamp, prepare_inputs
-        else:
-            from storage_carriers import node_operation, stamp, prepare_inputs
-        inputs = prepare_inputs(bound_inputs(args, kwargs), function)
-        bound = inspect.BoundArguments(signature, inputs)
-        selected = selected_inputs(inputs)
-        with node_operation(inputs, selected, function=function) as runtime:
-            if not selected:
-                return stamp(await function(*bound.args, **bound.kwargs), runtime)
-            with branch_scope(*selected):
-                return _stamp(stamp(await function(*bound.args, **bound.kwargs), runtime), selected)
+        selected = selected_inputs(args, kwargs)
+        if not selected:
+            return await function(*args, **kwargs)
+        with branch_scope(*selected):
+            return _stamp(await function(*args, **kwargs), selected)
 
     result = async_wrapped if inspect.iscoroutinefunction(function) else wrapped
     result._h3_branch_scoped = True
@@ -159,19 +136,10 @@ def scoped_node(function):
 
 
 def scope_nodes(mapping):
-    if __package__:
-        from .storage_host import storage_node, storage_fingerprint
-    else:
-        from storage_host import storage_node, storage_fingerprint
     for cls in set(mapping.values()):
         name = cls.FUNCTION
         method = getattr(cls, name)
-        setattr(cls, name, storage_node(scoped_node(method)))
-        fingerprint = getattr(cls, 'IS_CHANGED', None)
-        if fingerprint is not None:
-            # Existing bound classmethod retains its owning class. Static
-            # installation avoids injecting cls twice through another wrapper.
-            setattr(cls, 'IS_CHANGED', staticmethod(storage_fingerprint(fingerprint)))
+        setattr(cls, name, scoped_node(method))
 
 
 def scoped_request(function):

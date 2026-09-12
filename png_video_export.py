@@ -78,7 +78,6 @@ def _source_path(video):
 
 
 def _safe_path(root, value):
-    from .storage_resolver import resolve_output
     path = Path(value)
     if ".." in path.parts:
         raise ValueError("PNG output folder cannot contain '..'.")
@@ -93,15 +92,13 @@ def _safe_path(root, value):
             raise ValueError("PNG output paths must not follow symbolic links or junctions.")
     if not path.resolve().is_relative_to(root.resolve()):
         raise ValueError("PNG output folder escapes the ComfyUI output directory.")
-    return resolve_output(root, path)
+    return path
 
 
 @contextmanager
 def _folder_lock(root, directory):
+    directory.mkdir(parents=True, exist_ok=True)
     path = _safe_path(root, directory / ".png_export.lock")
-    # The lock stays at its logical legacy address across relocation. Never
-    # move/replace a lock inode while another process may still hold it.
-    path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a+b") as handle:
         try:
             if os.name == "nt":
@@ -341,7 +338,6 @@ def export_video(chain, video, state, export_name, output_folder, first_frame_nu
                  png_compression, png_bit_depth, embed_workflow, save_workers,
                  checkpoint_verification, reuse_existing):
     from . import upscale_nodes as upscale
-    from .storage_legacy import LegacyStoragePaths
 
     if not isinstance(state, dict) or state.get("profile_config", {}).get("backend") != "pixel":
         raise ValueError("Connect the pixel Upscale Current Scene state alongside VIDEO to export each scene inside the loop.")
@@ -356,9 +352,7 @@ def export_video(chain, video, state, export_name, output_folder, first_frame_nu
         raise ValueError("Invalid scene frame counts or first frame number for PNG export.")
     path = _source_path(video)
     root = Path(chain._output_root()).resolve()
-    default = Path(LegacyStoragePaths.png_sequence(
-        upscale._state_profile_paths(state, index)["root"],
-        chain._safe_name(export_name, "png_sequence")))
+    default = Path(upscale._state_profile_paths(state, index)["root"]) / "frames" / chain._safe_name(export_name, "png_sequence")
     directory = _safe_path(root, str(output_folder).strip() or default)
     config = {"run_name": state["run_name"], "profile": state["profile"],
               "profile_config": state["profile_config"], "first_frame_number": int(first_frame_number),
@@ -464,19 +458,49 @@ def _export_scene(chain, video, state, source, path, root, directory, config, co
         metadata.update(chain._archive_media_metadata(state["source_manifest"].get("archives")))
         metadata["h3_source_manifest"] = json.dumps(state["source_manifest"], ensure_ascii=False)
         metadata["h3_upscale_profile"] = json.dumps(state["profile_config"], ensure_ascii=False)
+    progress = chain._png_export_progress(delivered)
     # Staging is private. A failed decode/write never commits a half-scene
     # or touches any earlier scene. Only PNG paths created below are undone.
     with transaction.staging(chain, directory, index) as stage:
-        encoded = encode_scene(chain, path, raw, delivered, config, workers,
-                               stage, first, metadata, source_identity)
+        files, pending = [], set()
+        count, width, height = 0, None, None
+        pixels_hash = _pixel_hasher(bits)
+
+        def completed(futures):
+            for future in futures:
+                files.append(future.result())
+                chain._png_export_update_progress(progress, len(files), delivered)
+
+        def write_frame(pixels, number, info):
+            target = stage / ("frame_%08d.png" % number)
+            chain._write_png(str(target), pixels, config["png_compression"], info)
+            persistence.sync_file(target)
+            return chain._png_export_file_record(str(target))
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers, thread_name_prefix="h3-video-png") as executor:
+            for pixels in _scene_pixels(chain, path, raw, delivered, bits):
+                if len(pending) >= workers:
+                    done, pending = concurrent.futures.wait(pending, return_when=concurrent.futures.FIRST_COMPLETED)
+                    completed(done)
+                height, width = pixels.shape[:2]
+                _hash_pixels(pixels_hash, pixels)
+                number = first + count
+                pending.add(executor.submit(write_frame, pixels, number, metadata if count == 0 else {}))
+                del pixels
+                count += 1
+            completed(pending)
+        if len(files) != delivered or _file_identity(path) != source_identity:
+            raise ValueError("VIDEO frame count or source file changed during PNG export; scene was not committed.")
+        chain._png_export_check_interrupted()
+        files.sort(key=lambda item: item["file"])
         clip = {"index": index, "id": source.get("id"), "source_contract": contracts[index],
                 "processing_owners": [owner] if owner else [],
                 "export_session": state.get("png_export_session", ""),
                 "source_revision": source.get("revision"), "video_sha256": video_hash,
-                "pixel_sha256": encoded["pixel_sha256"],
+                "pixel_sha256": pixels_hash.hexdigest(),
                 "raw_frames": raw, "delivered_frames": delivered, "trim_frames": raw - delivered,
-                "width": encoded["width"], "height": encoded["height"], "first_frame_number": first,
-                "last_frame_number": first + delivered - 1, "files": encoded["files"]}
+                "width": width, "height": height, "first_frame_number": first,
+                "last_frame_number": first + delivered - 1, "files": files}
         record = {"format": FORMAT, "settings": config, "clips": clips + [clip],
                   "frame_count": first + delivered - config["first_frame_number"],
                   "complete": index == int(state["end_clip"]), "last_scene": index,
@@ -486,50 +510,3 @@ def _export_scene(chain, video, state, source, path, root, directory, config, co
         index, delivered, bits, record["frame_count"], directory)
     chain._LOG.info("H3 %s", status)
     return {"ui": {"text": [status]}, "result": (str(directory), record["frame_count"], status, "", video)}
-
-
-def encode_scene(chain, path, raw, delivered, config, workers, stage, first,
-                 metadata, source_identity):
-    """Encode one RAW scene into caller-owned private staging, without publication.
-
-    Shared by the legacy journal and organized export transactions. Neither
-    this function nor its workers resolve output aliases or write an index.
-    The caller owns recovery/retention of staging after an exception.
-    """
-    stage = Path(stage)
-    bits = bit_depth(config["png_bit_depth"])
-    if (type(first) is not int or first < 0 or type(workers) is not int
-            or workers < 1 or not stage.is_dir() or any(stage.iterdir())):
-        raise ValueError("PNG encoding requires empty private staging and valid numbering/workers.")
-    progress = chain._png_export_progress(delivered)
-    files, pending = [], set()
-    count, width, height = 0, None, None
-    pixels_hash = _pixel_hasher(bits)
-
-    def completed(futures):
-        for future in futures:
-            files.append(future.result())
-            chain._png_export_update_progress(progress, len(files), delivered)
-
-    def write_frame(pixels, number, info):
-        target = stage / ("frame_%08d.png" % number)
-        chain._write_png(str(target), pixels, config["png_compression"], info)
-        persistence.sync_file(target)
-        return chain._png_export_file_record(str(target))
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=workers, thread_name_prefix="h3-video-png") as executor:
-        for pixels in _scene_pixels(chain, path, raw, delivered, bits):
-            if len(pending) >= workers:
-                done, pending = concurrent.futures.wait(pending, return_when=concurrent.futures.FIRST_COMPLETED)
-                completed(done)
-            height, width = pixels.shape[:2]
-            _hash_pixels(pixels_hash, pixels)
-            pending.add(executor.submit(write_frame, pixels, first + count, metadata if count == 0 else {}))
-            del pixels
-            count += 1
-        completed(pending)
-    if len(files) != delivered or _file_identity(path) != source_identity:
-        raise ValueError("VIDEO frame count or source file changed during PNG export; scene was not committed.")
-    chain._png_export_check_interrupted()
-    files.sort(key=lambda item: item["file"])
-    return dict(files=files, width=width, height=height, pixel_sha256=pixels_hash.hexdigest())

@@ -94,27 +94,6 @@ class AlternateUpscaleTests(unittest.TestCase):
         self.assertEqual(upscale._verified_source_manifest(manifest), manifest)
         self.assertEqual(self.original_files, {p: p.read_bytes() for p in self.original_files})
 
-    def direct_alternate_manifest(self):
-        base = self.bases[0]
-        plan = chain._alternate_take_plan(self.plan, {"alternate_draft": {
-            "enabled": True, "scene": 1, "scene_id": base["id"], "base_revision": base["revision"],
-            "prompt": self.alt["scene_prompt"], "seed": self.alt["seed"]}})
-        incoming = chain._initial_state(plan, 1)
-        return chain.MiniMaxH3ChainLoopEnd().end(
-            ['unused-start', 0], incoming, self.frames, av_latent(.9), self.alt)[0]
-
-    def test_direct_alt_loop_end_manifest_keeps_original_audio_and_exact_candidate(self):
-        direct = self.direct_alternate_manifest()
-        before = copy.deepcopy(direct)
-        self.make_alternate()  # A later selection must not replace the explicit input ALT.
-        _, incoming, resolved, _ = self.adapt(direct)
-        current = upscale.MiniMaxH3ChainUpscaleCurrent().current(incoming)
-        self.assertEqual(resolved['segments'][0]['revision'], self.alt['revision'])
-        self.assertTrue(torch.all(current[2]['samples'] == .9))
-        self.assertTrue(torch.all(current[3]['samples'] == .3))
-        self.assertTrue(torch.all(current[13]['waveform'] == .2))
-        self.assertEqual(direct, before)
-
     def branch_with_selected_alt(self):
         store = chain.WorkingBranches(self.temp.name, self.run)
         branch = store.create("main", "960x544", {"plan_json": json.dumps({

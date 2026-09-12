@@ -51,7 +51,7 @@
       ],
       "size": [
         360,
-        516
+        492
       ],
       "flags": {},
       "order": 1,
@@ -100,8 +100,7 @@
         1,
         0,
         true,
-        18,
-        "resume"
+        18
       ]
     },
     {
@@ -109,7 +108,7 @@
       "type": "MiniMaxH3ChainUpscaleCurrent",
       "pos": [
         1500,
-        2380
+        2356
       ],
       "size": [
         480,
@@ -244,7 +243,7 @@
       "type": "UNETLoader",
       "pos": [
         1500,
-        796
+        772
       ],
       "size": [
         360,
@@ -277,7 +276,7 @@
       "type": "ModelAttentionBackend",
       "pos": [
         1500,
-        3000
+        2976
       ],
       "size": [
         360,
@@ -355,7 +354,7 @@
       "type": "CLIPLoader",
       "pos": [
         1500,
-        1028
+        1004
       ],
       "size": [
         360,
@@ -389,7 +388,7 @@
       "type": "VAELoader",
       "pos": [
         1500,
-        1284
+        1260
       ],
       "size": [
         360,
@@ -429,7 +428,7 @@
       ],
       "size": [
         360,
-        552
+        504
       ],
       "flags": {},
       "order": 8,
@@ -507,9 +506,7 @@
         "exclude_video_keep_audio",
         "",
         "inherit",
-        "strict",
-        "inherit",
-        "inherit"
+        "strict"
       ]
     },
     {
@@ -600,7 +597,7 @@
       "type": "KSamplerSelect",
       "pos": [
         1500,
-        1492
+        1468
       ],
       "size": [
         360,
@@ -999,7 +996,7 @@
       "type": "MiniMaxH3UpscaleReferencePromptOverride",
       "pos": [
         1500,
-        1700
+        1676
       ],
       "size": [
         360,
@@ -1055,7 +1052,7 @@
       "type": "VAELoader",
       "pos": [
         1500,
-        2172
+        2148
       ],
       "size": [
         360,
@@ -1641,7 +1638,7 @@
       "type": "H3V2VInit",
       "pos": [
         3720,
-        1240
+        1192
       ],
       "size": [
         360,
@@ -2933,7 +2930,7 @@
         1460,
         90,
         560,
-        3058
+        3034
       ],
       "color": "#393f58",
       "font_size": 24,
@@ -2981,7 +2978,7 @@
         3680,
         90,
         440,
-        1594
+        1546
       ],
       "color": "#393f58",
       "font_size": 24,

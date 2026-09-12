@@ -178,7 +178,7 @@
       ],
       "size": [
         360,
-        256
+        216
       ],
       "flags": {},
       "order": 5,
@@ -202,16 +202,6 @@
         {
           "name": "source_timeline",
           "type": "H3_SOURCE_TIMELINE",
-          "link": null
-        },
-        {
-          "name": "tagged_references",
-          "type": "H3_TAGGED_REFERENCES",
-          "link": null
-        },
-        {
-          "name": "reference_schedule",
-          "type": "H3_REFERENCE_SCHEDULE",
           "link": null
         }
       ],
@@ -251,7 +241,7 @@
       "type": "MiniMaxH3ChainCurrent",
       "pos": [
         3820,
-        1648
+        1608
       ],
       "size": [
         460,
@@ -380,7 +370,7 @@
       "type": "MiniMaxH3ChainAssemble",
       "pos": [
         4390,
-        2436
+        2396
       ],
       "size": [
         440,
@@ -1157,7 +1147,7 @@
       "type": "ModelAttentionBackend",
       "pos": [
         3820,
-        2148
+        2108
       ],
       "size": [
         360,
@@ -1317,7 +1307,7 @@
       ],
       "size": [
         1080,
-        972
+        948
       ],
       "flags": {},
       "order": 23,
@@ -1441,8 +1431,7 @@
         20,
         5,
         "guide",
-        "",
-        "main"
+        ""
       ]
     },
     {
@@ -1450,7 +1439,7 @@
       "type": "MiniMaxH3ChainManifestLoad",
       "pos": [
         3820,
-        2436
+        2396
       ],
       "size": [
         440,
@@ -1576,8 +1565,7 @@
         "Node name for S&R": "MiniMaxH3ChainLoopEnd"
       },
       "widgets_values": [
-        "off",
-        "recursive"
+        "off"
       ]
     },
     {
@@ -1699,7 +1687,7 @@
       "type": "MiniMaxH3ProjectAssetManager",
       "pos": [
         1200,
-        1252
+        1228
       ],
       "size": [
         1080,
@@ -2275,7 +2263,7 @@
         40,
         90,
         3600,
-        2082
+        2070
       ],
       "color": "#315566",
       "font_size": 24,
@@ -2287,7 +2275,7 @@
         3780,
         90,
         540,
-        2206
+        2166
       ],
       "color": "#393f58",
       "font_size": 24,
@@ -2357,7 +2345,7 @@
       "title": "RECOVERY • DISABLED / NO SAMPLING",
       "bounding": [
         3780,
-        2346,
+        2306,
         1090,
         490
       ],

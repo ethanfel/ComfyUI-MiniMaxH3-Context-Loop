@@ -38,8 +38,6 @@ from contextlib import contextmanager, nullcontext
 from datetime import datetime, timezone
 from fractions import Fraction
 from typing import Any
-from .storage_writes import project_writer, reserve_take, reserve_directory, reserve_export
-from .processing_persistence import temporary_path as _temporary_storage_path
 
 import folder_paths
 
@@ -278,10 +276,9 @@ def _require_plan_write(plan: Any, operation: str) -> None:
 
 
 def _archivable_plan(plan: dict[str, Any]) -> dict[str, Any]:
-    """Clone a Plan without ephemeral ownership or execution-root carriers."""
+    """Clone a Plan without its ephemeral workflow fencing proof."""
     archived = dict(plan)
     archived.pop("_project_ownership", None)
-    archived.pop("_storage_pin", None)
     return archived
 _PLAN_STUDIO_PREVIEW_BUILD_TASKS: dict[str, asyncio.Task[str]] = {}
 _PLAN_STUDIO_THUMBNAIL_BUILD_LOOP: asyncio.AbstractEventLoop | None = None
@@ -743,13 +740,13 @@ def _expand_filename_date(value: str, now: datetime | None = None) -> str:
 
 def _available_versioned_path(path: str) -> str:
     """Return path unchanged when free, otherwise add a numeric version."""
-    if not os.path.exists(_absolute_output_path(path)):
+    if not os.path.exists(path):
         return path
     root, extension = os.path.splitext(path)
     version = 1
     while True:
         candidate = "%s_%03d%s" % (root, version, extension)
-        if not os.path.exists(_absolute_output_path(candidate)):
+        if not os.path.exists(candidate):
             return candidate
         version += 1
 
@@ -2845,25 +2842,6 @@ def _source_timeline_from_recovery(
     _validate_source_timeline(restored)
     video = restored.get("video")
     audio = restored["audio"]
-    from .storage_runtime import current_runtime
-    runtime = current_runtime(_output_root())
-    if runtime is not None:
-        # A migrated run may carry the exact recovery mirror while its saved
-        # input path names a different machine/container. Resolve only accepted
-        # catalogue/hash matches; leave source identity and input Plan untouched.
-        if video is not None and not str(video_path or "").strip():
-            recovered = runtime.reader.recovery_asset(video)
-            if recovered is not None:
-                video["path"] = str(recovered)
-                restored["recovery"]["video_path"] = str(recovered)
-                if audio.get("kind") == "embedded":
-                    audio["path"] = str(recovered)
-                    restored["recovery"]["audio_path"] = str(recovered)
-        if audio.get("kind") == "external_path" and not str(audio_path or "").strip():
-            recovered = runtime.reader.recovery_asset(audio)
-            if recovered is not None:
-                audio["path"] = str(recovered)
-                restored["recovery"]["audio_path"] = str(recovered)
     if str(video_path or "").strip():
         if video is None:
             raise ValueError("Cannot relink video on an audio-only timeline.")
@@ -3102,27 +3080,10 @@ def _materialize_source_timeline_primary_audio(
         silent_padding = True
     content_hash = str(audio.get("content_sha256") or
                        _audio_fingerprint(value))
-    from .storage_runtime import current_runtime
-    runtime = current_runtime(_output_root(), plan.get('run_name'))
-    if runtime is not None:
-        from .storage_source_media import SourceArchive
-        prefix = '' if runtime.selected == 'main' else 'branches/'+runtime.selected+'/'
-        logical = prefix+'source_timeline/source_audio.%s.wav' % content_hash[:16]
-        path = str(runtime.reader.path(runtime.project/logical))
-        if not os.path.isfile(path):
-            import tempfile
-            with runtime.branches._commit_guard():
-                with tempfile.TemporaryDirectory(prefix='h3-source-audio-') as temporary:
-                    encoded = os.path.join(temporary, 'audio.wav')
-                    _atomic_float_wav(materialized, encoded)
-                    archive = SourceArchive(runtime)
-                    path = str(archive.media(encoded, logical)[0])
-                    archive.commit()
-    else:
-        directory = os.path.join(_run_dir(plan), "source_timeline")
-        path = os.path.join(directory, "source_audio.%s.wav" % content_hash[:16])
-        if not os.path.isfile(path):
-            _atomic_float_wav(materialized, path)
+    directory = os.path.join(_run_dir(plan), "source_timeline")
+    path = os.path.join(directory, "source_audio.%s.wav" % content_hash[:16])
+    if not os.path.isfile(path):
+        _atomic_float_wav(materialized, path)
     inspected = _probe_audio_path(
         path, "Materialized H3 Source Timeline audio", True)
     assert inspected is not None
@@ -3176,18 +3137,6 @@ def _archive_source_timeline_path(
     if expected_hash and actual_hash != expected_hash:
         raise ValueError(
             "H3 Source Timeline media changed before Run Manager archived it.")
-    from .storage_runtime import current_runtime
-    runtime = current_runtime(_output_root())
-    if runtime is not None:
-        from .storage_source_media import SourceArchive
-        from pathlib import Path
-        directory = Path(destination_dir).relative_to(runtime.project).as_posix()
-        logical = directory+'/'+actual_hash+os.path.splitext(source_path)[1][:12]
-        with runtime.branches._commit_guard():
-            archive = SourceArchive(runtime)
-            target, _ = archive.media(source_path, logical)
-            archive.commit()
-        return str(target)
     os.makedirs(destination_dir, exist_ok=True)
     basename = _safe_name(
         os.path.splitext(os.path.basename(source_path))[0], "source")
@@ -3225,9 +3174,7 @@ def _archive_source_timeline_media(
     prepared["audio"] = dict(source["audio"])
     prepared["fingerprints"] = dict(source["fingerprints"])
     prepared["recovery"] = dict(source.get("recovery") or {})
-    from .storage_runtime import current_runtime
-    runtime = current_runtime(_output_root(), plan.get('run_name'))
-    run_dir = runtime.reader.working_directory(runtime.run) if runtime is not None else _run_dir(plan)
+    run_dir = _run_dir(plan)
     video = prepared.get("video")
     audio = prepared["audio"]
     if video is not None and bool(archive_video):
@@ -4645,10 +4592,6 @@ def _reference_cache_descriptor(metadata: Any) -> dict[str, Any] | None:
 
 
 def _reference_cache_object_store(metadata: dict[str, Any]) -> ReferenceTensorStore:
-    runtime_cache = _runtime_reference_cache(metadata)
-    if runtime_cache is not None:
-        from .storage_reference_cache import PinnedTensorStore
-        return PinnedTensorStore(runtime_cache.runtime, metadata)
     metadata_path = _absolute_output_path(metadata["metadata"])
     parent = os.path.dirname(metadata_path)
     shared = _absolute_output_path("h3_reference_cache")
@@ -4674,9 +4617,7 @@ def _verify_reference_cache_objects(metadata: dict[str, Any]) -> ReferenceTensor
 
 
 def _reference_cache_tensors(metadata: dict[str, Any]) -> dict[str, Any]:
-    runtime_cache = _runtime_reference_cache(metadata)
-    metadata = (runtime_cache.load(_reference_cache_descriptor(metadata)) if runtime_cache else
-                _resolve_converted_reference_cache(metadata))
+    metadata = _resolve_converted_reference_cache(metadata)
     if metadata.get("format") == REFERENCE_CACHE_FORMAT:
         store = _verify_reference_cache_objects(metadata)
         loaded = {}
@@ -4687,8 +4628,7 @@ def _reference_cache_tensors(metadata: dict[str, Any]) -> dict[str, Any]:
                 loaded[digest] = store.load(record)
             tensors[key] = loaded[digest]
         return tensors
-    tensor_path = (str(runtime_cache.runtime.reader.path(metadata["tensors"])) if runtime_cache else
-                   _absolute_output_path(metadata["tensors"]))
+    tensor_path = _absolute_output_path(metadata["tensors"])
     expected = str(metadata.get("tensors_sha256") or "")
     if (not os.path.isfile(tensor_path) or not expected
             or _file_sha256(tensor_path) != expected):
@@ -4697,10 +4637,6 @@ def _reference_cache_tensors(metadata: dict[str, Any]) -> dict[str, Any]:
 
 
 def _resolve_converted_reference_cache(metadata: dict[str, Any]) -> dict[str, Any]:
-    if _runtime_reference_cache(metadata) is not None:
-        # Accepted manifests are exact versions. A global conversion index
-        # must not silently replace the pinned reconstruction dependency.
-        return metadata
     if metadata.get("format") in REFERENCE_CACHE_LEGACY_FORMATS:
         converted = ReferenceCacheMigrator(_output_root()).resolve(metadata)
         if converted is not None:
@@ -4718,26 +4654,8 @@ def _run_local_reference_cache(
         return None
     if descriptor is None or int(scene) < 1:
         return None
-    from .storage_runtime import current_runtime
-    runtime = current_runtime(_output_root(), normalized_run)
-    if runtime is not None:
-        from .storage_reference_cache import RuntimeReferenceCache
-        cache = RuntimeReferenceCache(runtime)
-        if cache.owns(descriptor):
-            return cache.load(descriptor)
-        stem = 'h3_chains/'+normalized_run+'/reference_cache/scene_%04d.%s' % (
-            int(scene), str(descriptor['signature'])[:24])
-        for suffix in ('.json', '.converted.json'):
-            address = runtime.reader.address(stem+suffix)
-            if address in runtime.base.state['documents']:
-                metadata = runtime.reader.read(stem+suffix)
-                if all(metadata.get(key) == descriptor[key] for key in (
-                        'format', 'signature', 'reference_fingerprint', 'tensors_sha256')):
-                    return cache.load(_reference_cache_descriptor(metadata))
-        return None
     root = os.path.abspath(os.path.join(
         _project_run_dir({"run_name": normalized_run}), "reference_cache"))
-    root = _absolute_output_path(root)
     signature = str(descriptor["signature"])
     stem = "scene_%04d.%s" % (int(scene), signature[:24])
     tensors_path = os.path.join(root, stem + ".safetensors")
@@ -4765,7 +4683,6 @@ def _run_local_reference_cache(
     return None
 
 
-@project_writer
 def _adopt_reference_cache_for_run(
         plan: dict[str, Any], metadata: Any) -> dict[str, Any]:
     """Publish a self-contained run-local view of a global cache object."""
@@ -4784,7 +4701,6 @@ def _adopt_reference_cache_for_run(
     run_root = os.path.abspath(_project_run_dir(plan))
     if os.path.commonpath([run_root, root]) != run_root:
         raise ValueError("H3 run-local reference cache escapes the run folder.")
-    root = reserve_directory(_output_root(), root, "reference_cache")
     signature = str(descriptor["signature"])
     stem = "scene_%04d.%s" % (scene, signature[:24])
     tensors_path = os.path.join(root, stem + ".safetensors")
@@ -4846,21 +4762,7 @@ def _load_run_reference_cache_descriptor(
     return _load_reference_cache_descriptor(value)
 
 
-def _runtime_reference_cache(value):
-    from .storage_runtime import current_runtime
-    runtime = current_runtime(_output_root())
-    if runtime is not None:
-        from .storage_reference_cache import RuntimeReferenceCache
-        cache = RuntimeReferenceCache(runtime)
-        if cache.owns(value):
-            return cache
-    return None
-
-
 def _load_reference_cache_descriptor(value: Any) -> dict[str, Any]:
-    runtime_cache = _runtime_reference_cache(value)
-    if runtime_cache is not None:
-        return runtime_cache.load(value)
     descriptor = _json_document(value)
     if _reference_cache_descriptor(descriptor) is None:
         raise ValueError("H3 checkpoint reference-cache descriptor is invalid.")
@@ -8107,24 +8009,14 @@ def _normalize_plan(
 def _locked_saved_resolutions(plan: dict[str, Any]) -> dict[str, Any]:
     """Read old scene locks without rewriting or adopting checkpoint metadata."""
     locked = set(_load_run_editorial(plan["run_name"]).get("locked_scene_ids", []))
-    from .storage_runtime import current_runtime
-    runtime = current_runtime(_output_root(), plan["run_name"])
     result = {}
     for shot in plan["shots"]:
         if shot["id"] not in locked:
             continue
-        if runtime is not None:
-            directory = runtime.reader.working_directory(plan["run_name"])
-            checkpoint_dir = os.path.join(directory, "checkpoints")
-            name = "clip_%04d.json" % int(shot["index"])
-            if name not in runtime.reader.names(checkpoint_dir):
-                continue
-            metadata = runtime.reader.read(os.path.join(checkpoint_dir, name))
-        else:
-            path = _artifact_paths(plan, int(shot["index"]))["metadata"]
-            if not os.path.isfile(path):
-                continue  # Locking an ungenerated timeline slot cannot pin pixels.
-            metadata = _read_json(path)
+        path = _artifact_paths(plan, int(shot["index"]))["metadata"]
+        if not os.path.isfile(path):
+            continue  # Locking an ungenerated timeline slot cannot pin pixels.
+        metadata = _read_json(path)
         segment = metadata.get("segment") or {}
         if (segment.get("id") != shot["id"]
                 or int(segment.get("index", 0)) != int(shot["index"])):
@@ -8283,8 +8175,6 @@ def _project_run_dir(plan: dict[str, Any]) -> str:
         inside = False
     if not inside:
         raise ValueError("H3 chain run path escapes the ComfyUI output directory.")
-    from .storage_resolver import storage_state
-    storage_state(path)
     return path
 
 
@@ -8522,38 +8412,27 @@ def _delete_run_folder(run_name: Any, snapshot: Any,
 
 
 def _relative_output_path(path: str) -> str:
-    from .storage_resolver import logical_output
-    root = _output_root()
-    # Windows may spell the same output as a mapped drive or a UNC share.
-    # Canonicalize both sides before relpath, then let storage translate the
-    # portable address without changing persisted metadata/hash inputs.
-    resolved = os.path.realpath(os.path.abspath(path))
-    try:
-        if os.path.commonpath((root, resolved)) != root:
-            raise ValueError("H3 chain artifact path escapes the output directory.")
-        relative = os.path.relpath(resolved, root).replace(os.sep, "/")
-    except ValueError as exc:
-        raise ValueError("H3 chain artifact path escapes the output directory.") from exc
-    return logical_output(root, relative)
+    return os.path.relpath(
+        os.path.realpath(os.path.abspath(path)), _output_root()).replace(os.sep, "/")
 
 
 def _absolute_output_path(path: str) -> str:
-    from .storage_resolver import resolve_output
-    root = _output_root()
-    resolved = os.path.realpath(os.path.join(root, path))
+    root = os.path.realpath(_output_root())
+    if os.path.isabs(path):
+        resolved = os.path.realpath(path)
+    else:
+        resolved = os.path.realpath(os.path.join(root, path))
     try:
-        if os.path.commonpath((root, resolved)) != root:
-            raise ValueError("H3 chain artifact path escapes the output directory.")
-        relative = os.path.relpath(resolved, root).replace(os.sep, "/")
-    except ValueError as exc:
-        raise ValueError("H3 chain artifact path escapes the output directory.") from exc
-    return str(resolve_output(root, relative))
+        inside = os.path.commonpath((root, resolved)) == root
+    except ValueError:
+        inside = False
+    if not inside:
+        raise ValueError("H3 chain artifact path escapes the output directory.")
+    return resolved
 
 
-def _video_output_item(path: str, *, rehearsal_view=None) -> dict[str, str]:
-    # ComfyUI's /view endpoint opens a physical file, not an H3 logical alias.
-    resolved = rehearsal_view.path(path) if rehearsal_view is not None else _absolute_output_path(path)
-    relative = os.path.relpath(resolved, _output_root()).replace(os.sep, "/")
+def _video_output_item(path: str) -> dict[str, str]:
+    relative = _relative_output_path(path)
     return {
         "filename": os.path.basename(relative),
         "subfolder": os.path.dirname(relative),
@@ -8569,7 +8448,7 @@ def _final_review_preview_key(document: dict[str, Any]) -> tuple[str, str]:
 
 
 def _publish_final_review_preview(
-    manifest: dict[str, Any], final_path: str, status: str, *, video_item=None
+    manifest: dict[str, Any], final_path: str, status: str
 ) -> None:
     """Return the completed final assembly to the gate that approved it."""
     if manifest.get("format") not in (
@@ -8584,7 +8463,7 @@ def _publish_final_review_preview(
         "node_id": pending["node_id"],
         "action": "final",
         "status": status,
-        "final_video": dict(video_item) if video_item is not None else _video_output_item(final_path),
+        "final_video": _video_output_item(final_path),
     }
     try:
         PromptServer.instance.send_sync(
@@ -8600,22 +8479,27 @@ def _publish_final_review_preview(
 
 def _artifact_paths(plan: dict[str, Any], index: int) -> dict[str, str]:
     # UUID-addressed media and revisions are shared; only selection is scoped.
-    from .storage_legacy import LegacyStoragePaths
-    return LegacyStoragePaths(_project_run_dir(plan), _run_dir(plan)).generation(index)
-
-
-def _saved_generation_paths(plan: dict[str, Any], index: int, view=None) -> dict[str, str]:
-    """Logical read identities only; never hand these to an unported writer."""
-    if view is None:
-        return _artifact_paths(plan, index)
-    from .storage_legacy import LegacyStoragePaths
-    return LegacyStoragePaths(str(view.project),
-        view.working_directory(plan["run_name"])).generation(index)
+    run_dir = _project_run_dir(plan)
+    return {
+        "run_dir": run_dir,
+        "segment": os.path.join(run_dir, "segments", "clip_%04d.mp4" % index),
+        "blend_segment": os.path.join(
+            run_dir, "blend_segments", "clip_%04d.mp4" % index),
+        "generated_audio": os.path.join(
+            run_dir, "generated_audio", "clip_%04d.wav" % index),
+        "checkpoint": os.path.join(run_dir, "checkpoints",
+                                   "clip_%04d.safetensors" % index),
+        "metadata": os.path.join(_run_dir(plan), "checkpoints", "clip_%04d.json" % index),
+    }
 
 
 def _run_archive_paths(plan: dict[str, Any]) -> dict[str, str]:
-    from .storage_legacy import LegacyStoragePaths
-    return LegacyStoragePaths("", _run_dir(plan)).archives()
+    run_dir = _run_dir(plan)
+    return {
+        "plan": os.path.join(run_dir, "plan.json"),
+        "workflow": os.path.join(run_dir, "workflow.json"),
+        "api_prompt": os.path.join(run_dir, "api_prompt.json"),
+    }
 
 
 def _versioned_path(path: str, transaction: str) -> str:
@@ -8643,7 +8527,7 @@ def _safe_unlink(path: str) -> None:
 
 def _atomic_text(path: str, value: str) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    temporary = _temporary_storage_path(path)
+    temporary = "%s.%s.tmp" % (path, uuid.uuid4().hex)
     try:
         # Write exact UTF-8 bytes so Windows does not silently translate LF to
         # CRLF. Prompt hashes are defined over the normalized UTF-8 text.
@@ -8702,8 +8586,28 @@ def _preserve_previous_revision(plan: dict[str, Any], index: int,
 
 
 def _atomic_json(path: str, value: Any) -> None:
-    from .processing_persistence import atomic_json
-    atomic_json(path, value)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    temporary = "%s.%s.tmp" % (path, uuid.uuid4().hex)
+    try:
+        with open(temporary, "w", encoding="utf-8") as handle:
+            json.dump(value, handle, ensure_ascii=False, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        try:
+            directory = os.open(os.path.dirname(path), os.O_RDONLY)
+        except OSError:
+            directory = None
+        if directory is not None:
+            try:
+                os.fsync(directory)
+            except OSError:
+                pass
+            finally:
+                os.close(directory)
+    finally:
+        _safe_unlink(temporary)
 
 
 def _read_json(path: str) -> Any:
@@ -8995,18 +8899,6 @@ def _load_run_editorial(run_name: Any) -> dict[str, Any]:
     }
     if not normalized:
         return empty
-    if __package__:
-        from .storage_runtime import current_runtime
-    else:
-        from storage_runtime import current_runtime
-    runtime = current_runtime(_output_root(), normalized)
-    if runtime is not None:
-        directory = runtime.reader.working_directory(normalized)
-        if "editorial.json" not in runtime.reader.names(directory):
-            return empty
-        # Accepted but malformed cuts must not silently become Original.
-        return _normalize_run_editorial(
-            runtime.reader.read(os.path.join(directory, "editorial.json")), normalized)
     path = _run_editorial_path(normalized)
     if not os.path.isfile(path):
         return empty
@@ -9044,19 +8936,11 @@ def _alternate_take_plan(
             "Alternate draft scene %d is now %r instead of %r. Refresh Plan "
             "Studio and create the draft again." %
             (scene, str(shot.get("id") or ""), str(draft["scene_id"])))
-    from .storage_runtime import current_runtime
-    runtime = current_runtime(_output_root(), plan["run_name"])
-    if runtime is not None:
-        active_path = os.path.join(runtime.reader.working_directory(plan["run_name"]),
-                                   "checkpoints", "clip_%04d.json" % scene)
-        exists = runtime.reader.address(active_path) in runtime.base.state["documents"]
-    else:
-        active_path = _artifact_paths(plan, scene)["metadata"]
-        exists = os.path.isfile(active_path)
-    if not exists:
+    active_path = _artifact_paths(plan, scene)["metadata"]
+    if not os.path.isfile(active_path):
         raise ValueError(
             "Alternate take scene %d has no active base checkpoint yet." % scene)
-    active_metadata = runtime.reader.read(active_path) if runtime else _read_json(active_path)
+    active_metadata = _read_json(active_path)
     active_segment = (active_metadata.get("segment")
                       if isinstance(active_metadata, dict) else None)
     if not isinstance(active_segment, dict):
@@ -9210,11 +9094,6 @@ def _editorial_presentation_segments(
         editorial: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Resolve picture-only final-cut alternates over immutable base lineage."""
-    if __package__:
-        from .storage_runtime import current_runtime
-    else:
-        from storage_runtime import current_runtime
-    runtime = current_runtime(_output_root(), run_name)
     editorial = editorial or _load_run_editorial(run_name)
     replacements = {
         int(item["scene"]): item
@@ -9247,19 +9126,14 @@ def _editorial_presentation_segments(
         revision = str(replacement["alternate_revision"])
         # Revision objects are project-shared, unlike the branch's mutable
         # clip_XXXX.json pointers. Named final cuts must read the shared ALT.
-        if runtime is not None:
-            metadata, metadata_path = _load_checkpoint_revision(
-                run_name, scene, revision, verify_artifacts=False,
-                rehearsal_view=runtime.reader)
-        else:
-            metadata_path = os.path.join(
-                _project_run_dir({"run_name": run_name}), "checkpoints",
-                "clip_%04d.%s.json" % (scene, revision))
-            if not os.path.isfile(metadata_path):
-                raise FileNotFoundError(
-                    "Selected scene %d alternate revision is missing: %s" %
-                    (scene, metadata_path))
-            metadata = _read_json(metadata_path)
+        metadata_path = os.path.join(
+            _project_run_dir({"run_name": run_name}), "checkpoints",
+            "clip_%04d.%s.json" % (scene, revision))
+        if not os.path.isfile(metadata_path):
+            raise FileNotFoundError(
+                "Selected scene %d alternate revision is missing: %s" %
+                (scene, metadata_path))
+        metadata = _read_json(metadata_path)
         alternate = metadata.get("segment") if isinstance(metadata, dict) else None
         if (not isinstance(alternate, dict) or
                 checkpoint_revision_token(scene, alternate) != revision or
@@ -9270,8 +9144,7 @@ def _editorial_presentation_segments(
             raise ValueError(
                 "Selected scene %d alternate revision has invalid metadata."
                 % scene)
-        _verify_segment_artifacts(alternate, scene,
-            **({"rehearsal_view": runtime.reader} if runtime else {}))
+        _verify_segment_artifacts(alternate, scene)
         for key in ("id", "raw_frames", "delivered_frames"):
             if str(alternate.get(key)) != str(base.get(key)):
                 raise ValueError(
@@ -9733,7 +9606,7 @@ def _parse_timed_lyrics(value: Any) -> list[dict[str, Any]]:
 
 def _editorial_subtitle_cues(
         run_name: str, editorial: dict[str, Any], total_frames: int,
-        timeline_origin_frames: int = 0, *, rehearsal_view=None,
+        timeline_origin_frames: int = 0
         ) -> list[dict[str, Any]]:
     settings = editorial.get("subtitles") or {}
     if settings.get("mode") != "preview_srt":
@@ -9742,8 +9615,7 @@ def _editorial_subtitle_cues(
     if not asset_id:
         raise ValueError(
             "Editorial subtitles are enabled but no lyrics asset is selected.")
-    catalog = (rehearsal_view.read('h3_chains/'+run_name+'/project_assets/catalog.json')
-               if rehearsal_view is not None else ProjectAssetStore(_input_root(), _output_root()).load(run_name))
+    catalog = ProjectAssetStore(_input_root(), _output_root()).load(run_name)
     asset = next((item for item in catalog.get("assets", [])
                   if str(item.get("id") or "") == asset_id), None)
     if asset is None or asset.get("kind") != "audio":
@@ -9776,14 +9648,13 @@ def _srt_timestamp(seconds: float) -> str:
         hours, minutes, whole_seconds, milliseconds)
 
 
-def _write_editorial_srt(path: str, cues: list[dict[str, Any]], *,
-                         write_text=None) -> None:
+def _write_editorial_srt(path: str, cues: list[dict[str, Any]]) -> None:
     blocks = []
     for index, cue in enumerate(cues, start=1):
         blocks.append("%d\n%s --> %s\n%s" % (
             index, _srt_timestamp(float(cue["start"])),
             _srt_timestamp(float(cue["end"])), str(cue["text"])))
-    (write_text or _atomic_text)(path, "\n\n".join(blocks) + "\n")
+    _atomic_text(path, "\n\n".join(blocks) + "\n")
 
 
 def _effective_editor_plan(plan: dict[str, Any]) -> dict[str, Any]:
@@ -9953,14 +9824,9 @@ def _patched_workflow(workflow: Any, plan: dict[str, Any],
 
 def _run_archive_documents(
         plan: dict[str, Any], api_prompt: Any = None,
-        extra_pnginfo: Any = None, *, rehearsal_view=None) -> dict[str, Any]:
+        extra_pnginfo: Any = None) -> dict[str, Any]:
     """Build one internally consistent recovery snapshot in memory."""
-    if rehearsal_view is None:
-        paths = _run_archive_paths(plan)
-    else:
-        directory = rehearsal_view.working_directory(plan["run_name"])
-        paths = {key: str(rehearsal_view.path(os.path.join(directory, key+".json")))
-                 for key in ("plan", "workflow", "api_prompt")}
+    paths = _run_archive_paths(plan)
     archived_plan = _archivable_plan(plan)
     archived_plan["format"] = "h3_chain_plan_archive_v1"
     archived_plan["editor_plan"] = _effective_editor_plan(plan)
@@ -9995,9 +9861,12 @@ def _run_archive_snapshot_paths(
     token = str(revision or "").strip().lower()
     if re.fullmatch(r"[0-9a-f]{32}", token) is None:
         raise ValueError("Recovery archive revision must be a revision id.")
-    from .storage_legacy import LegacyStoragePaths
-    return {key: _absolute_output_path(path) for key, path in
-            LegacyStoragePaths(_project_run_dir(plan), "").archives(token).items()}
+    root = os.path.join(_project_run_dir(plan), "recovery_archives", token)
+    return {
+        "plan": os.path.join(root, "plan.json"),
+        "workflow": os.path.join(root, "workflow.json"),
+        "api_prompt": os.path.join(root, "api_prompt.json"),
+    }
 
 
 def _promote_run_archive_snapshot(
@@ -10024,7 +9893,7 @@ def _validated_run_archive_snapshot(
     if not isinstance(plan_value, str) or not plan_value:
         raise ValueError("Recovery archive snapshot has no Plan document.")
     plan_source = _absolute_output_path(plan_value)
-    revision = os.path.basename(os.path.dirname(_relative_output_path(plan_source))).lower()
+    revision = os.path.basename(os.path.dirname(plan_source)).lower()
     if re.fullmatch(r"[0-9a-f]{32}", revision) is None:
         raise ValueError("Recovery archive snapshot has an invalid revision id.")
     if expected_revision is not None and revision != str(
@@ -10039,7 +9908,7 @@ def _validated_run_archive_snapshot(
         if not isinstance(value, str) or not value:
             raise ValueError("Recovery archive %s path is invalid." % key)
         source = _absolute_output_path(value)
-        if source != _absolute_output_path(expected[key]):
+        if source != os.path.realpath(expected[key]):
             raise ValueError(
                 "Recovery archive %s is outside revision %s." %
                 (key, revision[:8]))
@@ -10112,7 +9981,6 @@ def _remove_run_archive_snapshot(
         shutil.rmtree(root, ignore_errors=True)
 
 
-@project_writer
 def _write_run_archives(
         plan: dict[str, Any], api_prompt: Any = None,
         extra_pnginfo: Any = None, *, revision: str | None = None,
@@ -10127,9 +9995,6 @@ def _write_run_archives(
     """
     token = str(revision or uuid.uuid4().hex).lower()
     snapshot_paths = _run_archive_snapshot_paths(plan, token)
-    directory = reserve_directory(_output_root(), os.path.dirname(snapshot_paths["plan"]), "recovery")
-    snapshot_paths = {key: os.path.join(directory, os.path.basename(path))
-                      for key, path in snapshot_paths.items()}
     documents = _run_archive_documents(plan, api_prompt, extra_pnginfo)
     try:
         for key, document in documents.items():
@@ -10164,16 +10029,6 @@ def _promote_checkpoint_run_archives(
 
 
 def _available_run_archives(plan: dict[str, Any]) -> dict[str, str]:
-    from .storage_runtime import current_runtime
-    runtime = current_runtime(_output_root(), plan.get("run_name"))
-    if runtime is not None:
-        # These logical identities resolve inside the operation's accepted
-        # snapshot; never scan old physical checkpoint directories or mtimes.
-        prefix = "" if runtime.selected == "main" else "branches/" + runtime.selected + "/"
-        documents = runtime.base.state["documents"]
-        return {key: "h3_chains/" + runtime.run + "/" + prefix + key + ".json"
-                for key in ("plan", "workflow", "api_prompt")
-                if prefix + key + ".json" in documents}
     checkpoint_dir = os.path.join(_run_dir(plan), "checkpoints")
     if os.path.isdir(checkpoint_dir):
         active = []
@@ -10198,7 +10053,7 @@ def _available_run_archives(plan: dict[str, Any]) -> dict[str, str]:
             if os.path.isfile(path)}
 
 
-def _archive_media_metadata(archives: Any, *, rehearsal_view=None) -> dict[str, str]:
+def _archive_media_metadata(archives: Any) -> dict[str, str]:
     """Load ComfyUI-compatible video tags from persisted run archives."""
     if not isinstance(archives, dict):
         return {}
@@ -10210,15 +10065,8 @@ def _archive_media_metadata(archives: Any, *, rehearsal_view=None) -> dict[str, 
         if not isinstance(value, str):
             continue
         try:
-            if rehearsal_view is None:
-                document = _read_json(_absolute_output_path(value))
-            elif archive_key in ("workflow", "api_prompt"):
-                document = rehearsal_view.read_workflow_archive(value, archive_key)
-            else:
-                document = rehearsal_view.read(value)
+            document = _read_json(_absolute_output_path(value))
         except (OSError, ValueError, json.JSONDecodeError) as exc:
-            if rehearsal_view is not None:
-                raise
             _LOG.warning("H3 Chain could not embed %s metadata: %s",
                          archive_key, exc)
             continue
@@ -10736,7 +10584,7 @@ def _public_segment(value: dict[str, Any]) -> dict[str, Any]:
         "revision", "revision_metadata", "supersedes", "prompt_file",
         "created_at", "branch_id", "forked_from_branch_id",
         "generated_audio", "generated_audio_sha256",
-        "raw_frames", "delivered_frames", "history_hash", "resolution",
+        "raw_frames", "delivered_frames", "history_hash",
         "scene_dependency", "reference_cache", "generation_fingerprint",
         "prompt_prefix", "scene_prompt", "scene_prompt_template", "prompt",
         "prompt_hash", "prompt_template_hash", "prompt_choice_seed", "archives",
@@ -10776,30 +10624,6 @@ def _public_segment(value: dict[str, Any]) -> dict[str, Any]:
         "take_kind", "alternate_of_revision", "alternate_media_mode",
         "presentation_base_revision", "presentation_alternate_revision",
         "presentation_media_mode") if key in value}
-
-
-def _load_saved_context_tensors(plan: dict[str, Any], segment: dict[str, Any]):
-    """Read the selected immutable context, not a legacy-path or latest-root guess."""
-    from .storage_runtime import current_runtime
-    runtime = current_runtime(_output_root(), plan.get("run_name"))
-    if runtime is None:
-        return _st_load(_absolute_output_path(segment["checkpoint"]))
-    revision_path = segment.get("revision_metadata")
-    if not revision_path:
-        revision = str(segment.get("revision") or "")
-        if re.fullmatch(r"[0-9a-f]{32}", revision) is None:
-            raise ValueError("Saved context requires an accepted checkpoint identity.")
-        revision_path = "h3_chains/%s/checkpoints/clip_%04d.%s.json" % (
-            runtime.run, int(segment["index"]), revision)
-    saved = runtime.reader.read(revision_path).get("segment", {})
-    if any(saved.get(key) != segment.get(key) for key in (
-            "index", "revision", "checkpoint", "checkpoint_sha256")):
-        raise ValueError("Saved context differs from its accepted immutable checkpoint.")
-    address = runtime.reader.address(segment["checkpoint"])
-    path = runtime.store.payload_path(runtime.base, address, verify=True)
-    if _file_sha256(path) != segment.get("checkpoint_sha256"):
-        raise ValueError("Saved context checkpoint failed its SHA-256 integrity check.")
-    return _st_load(str(path))
 
 
 def _audio_context_state(state: dict[str, Any]) -> dict[str, Any]:
@@ -10867,7 +10691,7 @@ def _audio_context_state(state: dict[str, Any]) -> dict[str, Any]:
             raise ValueError(
                 "H3 audio context scene %d has no checkpoint path." %
                 int(scene_index))
-        tensors = _load_saved_context_tensors(plan, segment)
+        tensors = _st_load(_absolute_output_path(checkpoint_value))
         audio = tensors.get("audio")
         if not torch.is_tensor(audio) or audio.ndim not in (3, 4):
             raise ValueError(
@@ -11060,7 +10884,7 @@ def _visual_context_state(
             raise ValueError(
                 "H3 visual context scene %d has no checkpoint path." %
                 int(scene_index))
-        tensors = _load_saved_context_tensors(plan, segment)
+        tensors = _st_load(_absolute_output_path(checkpoint_value))
         frames = tensors.get("context_frames")
         video = tensors.get("video")
         if (not torch.is_tensor(frames) or frames.ndim != 4
@@ -11316,11 +11140,7 @@ def _visual_context_state(
     return selected
 
 
-def _verify_segment_artifacts(segment: dict[str, Any], index: int, *,
-                              rehearsal_view=None) -> None:
-    # This port is read-only and explicit: never expose immutable paths to
-    # unported savers/deleters through the general output resolver.
-    resolve = rehearsal_view.path if rehearsal_view is not None else _absolute_output_path
+def _verify_segment_artifacts(segment: dict[str, Any], index: int) -> None:
     if int(segment.get("index", -1)) != int(index):
         raise ValueError(
             "H3 chain metadata slot %d points to segment index %r." %
@@ -11333,7 +11153,7 @@ def _verify_segment_artifacts(segment: dict[str, Any], index: int, *,
             raise ValueError(
                 "H3 chain clip %d metadata has no verified %s artifact." %
                 (index, key))
-        artifact = resolve(value)
+        artifact = _absolute_output_path(value)
         if not os.path.isfile(artifact):
             raise FileNotFoundError(
                 "H3 chain clip %d %s is missing: %s" %
@@ -11351,7 +11171,7 @@ def _verify_segment_artifacts(segment: dict[str, Any], index: int, *,
             raise ValueError(
                 "H3 chain clip %d metadata has no verified blend segment." %
                 index)
-        artifact = resolve(value)
+        artifact = _absolute_output_path(value)
         if not os.path.isfile(artifact):
             raise FileNotFoundError(
                 "H3 chain clip %d blend segment is missing: %s" %
@@ -11367,7 +11187,7 @@ def _verify_segment_artifacts(segment: dict[str, Any], index: int, *,
             raise ValueError(
                 "H3 chain clip %d metadata has no verified generated-audio "
                 "sidecar." % index)
-        audio_path = resolve(generated_audio)
+        audio_path = _absolute_output_path(generated_audio)
         if not os.path.isfile(audio_path):
             raise FileNotFoundError(
                 "H3 chain clip %d generated-audio sidecar is missing: %s" %
@@ -11378,7 +11198,7 @@ def _verify_segment_artifacts(segment: dict[str, Any], index: int, *,
                 "integrity check." % index)
     prompt_file = segment.get("prompt_file")
     if isinstance(prompt_file, str):
-        prompt_path = resolve(prompt_file)
+        prompt_path = _absolute_output_path(prompt_file)
         if not os.path.isfile(prompt_path):
             raise FileNotFoundError(
                 "H3 chain clip %d prompt sidecar is missing: %s" %
@@ -11517,13 +11337,7 @@ def _load_resume_state(
         plan: dict[str, Any], start_clip: int,
         verify_history: bool = True, source_timeline: Any = None,
         source_audio: Any = None) -> dict[str, Any]:
-    from .storage_runtime import current_runtime
-    runtime = current_runtime(_output_root(), plan.get("run_name"))
-    view = runtime.reader if runtime is not None else None
-    # Combined pointers are accepted together in the pinned root. Never run
-    # legacy repair writes against that root (or adopt leftover legacy files).
-    if view is None:
-        _recover_checkpoint_pointer_transactions(plan.get("run_name"))
+    _recover_checkpoint_pointer_transactions(plan.get("run_name"))
     previous_index = start_clip - 1
     context_sources = _resume_context_predecessors(plan, int(start_clip))
     _active, stale = CheckpointGraphManager(_output_root()).active_selection(
@@ -11550,14 +11364,12 @@ def _load_resume_state(
             int(start_clip), int(previous_index),
         )
     for index in range(1, previous_index + 1):
-        paths = _saved_generation_paths(plan, index, view)
-        metadata_path = view.path(paths["metadata"]) if view is not None else paths["metadata"]
-        if not os.path.isfile(metadata_path):
+        paths = _artifact_paths(plan, index)
+        if not os.path.isfile(paths["metadata"]):
             raise FileNotFoundError(
                 "Cannot resume clip %d: metadata for predecessor clip %d is "
                 "missing: %s" % (start_clip, index, paths["metadata"]))
-        metadata = (view.read(paths["metadata"]) if view is not None
-                    else _read_json(metadata_path))
+        metadata = _read_json(paths["metadata"])
         saved_dependency = metadata.get("scene_dependency")
         if (bool(verify_history) and index in consumed_predecessors
                 and isinstance(saved_dependency, dict)):
@@ -11604,7 +11416,7 @@ def _load_resume_state(
             raise ValueError(
                 "Checkpoint segment record for clip %d has a mismatched history."
                 % index)
-        _verify_segment_artifacts(segment, index, rehearsal_view=view)
+        _verify_segment_artifacts(segment, index)
         restored = _public_segment(segment)
         for key, value in _prompt_fields(plan, index).items():
             restored.setdefault(key, value)
@@ -11633,7 +11445,9 @@ def _load_resume_state(
     if consumed_predecessors:
         if _st_load is None:
             raise RuntimeError("safetensors is required to resume H3 chains.")
-        tensors = _load_saved_context_tensors(plan, previous_meta["segment"])
+        checkpoint = _absolute_output_path(
+            previous_meta["segment"]["checkpoint"])
+        tensors = _st_load(checkpoint)
         required = {"context_frames", "video", "audio"}
         missing = sorted(required - set(tensors))
         if missing:
@@ -12044,7 +11858,7 @@ def _write_wav(audio: dict[str, Any], path: str) -> None:
 def _atomic_wav(audio: dict[str, Any], path: str) -> None:
     """Publish a WAV without exposing a partial file to resume or the user."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    temporary = _temporary_storage_path(path, ".wav")
+    temporary = "%s.%s.tmp.wav" % (path, uuid.uuid4().hex)
     try:
         _write_wav(audio, temporary)
         os.replace(temporary, path)
@@ -17285,9 +17099,6 @@ def _preflight_resume(
         plan: dict[str, Any], start: int, verify_history: bool,
         report: dict[str, Any], source_timeline: Any = None,
         source_audio: Any = None) -> dict[str, Any]:
-    from .storage_runtime import current_runtime
-    runtime = current_runtime(_output_root(), plan.get("run_name"))
-    view = runtime.reader if runtime is not None else None
     result: dict[str, Any] = {
         "requested_start": int(start), "verify_history": bool(verify_history),
         "eligible": True, "predecessors": [],
@@ -17314,13 +17125,12 @@ def _preflight_resume(
     for index in range(1, int(start)):
         item: dict[str, Any] = {"scene": index, "ok": False}
         try:
-            metadata_path = _saved_generation_paths(plan, index, view)["metadata"]
+            metadata_path = _artifact_paths(plan, index)["metadata"]
             item["metadata"] = metadata_path
-            physical = view.path(metadata_path) if view is not None else metadata_path
-            if not os.path.isfile(physical):
+            if not os.path.isfile(metadata_path):
                 raise FileNotFoundError(
                     "Predecessor scene %d metadata is missing." % index)
-            metadata = view.read(metadata_path) if view is not None else _read_json(metadata_path)
+            metadata = _read_json(metadata_path)
             saved_dependency = metadata.get("scene_dependency")
             dependency_diffs = []
             if (bool(verify_history) and index in consumed_predecessors
@@ -17367,7 +17177,7 @@ def _preflight_resume(
                 raise ValueError(
                     "Predecessor scene %d has inconsistent history metadata."
                     % index)
-            _verify_segment_artifacts(segment, index, rehearsal_view=view)
+            _verify_segment_artifacts(segment, index)
             item.update({"ok": True, "history_hash": accepted,
                          "revision": segment.get("revision")})
         except (OSError, TypeError, ValueError) as exc:
@@ -17952,10 +17762,6 @@ def _plan_studio_preview_cleanup() -> None:
 
 def _plan_studio_presentation_path(run_name: Any) -> str:
     normalized = _strict_run_name(run_name)
-    from .storage_runtime import current_runtime
-    runtime = current_runtime(_output_root(), normalized)
-    if runtime is not None:
-        return os.path.join(runtime.reader.working_directory(normalized), "plan_studio_presentation.json")
     return os.path.join(_run_dir({"run_name": normalized}), "plan_studio_presentation.json")
 
 
@@ -18011,24 +17817,13 @@ def _save_plan_studio_presentation(
     with _project_write_commit_guard(
             run_name, ownership_proof,
             "update the Plan Studio presentation"):
-        from .storage_runtime import current_runtime
-        runtime = current_runtime(_output_root(), run_name)
-        path = _plan_studio_presentation_path(run_name)
-        if runtime is not None:
-            with runtime.branches.operation():
-                runtime.branches.write(path, document)
-        else:
-            _atomic_json(path, document)
+        _atomic_json(_plan_studio_presentation_path(run_name), document)
 
 
 def _restore_plan_studio_presentation(run_name: Any) -> dict[str, Any]:
     """Restore a saved presentation and issue a fresh in-memory media token."""
     normalized = _strict_run_name(run_name)
     path = _plan_studio_presentation_path(normalized)
-    from .storage_runtime import current_runtime
-    runtime = current_runtime(_output_root(), normalized)
-    if runtime is not None:
-        path = str(runtime.reader.path(path))
     if not os.path.isfile(path):
         raise FileNotFoundError(
             "No saved Plan Studio track exists for run %s." % normalized)
@@ -18789,45 +18584,16 @@ def _project_asset_model_upscale(image: Any, upscale_model: Any) -> Any:
 
 def _execute_project_asset_model_operation(
         store: ProjectAssetStore, run_name: str, operation: dict[str, Any],
-        upscale_model: Any, ownership_proof: Any = None, *,
-        storage_operation_id=None, reference_templates=None) -> dict[str, Any]:
+        upscale_model: Any, ownership_proof: Any = None) -> dict[str, Any]:
     run_name = _strict_run_name(run_name)
     operation_project = str(operation.get("project") or "").strip()
     if operation_project and operation_project != run_name:
         raise ValueError(
             "Pending project asset operation belongs to another Run name.")
-    from .storage_runtime import current_runtime
-    runtime = current_runtime(store.output_root, run_name)
-    if runtime is not None:
-        from .storage_asset_models import execute
-        return execute(runtime, store, operation, upscale_model,
-            lambda: _render_project_asset_model_operation(store, run_name, operation, upscale_model),
-            operation_id=storage_operation_id, proof=_project_ownership_proof(ownership_proof),
-            reference_templates=reference_templates)
     existing = store.operation_asset(
         run_name, operation.get("operation_id", ""))
     if existing is not None:
         return existing
-    parent, rendered, transform = _render_project_asset_model_operation(
-        store, run_name, operation, upscale_model)
-    temporary = store.upload_path(
-        run_name, "%s_model_variant.png" % parent.get("tag", "asset"))
-    try:
-        rendered.save(temporary, format="PNG")
-        # Model execution can outlive a browser ownership takeover.
-        with _project_write_commit_guard(
-                run_name, ownership_proof,
-                "publish an upscaled image variant"):
-            return store.register_derived_image(
-                run_name, operation.get("asset_id"), temporary,
-                tag=operation.get("tag", ""), folder_id=operation.get("folder_id"),
-                operation_id=operation.get("operation_id", ""), transform=transform)
-    finally:
-        _safe_unlink(temporary)
-
-
-def _render_project_asset_model_operation(store, run_name, operation, upscale_model):
-    """Shared legacy/migrated pixels, alpha, geometry and model contract."""
     parent, cropped, geometry = store.prepare_image_crop(
         run_name, operation.get("asset_id"), operation.get("crop"),
         operation.get("target"))
@@ -18844,13 +18610,39 @@ def _render_project_asset_model_operation(store, run_name, operation, upscale_mo
             target_size, resample=Image.Resampling.LANCZOS)
         rendered = rendered.convert("RGBA")
         rendered.putalpha(alpha)
-    return parent, rendered, {
-        "kind": "model_upscale_crop",
-        "crop": {key: geometry[key] for key in ("x", "y", "width", "height")},
-        "target": {"width": geometry["target_width"], "height": geometry["target_height"]},
-        "source": {"width": geometry["source_width"], "height": geometry["source_height"]},
-        "model_scale": float(getattr(upscale_model, "scale", 1.0)),
-    }
+    temporary = store.upload_path(
+        run_name, "%s_model_variant.png" % parent.get("tag", "asset"))
+    try:
+        rendered.save(temporary, format="PNG")
+        # Model execution can outlive a browser ownership takeover. Recheck
+        # the fencing epoch immediately before publishing the derived asset;
+        # a stale workflow may finish compute but cannot alter the catalog.
+        with _project_write_commit_guard(
+                run_name, ownership_proof,
+                "publish an upscaled image variant"):
+            return store.register_derived_image(
+                run_name, operation.get("asset_id"), temporary,
+                tag=operation.get("tag", ""),
+                folder_id=(operation.get("folder_id")
+                           if "folder_id" in operation else None),
+                operation_id=operation.get("operation_id", ""),
+                transform={
+                    "kind": "model_upscale_crop",
+                    "crop": {key: geometry[key]
+                             for key in ("x", "y", "width", "height")},
+                    "target": {
+                        "width": geometry["target_width"],
+                        "height": geometry["target_height"],
+                    },
+                    "source": {
+                        "width": geometry["source_width"],
+                        "height": geometry["source_height"],
+                    },
+                    "model_scale": float(
+                        getattr(upscale_model, "scale", 1.0)),
+                })
+    finally:
+        _safe_unlink(temporary)
 
 
 class MiniMaxH3ProjectAssetManager:
@@ -18922,7 +18714,6 @@ class MiniMaxH3ProjectAssetManager:
                                "you press Model upscale in the asset editor; "
                                "normal H3 generation never loads it."}),
             },
-            "hidden": {"unique_id": "UNIQUE_ID"},
         }
 
     RETURN_TYPES = (
@@ -18973,7 +18764,7 @@ class MiniMaxH3ProjectAssetManager:
             tagged_references=None, operation_json="",
             ownership_json="",
             upscale_model=_LAZY_INPUT_MISSING,
-            tagged_scene_options=None, unique_id=None):
+            tagged_scene_options=None):
         del catalog_json, semantic_anchor_size
         del semantic_anchor_mode, tagged_references
         del ownership_json, tagged_scene_options
@@ -18997,7 +18788,7 @@ class MiniMaxH3ProjectAssetManager:
             tagged_references=None, operation_json="",
             ownership_json="",
             upscale_model=_LAZY_INPUT_MISSING,
-            tagged_scene_options=None, unique_id=None):
+            tagged_scene_options=None):
         del tagged_scene_options  # Tolerate prompts saved during 0.6 preview.
         del catalog_json  # Disk catalog is authoritative; widget is UI state.
         # Carousel is an OUTPUT_NODE so it can run asset-only upscale jobs.
@@ -19013,12 +18804,8 @@ class MiniMaxH3ProjectAssetManager:
         except ProjectOwnershipError:
             can_write = False
         store = ProjectAssetStore(_input_root(), _output_root())
-        from .storage_runtime import current_runtime, accepted_asset_read_access
-        from .storage_carriers import asset_operation
-        runtime = current_runtime(_output_root(), run_name)
         operation = _project_asset_pending_operation(operation_json)
         completed_operation = ""
-        catalog = None
         if operation is not None:
             result = store.operation_asset(
                 run_name, operation.get("operation_id", ""))
@@ -19026,50 +18813,25 @@ class MiniMaxH3ProjectAssetManager:
                 _require_project_write(
                     run_name, ownership_json,
                     "create an upscaled image variant")
-            if (runtime is None and result is None and
+            if (result is None and
                     (upscale_model is _LAZY_INPUT_MISSING
                      or upscale_model is None)):
                 raise ValueError(
                     "Connect a core UPSCALE_MODEL before using Model upscale.")
             if result is None:
                 result = _execute_project_asset_model_operation(
-                    store, run_name, operation,
-                    None if upscale_model is _LAZY_INPUT_MISSING else upscale_model,
-                    ownership_json,
-                    storage_operation_id=asset_operation(self.build, unique_id) if runtime else None,
-                    reference_templates=(
-                        _project_asset_reference_templates(tagged_references)
-                        if runtime and tagged_references is not None else None))
-                if runtime is not None:
-                    catalog = result["catalog"]
+                    store, run_name, operation, upscale_model,
+                    ownership_json)
             completed_operation = str(
                 (result.get("asset") or {}).get("id") or "")
-        if catalog is None and tagged_references is not None and can_write:
+        if tagged_references is not None and can_write:
             with _project_write_commit_guard(
                     run_name, ownership_json,
                     "synchronize project reference slots"):
-                from .storage_carriers import asset_operation
-                catalog = store.sync_reference_slots(
+                store.sync_reference_slots(
                     run_name,
-                    _project_asset_reference_templates(tagged_references),
-                    storage_operation_id=asset_operation(self.build, unique_id),
-                    ownership_proof=_project_ownership_proof(ownership_json))
-        if catalog is None:
-            catalog = store.public_catalog(run_name)
-        if runtime is not None:
-            # Slot synchronization/model publication may have committed a new
-            # catalog. Read exactly our acknowledged result, never latest or
-            # the old input snapshot. No writer grants cross this boundary.
-            with accepted_asset_read_access(runtime):
-                accepted_store = ProjectAssetStore(_input_root(), _output_root())
-                return self._compile_catalog(accepted_store,
-                    accepted_store.public_catalog(run_name), run_name,
-                    semantic_anchor_size, semantic_anchor_mode, ownership, completed_operation)
-        return self._compile_catalog(store, catalog, run_name,
-            semantic_anchor_size, semantic_anchor_mode, ownership, completed_operation)
-
-    def _compile_catalog(self, store, catalog, run_name, semantic_anchor_size,
-                         semantic_anchor_mode, ownership, completed_operation):
+                    _project_asset_reference_templates(tagged_references))
+        catalog = store.public_catalog(run_name)
         references = _make_tagged_references([])
         semantic_entries = []
         enabled = [
@@ -19334,17 +19096,9 @@ class MiniMaxH3ChainRunManager:
             with _project_write_commit_guard(
                     plan["run_name"], plan.get("_project_ownership"),
                     "archive Run Manager source media"):
-                from .storage_runtime import current_runtime
-                runtime = current_runtime(_output_root(), plan['run_name'])
-                if runtime is not None:
-                    from .storage_source_media import SourceArchive
-                    archive = SourceArchive(runtime)
-                    prefix = '' if runtime.selected == 'main' else 'branches/'+runtime.selected+'/'
-                    archive.control(prefix+'source_timeline.json', managed_plan['source_timeline'])
-                    archive.commit()
-                else:
-                    _atomic_json(os.path.join(_run_dir(plan), "source_timeline.json"),
-                                 managed_plan["source_timeline"])
+                _atomic_json(
+                    os.path.join(_run_dir(plan), "source_timeline.json"),
+                    managed_plan["source_timeline"])
         try:
             if bindings:
                 with _project_write_commit_guard(
@@ -19690,14 +19444,7 @@ class MiniMaxH3ChainLoopStart:
         else:
             state = dict(initial_state)
             prepared_plan = state["plan"]
-            from .storage_runtime import current_runtime
-            runtime = current_runtime(_output_root(), plan.get("run_name"))
-            if runtime is not None:
-                # Combined-storage recursion binds the exact prepared Plan in
-                # the expanded graph, not the older external Plan-node output.
-                if prepared_plan != plan:
-                    raise ValueError("H3 recursive storage Plan differs from its continuation state.")
-            elif prepared_plan.get("base_plan_hash") != plan.get("plan_hash"):
+            if prepared_plan.get("base_plan_hash") != plan.get("plan_hash"):
                 raise ValueError("H3 chain plan changed during recursive execution.")
             state["plan"] = prepared_plan
         end_clip = int(state.get("end_clip", len(prepared_plan["shots"])))
@@ -19752,7 +19499,6 @@ class MiniMaxH3ChainCurrent:
                                "The full source track used by Assemble is never "
                                "modified."}),
             },
-            "hidden": {"unique_id": "UNIQUE_ID"},
         }
 
     RETURN_TYPES = (STATE_TYPE, "INT", "INT", "STRING", "STRING", "INT",
@@ -19795,7 +19541,7 @@ class MiniMaxH3ChainCurrent:
     DESCRIPTION = ("Expose the current shot's prompt, seed, dimensions, valid "
                    "length, steps, and source-audio reference/target window.")
 
-    def current(self, state, source_audio=None, align_audio_reference=False, unique_id=None):
+    def current(self, state, source_audio=None, align_audio_reference=False):
         plan = state["plan"]
         # Check at every recursive scene boundary. A forced takeover that
         # occurred after Loop Start therefore stops before prompt-history or
@@ -20003,16 +19749,9 @@ class MiniMaxH3ChainCurrent:
             with _project_write_commit_guard(
                     plan["run_name"], plan.get("_project_ownership"),
                     "mark prompt history executed"):
-                from .storage_runtime import current_runtime
-                runtime = current_runtime(_output_root(), plan["run_name"])
-                history_operation_id = None
-                if runtime is not None:
-                    from .storage_carriers import history_operation
-                    history_operation_id = history_operation(self.current, unique_id)
                 PromptHistoryStore(_output_root()).mark_executed(
                     plan["run_name"], shot["id"],
-                    shot.get("scene_prompt", ""), operation_id=history_operation_id,
-                    ownership_proof=plan.get("_project_ownership"))
+                    shot.get("scene_prompt", ""))
         except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
             _LOG.warning("H3 prompt history could not mark scene %s executed: %s",
                          shot["id"], exc)
@@ -20746,36 +20485,15 @@ class MiniMaxH3ChainSegmentSave:
     def IS_CHANGED(cls, *args, **kwargs):
         return float("NaN")
 
-    @project_writer(domain="generation")
     def save(self, state, images, sampled_latent, audio=None,
              images_with_overlap=None, denoised_latent=None,
              prompt=None, extra_pnginfo=None, dynprompt=None, unique_id=None):
         if _st_save is None:
             raise RuntimeError("safetensors is required for H3 chain checkpoints.")
         plan = state["plan"]
-        from .storage_runtime import current_runtime
-        runtime = current_runtime(_output_root(), plan["run_name"])
         _require_plan_write(plan, "publish a scene checkpoint")
         _require_chapter_resolution_locks(plan)
         index = int(state["index"])
-        save_request = None
-        if runtime is not None:
-            from .storage_carriers import generation_operation
-            operation = generation_operation(self.save, unique_id)
-            if operation is not None:
-                from .storage_save_retry import SceneSaveRequest
-                save_request = SceneSaveRequest(runtime, operation, dict(
-                    state=state, images=images, sampled_latent=sampled_latent, audio=audio,
-                    images_with_overlap=images_with_overlap, denoised_latent=denoised_latent,
-                    prompt=prompt, extra_pnginfo=extra_pnginfo, unique_id=unique_id))
-                recovered = save_request.accepted()
-                if recovered is None:
-                    from .storage_generation import SceneSaveWorkspace
-                    retry_workspace = SceneSaveWorkspace(runtime, index, operation, input_state=state)
-                    retry_workspace.request = save_request
-                    recovered = save_request.resume(retry_workspace)
-                if recovered is not None:
-                    return save_request.result(sys.modules[__name__], recovered, dynprompt, unique_id)
         shot = plan["shots"][index - 1]
         compatibility = plan["compatibility"]
         effective_context_length = _shot_context_length(
@@ -21002,35 +20720,30 @@ class MiniMaxH3ChainSegmentSave:
                     "audio. Final assembly will use the legacy hard-cut audio "
                     "path for this boundary.", index, continuation_mode)
 
+        paths = _artifact_paths(plan, index)
+        os.makedirs(os.path.dirname(paths["segment"]), exist_ok=True)
+        os.makedirs(os.path.dirname(paths["blend_segment"]), exist_ok=True)
+        os.makedirs(os.path.dirname(paths["checkpoint"]), exist_ok=True)
         alternate_take = _alternate_take_descriptor(plan)
-        transaction = save_request.operation if save_request is not None else uuid.uuid4().hex
-        workspace = None
-        if runtime is not None:
-            from .storage_generation import SceneSaveWorkspace
-            workspace = SceneSaveWorkspace(runtime, index, transaction, input_state=state)
-            workspace.request = save_request
-        paths = workspace.paths if workspace else _artifact_paths(plan, index)
-        save_relative = workspace.logical if workspace else _relative_output_path
+        transaction = uuid.uuid4().hex
         archive_snapshot_created = False
         archives = (_available_run_archives(plan)
-                    if alternate_take is not None and workspace is None else {})
-        archive_bytes = None
+                    if alternate_take is not None else {})
         if (alternate_take is not None and
                 int(alternate_take["scene"]) != index):
             raise ValueError(
                 "Alternate-take execution reached scene %d instead of its "
                 "target scene %d." % (index, int(alternate_take["scene"])))
-        previous_metadata = workspace.previous if workspace else None
-        replacing_scene = (previous_metadata is not None if workspace
-                           else os.path.isfile(paths["metadata"]))
-        if replacing_scene and workspace is None:
+        previous_metadata = None
+        replacing_scene = os.path.isfile(paths["metadata"])
+        if replacing_scene:
             try:
                 previous_metadata = _read_json(paths["metadata"])
             except (OSError, ValueError, json.JSONDecodeError) as exc:
                 _LOG.warning("H3 Chain is replacing unreadable clip %d metadata: %s",
                              index, exc)
-        previous_revision = (workspace.previous_revision if workspace else
-                             _preserve_previous_revision(plan, index, previous_metadata))
+        previous_revision = _preserve_previous_revision(
+            plan, index, previous_metadata)
         if alternate_take is not None:
             if not replacing_scene or not isinstance(previous_metadata, dict):
                 raise ValueError(
@@ -21057,32 +20770,12 @@ class MiniMaxH3ChainSegmentSave:
         published_audio = (_versioned_path(paths["generated_audio"], transaction)
                            if audio is not None else None)
         published_prompt = os.path.splitext(published_segment)[0] + ".prompt.txt"
-        published_metadata = os.path.join(str(runtime.project) if runtime else _project_run_dir(plan), "checkpoints",
+        published_metadata = os.path.join(_project_run_dir(plan), "checkpoints",
             "clip_%04d.%s.json" % (index, transaction))
-        payloads = {"video": published_segment, "checkpoint": published_checkpoint,
-                    "prompt": published_prompt}
-        if published_audio is not None:
-            payloads["audio"] = published_audio
-        if published_blend is not None:
-            payloads["overlap"] = published_blend
-        payloads = (workspace.reserve(payloads) if workspace else
-                    reserve_take(_output_root(), payloads,
-                        stage="alternate" if alternate_take is not None else "generation",
-                        identity=_relative_output_path(published_metadata)))
-        published_segment, published_checkpoint, published_prompt = (
-            payloads["video"], payloads["checkpoint"], payloads["prompt"])
-        published_audio, published_blend = payloads.get("audio"), payloads.get("overlap")
-        for destination in payloads.values():
-            os.makedirs(os.path.dirname(destination), exist_ok=True)
-        checkpoint_tmp = _temporary_storage_path(published_checkpoint)
+        checkpoint_tmp = "%s.%s.tmp" % (published_checkpoint, uuid.uuid4().hex)
         committed = False
-        publication_started = False
         try:
-            if workspace:
-                archives, archive_bytes, video_metadata = workspace.recovery(
-                    sys.modules[__name__], plan, prompt, extra_pnginfo,
-                    alternate=alternate_take is not None)
-            elif alternate_take is None:
+            if alternate_take is None:
                 archives = _write_run_archives(
                     plan, prompt, extra_pnginfo,
                     revision=transaction, promote=False)
@@ -21097,8 +20790,7 @@ class MiniMaxH3ChainSegmentSave:
                     plan, index, state.get("source_timeline"), None)
             scene_dependency = _scene_dependency_record(
                 plan, index, source_dependency)
-            if workspace is None:
-                video_metadata = _archive_media_metadata(archives)
+            video_metadata = _archive_media_metadata(archives)
             video_metadata.update({
                 "title": "H3 scene %d - %s" % (index, shot["id"]),
                 "comment": shot["prompt"],
@@ -21159,11 +20851,11 @@ class MiniMaxH3ChainSegmentSave:
                 "revision": transaction,
                 "created_at": datetime.now(timezone.utc).isoformat(
                     timespec="seconds").replace("+00:00", "Z"),
-                "segment": save_relative(published_segment),
-                "checkpoint": save_relative(published_checkpoint),
-                "metadata": save_relative(paths["metadata"]),
-                "revision_metadata": save_relative(published_metadata),
-                "prompt_file": save_relative(published_prompt),
+                "segment": _relative_output_path(published_segment),
+                "checkpoint": _relative_output_path(published_checkpoint),
+                "metadata": _relative_output_path(paths["metadata"]),
+                "revision_metadata": _relative_output_path(published_metadata),
+                "prompt_file": _relative_output_path(published_prompt),
                 "raw_frames": shot["raw_frames"],
                 "delivered_frames": shot["delivered_frames"],
                 "history_hash": _history_hash(plan, index),
@@ -21349,13 +21041,9 @@ class MiniMaxH3ChainSegmentSave:
                     scene_resolution(plan, index)["height"],
                     int(shot["raw_frames"]))
                 if cache_metadata is not None:
-                    cache_metadata = (workspace.adopt_reference(cache_metadata, index) if workspace else
-                                      _adopt_reference_cache_for_run(plan, cache_metadata))
+                    cache_metadata = _adopt_reference_cache_for_run(
+                        plan, cache_metadata)
             except (OSError, TypeError, ValueError) as exc:
-                if runtime is not None:
-                    # Never acknowledge a complete migrated save after silently
-                    # dropping a conditioning/reconstruction dependency.
-                    raise
                 _LOG.warning(
                     "H3 Chain could not adopt scene %d reference cache into "
                     "the run folder: %s", index, exc)
@@ -21381,12 +21069,12 @@ class MiniMaxH3ChainSegmentSave:
                 0 if index == 1 else resolved_audio_context_length)
             if published_blend is not None:
                 segment.update({
-                    "blend_segment": save_relative(published_blend),
+                    "blend_segment": _relative_output_path(published_blend),
                     "blend_segment_sha256": _file_sha256(published_blend),
                 })
             if published_audio is not None:
                 segment.update({
-                    "generated_audio": save_relative(published_audio),
+                    "generated_audio": _relative_output_path(published_audio),
                     "generated_audio_sha256": _file_sha256(published_audio),
                 })
             predecessors = state.get("segments")
@@ -21451,75 +21139,61 @@ class MiniMaxH3ChainSegmentSave:
                     plan["source_timeline"])
             # This metadata replacement is the transaction's commit point. Until
             # it succeeds, resume keeps referencing the previous immutable pair.
-            from .processing_persistence import sync_file, sync_directory
-            for artifact in payloads.values():
-                sync_file(artifact)
-            for directory in {os.path.dirname(artifact) for artifact in payloads.values()}:
-                sync_directory(directory)
-            if workspace:
-                publication_started = True
-                publication = workspace.publish(metadata, payloads, archive_bytes, plan.get("_project_ownership"))
-                committed = True
-            else:
-                with checkpoint_run_lock(
-                        _output_root(), plan["run_name"]), project_write_guard(
-                            _output_root(), plan["run_name"],
-                            plan.get("_project_ownership"),
-                            "publish a scene checkpoint"):
-                    # Force ownership may have happened while the segment video or
-                    # checkpoint was being encoded. Fence again at the canonical
-                    # pointer commit; the finally block removes this stale job's
-                    # immutable candidate artifacts if the proof was superseded.
-                    _require_plan_write(plan, "publish a scene checkpoint")
-                    _require_chapter_resolution_locks(plan)
-                    publication_started = True
-                    _atomic_json(published_metadata, metadata)
-                    if alternate_take is None:
-                        _atomic_json(paths["metadata"], metadata)
-                        # The canonical pointer is the durable commit point. From
-                        # here on, cleanup must retain the new immutable artifacts
-                        # even if an advisory editorial/root-archive refresh fails.
-                        committed = True
-                        try:
-                            editorial = _load_run_editorial(plan["run_name"])
-                            editorial, cleared_editorial = (
-                                _editorial_after_base_revision_change(
-                                    editorial, index, str(shot["id"]), transaction))
-                            if cleared_editorial:
-                                normalized_editorial = _normalize_run_editorial(
-                                    editorial, plan["run_name"])
-                                normalized_editorial["revision"] = uuid.uuid4().hex
-                                _atomic_json(
-                                    _run_editorial_path(plan["run_name"]),
-                                    normalized_editorial)
-                                _LOG.info(
-                                    "H3 Chain cleared scene %d %s after accepting "
-                                    "new base revision %s; alternate artifacts "
-                                    "were retained.", index, " and ".join(
-                                        cleared_editorial), transaction[:8])
-                        except (OSError, TypeError, ValueError,
-                                json.JSONDecodeError) as exc:
-                            _LOG.warning(
-                                "H3 Chain committed clip %d but could not reconcile "
-                                "its editorial selection: %s", index, exc)
-                        try:
-                            if archives:
-                                _promote_run_archive_snapshot(plan, archives)
-                        except (OSError, TypeError, ValueError,
-                                json.JSONDecodeError) as exc:
-                            # The active scene points at the immutable snapshot, so
-                            # compatibility promotion failure is non-fatal.
-                            _LOG.warning(
-                                "H3 Chain committed clip %d but could not refresh "
-                                "its legacy root recovery files: %s", index, exc)
-                    else:
-                        committed = True
+            with checkpoint_run_lock(
+                    _output_root(), plan["run_name"]), project_write_guard(
+                        _output_root(), plan["run_name"],
+                        plan.get("_project_ownership"),
+                        "publish a scene checkpoint"):
+                # Force ownership may have happened while the segment video or
+                # checkpoint was being encoded. Fence again at the canonical
+                # pointer commit; the finally block removes this stale job's
+                # immutable candidate artifacts if the proof was superseded.
+                _require_plan_write(plan, "publish a scene checkpoint")
+                _require_chapter_resolution_locks(plan)
+                _atomic_json(published_metadata, metadata)
+                if alternate_take is None:
+                    _atomic_json(paths["metadata"], metadata)
+                    # The canonical pointer is the durable commit point. From
+                    # here on, cleanup must retain the new immutable artifacts
+                    # even if an advisory editorial/root-archive refresh fails.
+                    committed = True
+                    try:
+                        editorial = _load_run_editorial(plan["run_name"])
+                        editorial, cleared_editorial = (
+                            _editorial_after_base_revision_change(
+                                editorial, index, str(shot["id"]), transaction))
+                        if cleared_editorial:
+                            normalized_editorial = _normalize_run_editorial(
+                                editorial, plan["run_name"])
+                            normalized_editorial["revision"] = uuid.uuid4().hex
+                            _atomic_json(
+                                _run_editorial_path(plan["run_name"]),
+                                normalized_editorial)
+                            _LOG.info(
+                                "H3 Chain cleared scene %d %s after accepting "
+                                "new base revision %s; alternate artifacts "
+                                "were retained.", index, " and ".join(
+                                    cleared_editorial), transaction[:8])
+                    except (OSError, TypeError, ValueError,
+                            json.JSONDecodeError) as exc:
+                        _LOG.warning(
+                            "H3 Chain committed clip %d but could not reconcile "
+                            "its editorial selection: %s", index, exc)
+                    try:
+                        if archives:
+                            _promote_run_archive_snapshot(plan, archives)
+                    except (OSError, TypeError, ValueError,
+                            json.JSONDecodeError) as exc:
+                        # The active scene points at the immutable snapshot, so
+                        # compatibility promotion failure is non-fatal.
+                        _LOG.warning(
+                            "H3 Chain committed clip %d but could not refresh "
+                            "its legacy root recovery files: %s", index, exc)
+                else:
+                    committed = True
         finally:
             _safe_unlink(checkpoint_tmp)
-            if not committed and publication_started:
-                _LOG.warning("H3 scene %d publication is uncertain; candidate media and recovery "
-                             "records were retained at %s.", index, published_segment)
-            if not committed and not publication_started and workspace is None:
+            if not committed:
                 _safe_unlink(published_segment)
                 if published_blend is not None:
                     _safe_unlink(published_blend)
@@ -21531,17 +21205,8 @@ class MiniMaxH3ChainSegmentSave:
                 if archive_snapshot_created:
                     _remove_run_archive_snapshot(plan, transaction)
 
-        cache_cleanup = (confirm_saved_use(
+        cache_cleanup = confirm_saved_use(
             dynprompt, unique_id, published_metadata, _output_root(), _LOG)
-            if workspace is None else [])
-        if runtime is not None:
-            def accepted_path(key):
-                return str(runtime.store.payload_path(runtime.accepted,
-                    runtime.reader.address(segment[key]), verify=True))
-            published_segment = accepted_path("segment")
-            published_checkpoint = accepted_path("checkpoint")
-            published_audio = accepted_path("generated_audio") if published_audio else None
-            published_blend = accepted_path("blend_segment") if published_blend else None
         retained = (
             "; original generation checkpoint retained"
             if alternate_take is not None else
@@ -21565,26 +21230,13 @@ class MiniMaxH3ChainSegmentSave:
             # Standalone Segment Save keeps ComfyUI's normal, resizable native
             # video preview.  A connected Review Gate owns the audiovisual
             # preview instead, so avoid rendering this silent duplicate.
-            if runtime is not None:
-                from .storage_project_reads import ProjectReadView
-                accepted_view = ProjectReadView(runtime.store, base=runtime.accepted)
-                with accepted_view.operation():
-                    # The preview points to the accepted physical file; it does
-                    # not rebind other readers in this save to a newer root.
-                    video_item = _video_output_item(segment["segment"], rehearsal_view=accepted_view)
-            else:
-                video_item = _video_output_item(published_segment)
             ui.update({
-                "images": [video_item],
+                "images": [_video_output_item(published_segment)],
                 "animated": (True,),
             })
-        if runtime is not None:
-            segment = {**segment, "run_name": runtime.run, "_branch_id": runtime.selected,
-                       "_storage_pin": runtime.output_pin, "_storage_save": publication["transition"]}
         return {"ui": ui, "result": (segment, status)}
 
 
-@project_writer
 def _review_video(plan: dict[str, Any], segment: dict[str, Any],
                   audio: dict[str, Any] | None,
                   retain_previous: bool = False
@@ -21592,7 +21244,11 @@ def _review_video(plan: dict[str, Any], segment: dict[str, Any],
     source = _absolute_output_path(segment["segment"])
     relative_source = _relative_output_path(source)
     if audio is None:
-        return (_video_output_item(source), False, "No audio is connected; this review is silent.")
+        return ({
+            "filename": os.path.basename(relative_source),
+            "subfolder": os.path.dirname(relative_source),
+            "type": "output",
+        }, False, "No audio is connected; this review is silent.")
 
     expected_frames = int(segment["delivered_frames"])
     waveform, sample_rate = _validate_audio(
@@ -21602,7 +21258,6 @@ def _review_video(plan: dict[str, Any], segment: dict[str, Any],
     video_hash = str(segment.get("segment_sha256") or _file_sha256(source))
     index = int(segment["index"])
     review_dir = os.path.join(_run_dir(plan), "reviews")
-    review_dir = reserve_directory(_output_root(), review_dir, "previews")
     os.makedirs(review_dir, exist_ok=True)
     name = "clip_%04d.%s.%s.review.mp4" % (
         index, video_hash[:12], audio_hash[:12])
@@ -21728,8 +21383,7 @@ def _review_candidate_batch_cleanup(max_age_seconds: float = 21600.0) -> None:
 
 
 def _review_candidate_resume_revisions(
-        run_name: str, scene: int, revision: str, *, rehearsal_view=None
-) -> list[dict[str, Any]]:
+        run_name: str, scene: int, revision: str) -> list[dict[str, Any]]:
     """Return the exact immutable lineage ending at a saved candidate.
 
     Live approval uses this list with the existing activate-only checkpoint
@@ -21747,8 +21401,7 @@ def _review_candidate_resume_revisions(
     successor = None
     for current_scene in range(scene, 0, -1):
         metadata, _metadata_path = _load_checkpoint_revision(
-            str(run_name), current_scene, current_revision,
-            **({"rehearsal_view": rehearsal_view} if rehearsal_view is not None else {}))
+            str(run_name), current_scene, current_revision)
         segment = metadata.get("segment")
         if not isinstance(segment, dict):
             raise ValueError(
@@ -21830,10 +21483,11 @@ def _deferred_review_path(run_name: Any, token: Any) -> str:
         _deferred_review_dir(run_name), "%s.json" % normalized_token)
 
 
-def _deferred_review_document(
+def _persist_deferred_review(
         plan: dict[str, Any], payload: dict[str, Any],
-        candidates: list[dict[str, Any]]) -> dict[str, Any]:
+        candidates: list[dict[str, Any]]) -> str:
     token = str(payload.get("token") or "").lower()
+    path = _deferred_review_path(plan.get("run_name"), token)
     public = dict(payload)
     public.update({
         "deferred_review": True,
@@ -21844,7 +21498,7 @@ def _deferred_review_document(
         "timeout_seconds": 0.0,
         "server_now": time.time(),
     })
-    return {
+    document = {
         "format": "h3_deferred_review_v1",
         "version": 1,
         "token": token,
@@ -21856,13 +21510,6 @@ def _deferred_review_document(
         "candidates": candidates,
         "public": public,
     }
-
-
-def _persist_deferred_review(
-        plan: dict[str, Any], payload: dict[str, Any],
-        candidates: list[dict[str, Any]]) -> str:
-    document = _deferred_review_document(plan, payload, candidates)
-    path = _deferred_review_path(plan.get("run_name"), document["token"])
     with checkpoint_run_lock(
             _output_root(), str(plan["run_name"])), project_write_guard(
                 _output_root(), str(plan["run_name"]),
@@ -21875,13 +21522,6 @@ def _persist_deferred_review(
 def _load_deferred_review(run_name: Any, token: Any) -> tuple[
         dict[str, Any], str]:
     normalized = _strict_run_name(run_name)
-    from .storage_runtime import current_runtime
-    runtime = current_runtime(_output_root(), normalized)
-    if runtime is not None:
-        from .storage_deferred_review import address, read
-        normalized_token = str(token or "").lower()
-        return read(runtime, normalized_token), str(
-            runtime.project / address(runtime.selected, normalized_token))
     path = _deferred_review_path(normalized, token)
     if not os.path.isfile(path):
         raise FileNotFoundError(
@@ -21899,32 +21539,11 @@ def _load_deferred_review(run_name: Any, token: Any) -> tuple[
         raise ValueError("Pending H3 review metadata is invalid.")
     if document["plan"].get("_branch_id", "main") != current_branch(normalized):
         raise ValueError("Pending H3 review belongs to a different working branch.")
-    # Recovered projects retain immutable approval/completion records. A batch
-    # completed in organized storage must not reappear as pending after recovery.
-    from .storage_deferred_finalization import project_decision
-    directory = os.path.dirname(path)
-    token_name = os.path.basename(path)
-    records = [os.path.join(directory, folder, token_name) for folder in ("decisions", "completed")]
-    document = project_decision(document, *[
-        _read_json(record) if os.path.isfile(record) else None for record in records])
-    accepted = document.get("_finalization", {})
-    if accepted.get("status") == "cleanup_pending":
-        for candidate in document["candidates"]:
-            if candidate["segment"]["revision"] not in accepted["kept_candidate_revisions"]:
-                candidate["video"] = None
-        for public, candidate in zip(document["public"].get("candidates", []), document["candidates"]):
-            public["video"] = candidate.get("video")
-        document["public"]["video"] = document["candidates"][-1].get("video")
     return document, path
 
 
 def _list_deferred_review_records(run_name: Any) -> list[dict[str, Any]]:
     normalized = _strict_run_name(run_name)
-    from .storage_runtime import current_runtime
-    runtime = current_runtime(_output_root(), normalized)
-    if runtime is not None:
-        from .storage_deferred_review import listing
-        return [dict(item, server_now=time.time()) for item in listing(runtime)]
     directory = _deferred_review_dir(normalized)
     if not os.path.isdir(directory):
         return []
@@ -21936,8 +21555,6 @@ def _list_deferred_review_records(run_name: Any) -> list[dict[str, Any]]:
         try:
             document, _path = _load_deferred_review(
                 normalized, match.group(1))
-            if document.get("_finalization", {}).get("status") == "complete":
-                continue
             public = dict(document["public"])
             public["created_at"] = str(document.get("created_at") or "")
             public["server_now"] = time.time()
@@ -22100,17 +21717,19 @@ def _prune_review_candidates(
     }
 
 
-def _prepare_review_candidate(state: dict[str, Any], revision: str, *,
-                              rehearsal_view=None):
-    """Validate/hydrate one take without assigning it or changing archives."""
+def _select_review_candidate(
+        state: dict[str, Any], current_segment: dict[str, Any],
+        decision: dict[str, Any]
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    revision = str(decision.get("candidate_revision") or "")
+    if not revision or revision == str(current_segment.get("revision") or ""):
+        return current_segment, state
     if _st_load is None:
         raise RuntimeError("safetensors is required to select an H3 candidate.")
     plan = state["plan"]
     index = int(state["index"])
-    metadata, _metadata_path = (
-        _load_checkpoint_revision(str(plan["run_name"]), index, revision)
-        if rehearsal_view is None else _load_checkpoint_revision(
-            str(plan["run_name"]), index, revision, rehearsal_view=rehearsal_view))
+    metadata, _metadata_path = _load_checkpoint_revision(
+        str(plan["run_name"]), index, revision)
     if _canonical_json(metadata.get("compatibility")) != _canonical_json(
             plan.get("compatibility")):
         raise ValueError(
@@ -22139,10 +21758,7 @@ def _prepare_review_candidate(state: dict[str, Any], revision: str, *,
     if str(selected.get("history_hash") or "") != expected_history:
         raise ValueError(
             "The selected candidate does not match the current scene plan.")
-    checkpoint = (str(rehearsal_view.path(selected["checkpoint"]))
-                  if rehearsal_view is not None
-                  else _absolute_output_path(selected["checkpoint"]))
-    tensors = _st_load(checkpoint)
+    tensors = _st_load(_absolute_output_path(selected["checkpoint"]))
     missing = sorted({"context_frames", "video", "audio"} - set(tensors))
     if missing:
         raise ValueError(
@@ -22154,6 +21770,12 @@ def _prepare_review_candidate(state: dict[str, Any], revision: str, *,
         raise ValueError(
             "The selected candidate contains %d context frames; expected %d." %
             (int(tensors["context_frames"].shape[0]), expected_context))
+    canonical = _artifact_paths(selected_plan, index)["metadata"]
+    with checkpoint_run_lock(_output_root(), str(selected_plan["run_name"])):
+        _atomic_json(canonical, metadata)
+        # Keep disk recovery aligned with the promoted take even if ComfyUI is
+        # interrupted before the following scene reaches Segment Save.
+        _promote_checkpoint_run_archives(selected_plan, metadata)
     accepted = dict(_public_segment(selected))
     accepted["_h3_review_decision"] = {
         "action": "candidate_selected",
@@ -22167,24 +21789,6 @@ def _prepare_review_candidate(state: dict[str, Any], revision: str, *,
     selected_state = dict(state)
     selected_state["plan"] = selected_plan
     selected_state.pop("candidate_batch", None)
-    return metadata, accepted, selected_state
-
-
-def _select_review_candidate(
-        state: dict[str, Any], current_segment: dict[str, Any],
-        decision: dict[str, Any]
-) -> tuple[dict[str, Any], dict[str, Any]]:
-    revision = str(decision.get("candidate_revision") or "")
-    if not revision or revision == str(current_segment.get("revision") or ""):
-        return current_segment, state
-    metadata, accepted, selected_state = _prepare_review_candidate(state, revision)
-    selected_plan = selected_state["plan"]
-    canonical = _artifact_paths(selected_plan, int(state["index"]))["metadata"]
-    with checkpoint_run_lock(_output_root(), str(selected_plan["run_name"])):
-        _atomic_json(canonical, metadata)
-        # Keep disk recovery aligned with the promoted take even if ComfyUI is
-        # interrupted before the following scene reaches Segment Save.
-        _promote_checkpoint_run_archives(selected_plan, metadata)
     return accepted, selected_state
 
 
@@ -22451,8 +22055,6 @@ class MiniMaxH3ChainReview:
                      review_each_candidate=False,
                      pending_review=None,
                      dynprompt=None, unique_id=None):
-        review_inputs = {key: value for key, value in locals().items()
-                         if key not in ("self", "dynprompt")}
         plan = state["plan"]
         index = int(state["index"])
         if int(segment.get("index", -1)) != index:
@@ -22463,28 +22065,6 @@ class MiniMaxH3ChainReview:
             status = "review bypassed for clip %d" % index
             return {"ui": {"text": [status]}, "result": (segment, status)}
         _require_plan_write(plan, "create or change a scene review")
-        from .storage_runtime import current_runtime
-        runtime = current_runtime(_output_root(), plan.get("run_name"))
-        execution = None
-        if runtime is not None:
-            from .storage_carriers import handoff_operation
-            from .storage_review_execution import ReviewExecution
-            execution = ReviewExecution(runtime, sys.modules[__name__],
-                handoff_operation(MiniMaxH3ChainReview.review, unique_id), review_inputs,
-                display_id=_review_display_id(unique_id, dynprompt))
-            recovered = execution.resume()
-            if recovered is not None:
-                return recovered
-        preview_video = execution.video if execution is not None else _review_video
-
-        def review_result(value, status):
-            if execution is not None:
-                return execution.finish(value, status)
-            return {"ui": {"text": [status]}, "result": (value, status)}
-
-        def review_directory():
-            return str(execution.working_root) if execution is not None else _run_dir(plan)
-
         if PromptServer is None or web is None:
             raise RuntimeError("H3 Chain Review requires ComfyUI's prompt server.")
 
@@ -22494,7 +22074,7 @@ class MiniMaxH3ChainReview:
         # mux meant the browser never received a token at all. Review audio is
         # a convenience, not part of checkpoint validity, so it must never hold
         # the gate controls hostage.
-        video, _has_audio, no_audio_warning = preview_video(
+        video, _has_audio, no_audio_warning = _review_video(
             plan, segment, None)
         shot = plan["shots"][index - 1]
         candidate_target = _review_candidate_target(candidate_count)
@@ -22514,7 +22094,7 @@ class MiniMaxH3ChainReview:
         if candidate_index < candidate_target and not inspect_each_candidate:
             try:
                 candidate_video, candidate_has_audio, candidate_warning = (
-                    preview_video(
+                    _review_video(
                         plan, segment, audio, retain_previous=True))
             except Exception as exc:
                 _LOG.exception(
@@ -22681,7 +22261,8 @@ class MiniMaxH3ChainReview:
                 "candidate %d with seed %d" %
                 (candidate_index, candidate_target, index,
                  candidate_index + 1, next_seed))
-            return review_result(revised_segment, status)
+            return {"ui": {"text": [status]},
+                    "result": (revised_segment, status)}
 
         if batch_token:
             _ACTIVE_CANDIDATE_BATCHES.pop(batch_token, None)
@@ -22689,8 +22270,8 @@ class MiniMaxH3ChainReview:
             auto_continue_timeout_minutes)
         server_now = time.time()
         deadline = server_now + timeout_seconds if timeout_seconds > 0 else None
-        token = (batch_token if queued_decision is not None else
-                 execution.operation if execution is not None else uuid.uuid4().hex)
+        token = (batch_token if queued_decision is not None
+                 else uuid.uuid4().hex)
         loop = asyncio.get_running_loop()
         future = loop.create_future()
         preview_base = candidate_index * 2 if batch_token else 0
@@ -22754,15 +22335,11 @@ class MiniMaxH3ChainReview:
             # Plan JSON is never touched (PLAN_SCHEMA_INVARIANT_SPEC).
             try:
                 _write_review_snapshot(
-                    review_directory(), token, str(plan.get("run_name") or ""),
+                    _run_dir(plan), token, str(plan.get("run_name") or ""),
                     int(payload.get("clip_index") or index),
                     _review_public_candidates(candidates),
                     deadline, float(server_now))
             except (OSError, TypeError, ValueError) as exc:
-                if execution is not None:
-                    _PENDING_REVIEWS.pop(token, None)
-                    future.cancel()
-                    raise
                 _LOG.warning(
                     "H3 Chain durable review snapshot failed (review stays "
                     "live only): %s", exc)
@@ -22779,10 +22356,10 @@ class MiniMaxH3ChainReview:
             # hang.
             try:
                 if candidate_target > 1 or defer_now:
-                    video, has_audio, warning = preview_video(
+                    video, has_audio, warning = _review_video(
                         plan, segment, audio, retain_previous=True)
                 else:
-                    video, has_audio, warning = preview_video(
+                    video, has_audio, warning = _review_video(
                         plan, segment, audio)
             except Exception as exc:
                 _LOG.exception("H3 Chain synchronized review preview failed")
@@ -22828,22 +22405,18 @@ class MiniMaxH3ChainReview:
             # actual pending-review publication, not only gate entry.
             _require_plan_write(
                 plan, "publish a pending scene review")
+            _persist_deferred_review(plan, payload, candidates)
+            PromptServer.instance.send_sync(
+                "minimax_h3_context_loop_review", dict(payload),
+                PromptServer.instance.client_id)
             status = (
                 "saved %d candidate%s for clip %d as pending review; "
                 "execution stopped at the checkpoint" %
                 (len(candidates), "" if len(candidates) == 1 else "s", index))
-            if execution is not None:
-                result = execution.defer(payload, candidates, status)
-            else:
-                _persist_deferred_review(plan, payload, candidates)
-                result = {
-                    "ui": {"text": [status]},
-                    "result": (ExecutionBlocker(None), status),
-                }
-            PromptServer.instance.send_sync(
-                "minimax_h3_context_loop_review", dict(payload),
-                PromptServer.instance.client_id)
-            return result
+            return {
+                "ui": {"text": [status]},
+                "result": (ExecutionBlocker(None), status),
+            }
 
         if queued_decision is not None and not future.done():
             future.set_result(queued_decision)
@@ -22888,15 +22461,13 @@ class MiniMaxH3ChainReview:
                 if isinstance(locals().get("decision"), dict):
                     decided_action = str(
                         locals()["decision"].get("action") or "interrupted")
-                run_dir = review_directory()
+                run_dir = _run_dir(plan)
                 _mark_review_snapshot_decided(
                     run_dir, token, decided_action, time.time())
                 if decided_action in ("approve", "stop"):
                     _retire_superseded_review_snapshots(
                         run_dir, str(payload.get("run_name") or ""), index, token)
             except (OSError, TypeError, ValueError) as exc:
-                if execution is not None and isinstance(locals().get("decision"), dict):
-                    raise
                 _LOG.warning(
                     "H3 Chain durable review snapshot update failed: %s", exc)
 
@@ -22924,30 +22495,27 @@ class MiniMaxH3ChainReview:
                  "" if len(decision["candidate_batch"].get(
                      "kept_revisions", ())) == 1 else "s",
                  candidate_index + 1, candidate_target, index, next_seed))
-            return review_result(revised_segment, status)
+            return {"ui": {"text": [status]},
+                    "result": (revised_segment, status)}
 
         accepted_segment = segment
         accepted_state = state
         cleanup = None
         if action in ("approve", "stop"):
-            with (execution.guard() if execution is not None else checkpoint_run_lock(
-                    _output_root(), plan["run_name"])), project_write_guard(
+            with checkpoint_run_lock(
+                    _output_root(), plan["run_name"]), project_write_guard(
                         _output_root(), plan["run_name"],
                         plan.get("_project_ownership"),
                         "apply a scene review decision"):
-                accepted_segment, accepted_state = (
-                    execution.select(decision) if execution is not None else
-                    _select_review_candidate(state, segment, decision))
+                accepted_segment, accepted_state = _select_review_candidate(
+                    state, segment, decision)
                 selected_revision = str(
                     accepted_segment.get("revision") or "")
                 kept = list(decision.get("kept_candidate_revisions") or ())
                 if selected_revision and selected_revision not in kept:
                     kept.append(selected_revision)
-                if execution is not None:
-                    execution.prepare_prune(candidates, kept)
-                else:
-                    cleanup = _prune_review_candidates(
-                        accepted_state["plan"], index, candidates, kept)
+                cleanup = _prune_review_candidates(
+                    accepted_state["plan"], index, candidates, kept)
         candidate_number = int(decision.get("candidate_number", 0))
         candidate_total = int(decision.get("candidate_count", 0))
         candidate_note = (
@@ -23001,14 +22569,13 @@ class MiniMaxH3ChainReview:
                         "candidate_count": candidate_total,
                     },
                     PromptServer.instance.client_id)
-            return review_result(accepted_segment, status)
+            return {"ui": {"text": [status]},
+                    "result": (accepted_segment, status)}
         if action == "stop":
             if ExecutionBlocker is None:
                 raise RuntimeError("This ComfyUI build does not support review blocking.")
             status = ("approved clip %d and stopped at its checkpoint" % index
                       ) + candidate_note
-            if execution is not None:
-                return execution.finish(accepted_segment, status, stop=True)
             partial_item = None
             if assemble_partial_on_stop:
                 try:
@@ -23049,7 +22616,8 @@ class MiniMaxH3ChainReview:
         }
         status = "retrying clip %d with seed %d at %d frames" % (
             index, int(decision["seed"]), int(decision["raw_frames"]))
-        return review_result(revised_segment, status)
+        return {"ui": {"text": [status]},
+                "result": (revised_segment, status)}
 
 
 def _manifest_from_segments(plan: dict[str, Any], values: list[dict[str, Any]],
@@ -23104,11 +22672,6 @@ def _manifest_from_segments(plan: dict[str, Any], values: list[dict[str, Any]],
     if not complete:
         manifest["planned_clip_count"] = len(plan["shots"])
         manifest["last_completed_clip"] = len(segments)
-    from .storage_runtime import current_runtime
-    runtime = current_runtime(_output_root(), plan.get("run_name"))
-    if runtime is not None:
-        manifest["_storage_pin"] = runtime.pin
-        manifest["_branch_id"] = runtime.selected
     return manifest
 
 
@@ -23237,11 +22800,16 @@ def _chapter_directory_name(chapter: dict[str, Any]) -> str:
 
 
 def _chapter_delivery_root(manifest: dict[str, Any]) -> str:
-    from .storage_legacy import LegacyStoragePaths
     root = _run_dir(manifest)
     chapter = manifest.get("chapter")
-    name = _chapter_directory_name(chapter) if isinstance(chapter, dict) else None
-    return LegacyStoragePaths("", root).chapter(name)
+    if not isinstance(chapter, dict):
+        return root
+    candidate = os.path.realpath(os.path.join(
+        root, "chapters", _chapter_directory_name(chapter)))
+    chapter_root = os.path.realpath(os.path.join(root, "chapters"))
+    if os.path.commonpath([chapter_root, candidate]) != chapter_root:
+        raise ValueError("H3 chapter output path escapes its Run directory.")
+    return candidate
 
 
 def _chapter_scoped_editorial(
@@ -23309,11 +22877,6 @@ def _chapter_manifest_identity(manifest: dict[str, Any]) -> dict[str, Any]:
     identity = _json_document(manifest) or {}
     for key in ("sealed_at", "chapter_manifest_id", "chapter_manifest_path"):
         identity.pop(key, None)
-    if identity.get("storage_chapter_version") == 1:
-        # Invocation carriers are not the identity of an immutable snapshot.
-        # Keep the original digest rules for pre-migration snapshots.
-        identity.pop("_storage_pin", None)
-        identity.pop("_project_ownership", None)
     return identity
 
 
@@ -23333,9 +22896,6 @@ def _chapter_manifest_storage_path(
 
 def _persist_chapter_manifest(manifest: dict[str, Any]) -> tuple[
         dict[str, Any], str]:
-    from .storage_runtime import current_runtime
-    if current_runtime(_output_root(), manifest.get("run_name")) is not None:
-        raise ValueError("Pinned chapter writes require Chapter Delivery and its host operation ID.")
     # Sealing and checkpoint deletion must be mutually exclusive. Revalidate
     # inside the lock, so a deletion between selection and sealing cannot
     # publish a chapter snapshot whose recovery inputs are already gone.
@@ -23386,12 +22946,9 @@ def _persist_chapter_manifest_locked(manifest: dict[str, Any]) -> tuple[
 
 
 def _chapter_manifest_from_manifest(
-        manifest: dict[str, Any], chapter_number: int = 0, *, persist: bool = True,
-        rehearsal_view=None
+        manifest: dict[str, Any], chapter_number: int = 0, *, persist: bool = True
 ) -> tuple[dict[str, Any], str]:
     """Snapshot the available scenes of one explicitly selectable chapter."""
-    if rehearsal_view is not None and persist:
-        raise ValueError("Pinned chapter selection is read-only; publish it through a runtime writer.")
     if not isinstance(manifest, dict):
         raise ValueError("H3 chapter delivery requires a chain manifest.")
     if manifest.get("format") == CHAPTER_MANIFEST_FORMAT:
@@ -23402,8 +22959,7 @@ def _chapter_manifest_from_manifest(
             raise ValueError(
                 "This input contains only Chapter %d. Connect the full Run "
                 "manifest to select Chapter %d." % (selected, requested))
-        _validate_manifest(manifest,
-            **({"rehearsal_view": rehearsal_view} if rehearsal_view is not None else {}))
+        _validate_manifest(manifest)
         if not persist:
             return _json_document(manifest), ""
         snapshot, path = _persist_chapter_manifest(manifest)
@@ -23498,15 +23054,6 @@ def _chapter_manifest_from_manifest(
         "source_manifest_hash": _fingerprint(manifest),
         "archives": _json_document(manifest.get("archives")) or {},
     }
-    # A finishing source can already contain pinned ALT pictures or DeRoPE
-    # media. Preserve that contract when taking its chapter slice; dropping
-    # these markers would resolve today's editorial over the saved selection.
-    for key in ("presentation_source", "processing_source"):
-        if isinstance(manifest.get(key), dict):
-            scoped[key] = _json_document(manifest[key])
-            if isinstance(scoped[key].get("scenes"), list):
-                scoped[key]["scenes"] = [item for item in scoped[key]["scenes"]
-                    if chapter_start <= int(item.get("scene", 0) if isinstance(item, dict) else item) <= chapter_end]
     if resolution:
         scoped["compatibility"].update(resolution)
     if chapter_start == 1 and isinstance(manifest.get("prelude"), dict):
@@ -23514,8 +23061,7 @@ def _chapter_manifest_from_manifest(
     if isinstance(manifest.get("source_timeline"), dict):
         scoped["source_timeline"] = _json_document(
             manifest["source_timeline"])
-    _validate_manifest(scoped,
-        **({"rehearsal_view": rehearsal_view} if rehearsal_view is not None else {}))
+    _validate_manifest(scoped)
     if not persist:
         return scoped, ""
     snapshot, path = _persist_chapter_manifest(scoped)
@@ -23527,32 +23073,12 @@ def _load_chapter_manifest(
         snapshot_id: str = "") -> tuple[dict[str, Any], str]:
     """Load one immutable chapter snapshot without requiring the old workflow."""
     normalized = _strict_run_name(run_name)
-    from .storage_runtime import current_runtime
-    runtime = current_runtime(_output_root(), normalized)
-    if runtime is not None:
-        from .storage_chapters import ChapterSnapshots
-        from . import upscale_nodes
-        return ChapterSnapshots(runtime, sys.modules[__name__], upscale_nodes).load(
-            chapter_number, snapshot_id)
     number = int(chapter_number)
     if number < 1 or number > MAX_SHOTS:
         raise ValueError("Choose a chapter number between 1 and %d." % MAX_SHOTS)
     requested = str(snapshot_id or "").strip().lower()
     if requested and re.fullmatch(r"[0-9a-f]{32}", requested) is None:
         raise ValueError("Chapter manifest id must be blank or 32 hexadecimal digits.")
-    portable_head, indexed_paths = None, set()
-    if not requested:
-        from . import storage_chapter_index as chapter_index
-        from .storage_resolver import confined
-        selected_branch = current_branch(normalized)
-        prefix = "" if selected_branch == "main" else "branches/"+selected_branch+"/"
-        project_root = os.path.join(_output_root(), "h3_chains", normalized)
-        head = confined(project_root, chapter_index.head(prefix, number))
-        if head.is_file():
-            portable_head = _read_json(str(head))
-            indexed_paths = {str(confined(project_root, item["manifest"])) for item in
-                chapter_index.history(portable_head, prefix, number)}
-        branch_prefix = prefix
     chapters_root = os.path.realpath(os.path.join(
         _run_dir({"run_name": normalized}), "chapters"))
     candidates: list[tuple[int, str]] = []
@@ -23576,25 +23102,13 @@ def _load_chapter_manifest(
                 if (os.path.commonpath([manifest_root, path]) != manifest_root
                         or not os.path.isfile(path)):
                     continue
-                if path in indexed_paths:
-                    continue
                 candidates.append((os.stat(path).st_mtime_ns, path))
-    if not candidates and portable_head is not None:
-        address, manifest = chapter_index.select(portable_head, branch_prefix, number, normalized,
-            lambda address: confined(project_root, address).read_bytes())
-        _validate_manifest(manifest)
-        return manifest, str(confined(project_root, address))
-    if candidates and portable_head is not None and "history" not in portable_head:
-        raise ValueError("Chapter selector lacks complete publication history; choose an explicit snapshot id.")
     if not candidates:
         suffix = " snapshot %s" % requested if requested else ""
         raise FileNotFoundError(
             "No sealed Chapter %d%s exists for Run %s." %
             (number, suffix, normalized))
     _mtime, path = max(candidates, key=lambda item: (item[0], item[1]))
-    # Unindexed seals were added by an ordinary legacy writer after recovery.
-    # Order those by the established legacy rule, ahead of indexed snapshots;
-    # never let copied mtimes reorder the already-published history.
     manifest = _read_json(path)
     file_snapshot_id = os.path.splitext(os.path.basename(path))[0]
     if (not isinstance(manifest, dict)
@@ -23650,38 +23164,13 @@ def _write_next_scene_handoff(plan: dict[str, Any], index: int,
     """
     run_name = str(plan.get("run_name") or "")
     next_scene = int(index) + 1
-    if __package__:
-        from .storage_runtime import current_runtime
-    else:
-        from storage_runtime import current_runtime
-    runtime = current_runtime(_output_root(), run_name)
-    if runtime is not None:
-        if plan.get("_branch_id", "main") != runtime.selected:
-            raise ValueError("Handoff Plan belongs to a different runtime branch.")
-        prefix = "" if runtime.selected == "main" else "branches/" + runtime.selected + "/"
-        address = prefix + "checkpoints/clip_%04d.json" % int(index)
-        # Segment Save can precede Loop End in this operation. Read the exact
-        # acknowledged checkpoint, never the original input or the latest root
-        # of a concurrent writer. Do not turn missing accepted data into None.
+    paths = _artifact_paths(plan, index)
+    checkpoint_sha = None
+    if os.path.isfile(paths["metadata"]):
         try:
-            raw = runtime.accepted.read(address)
-        except KeyError:
-            raise ValueError("Cannot create a handoff without its accepted scene checkpoint.") from None
-        metadata = json.loads(raw)
-        saved = metadata.get("segment") if isinstance(metadata, dict) else None
-        if (not isinstance(saved, dict) or type(saved.get("index")) is not int
-                or saved["index"] != int(index)
-                or checkpoint_revision_token(index, saved) != checkpoint_revision_token(index, next_segment)):
-            raise ValueError("Handoff source does not match the accepted scene checkpoint.")
-        checkpoint_sha = hashlib.sha256(raw).hexdigest()
-    else:
-        paths = _artifact_paths(plan, index)
-        checkpoint_sha = None
-        if os.path.isfile(paths["metadata"]):
-            try:
-                checkpoint_sha = _file_sha256(paths["metadata"])
-            except OSError:
-                checkpoint_sha = None
+            checkpoint_sha = _file_sha256(paths["metadata"])
+        except OSError:
+            checkpoint_sha = None
 
     shot = plan["shots"][next_scene - 1]
     revision = str(next_segment.get("revision")
@@ -23697,10 +23186,7 @@ def _write_next_scene_handoff(plan: dict[str, Any], index: int,
         **({"working_branch_id": plan["_branch_id"]} if plan.get("_branch_id") else {}),
     }, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
     handoff_id = "next_scene_%04d_%s" % (next_scene, transition_key[:16])
-    # The saved boundary time makes a batched manifest+handoff retry byte-exact.
-    # Legacy creation keeps wall-clock timestamps as before.
-    saved_time = str(next_segment.get("created_at") or "") if runtime is not None else ""
-    store = _HandoffStore(_output_root(), now=(lambda: saved_time) if saved_time else None)
+    store = _HandoffStore(_output_root())
     try:
         return store.load(run_name, handoff_id)
     except _HandoffNotFoundError:
@@ -23895,10 +23381,6 @@ class MiniMaxH3ChainLoopEnd:
                 else:
                     node.set_input(key, value)
         graph.lookup_node(open_node).set_input("initial_state", next_state)
-        from .storage_runtime import current_runtime
-        runtime = current_runtime(_output_root(), next_state["plan"].get("run_name"))
-        if runtime is not None:
-            graph.lookup_node(open_node).set_input("plan", next_state["plan"])
         # The imported source may contain thousands of decoded frames. Once
         # Loop Start has reduced it to typed state, recursive iterations must
         # not keep the adapter dependency alive or prepare the prelude again.
@@ -23967,24 +23449,6 @@ class MiniMaxH3ChainLoopEnd:
         alternate_take = _alternate_take_descriptor(plan)
         if alternate_take is not None:
             public_alternate = _public_segment(segment)
-            from .storage_runtime import current_runtime
-            runtime = current_runtime(_output_root(), plan.get("run_name"))
-            if runtime is not None:
-                values = list(state.get("segments", [])) + [public_alternate]
-                manifest = _manifest_from_segments(plan, values, complete=False)
-                manifest["format"] = "h3_chain_alternate_manifest_v1"
-                manifest["alternate_take"] = _json_document(alternate_take)
-                manifest = runtime.delivery.publish(plan, manifest,
-                    alternate_normalizer=_normalize_run_editorial)["manifest"]
-                manifest["_storage_pin"] = runtime.output_pin
-                manifest_json = json.dumps(
-                    manifest, ensure_ascii=False, indent=2, sort_keys=True)
-                context_length = min(
-                    _plan_context_storage_length(plan), int(selected_frames.shape[0]))
-                return (manifest, manifest_json,
-                    _tensor_cpu_clone(selected_frames[:0] if context_length == 0 else
-                                      selected_frames[-context_length:]),
-                    _compact_latent(selected_latent))
             # Publishing the alternate updates final-cut state. Recheck at
             # that commit boundary in case ownership changed after this Loop
             # End invocation began.
@@ -24060,24 +23524,15 @@ class MiniMaxH3ChainLoopEnd:
                 # frontend later queues the SAME workflow as a new top-level
                 # prompt and Loop Start resumes the same Plan at scene
                 # N+1 from the accepted checkpoint lineage.
-                from .storage_runtime import current_runtime
-                runtime = current_runtime(_output_root(), plan.get("run_name"))
-                manifest = _manifest_from_segments(
-                    plan, next_state["segments"], complete=False)
-                if runtime is not None:
-                    delivery = runtime.delivery.publish(plan, manifest,
-                        handoff_factory=lambda: _write_next_scene_handoff(
-                            plan, index, end_clip, next_segment))
-                    manifest, handoff = delivery["manifest"], delivery["handoff"]
-                    manifest["_storage_pin"] = runtime.output_pin
-                else:
-                    handoff = _write_next_scene_handoff(
-                        plan, index, end_clip, next_segment)
+                handoff = _write_next_scene_handoff(
+                    plan, index, end_clip, next_segment)
                 del selected_frames, selected_latent
                 del images, sampled_latent, segment, state
                 _release_loop_boundary_resources(
                     between_scene_cleanup, index)
-                if runtime is None and os.path.isdir(_run_dir(plan)):
+                manifest = _manifest_from_segments(
+                    plan, next_state["segments"], complete=False)
+                if os.path.isdir(_run_dir(plan)):
                     manifest_path = os.path.join(
                         _run_dir(plan), "partial",
                         "through_clip_%04d.manifest.json" % index)
@@ -24112,15 +23567,10 @@ class MiniMaxH3ChainLoopEnd:
         complete = end_clip == len(plan["shots"])
         manifest = _manifest_from_segments(
             plan, next_state["segments"], complete=complete)
-        from .storage_runtime import current_runtime
-        runtime = current_runtime(_output_root(), plan.get("run_name"))
         # A normal chain has already created its run directory in Segment Save.
         # Keeping this conditional also permits lightweight/custom segment sinks
         # that deliberately do not use the disk-backed saver.
-        if runtime is not None:
-            manifest = runtime.delivery.publish(plan, manifest)["manifest"]
-            manifest["_storage_pin"] = runtime.output_pin
-        elif os.path.isdir(_run_dir(plan)):
+        if os.path.isdir(_run_dir(plan)):
             if complete:
                 manifest_path = _manifest_path(plan)
             else:
@@ -24207,14 +23657,10 @@ class MiniMaxH3ChainManifestLoad:
                 _plan_with_recoverable_legacy_source_audio(
                     prepared_plan, source_audio))
         saved_count = _saved_scene_prefix_length(prepared_plan)
-        from .storage_runtime import current_runtime
-        runtime = current_runtime(_output_root(), prepared_plan.get("run_name"))
-        directory = (runtime.reader.working_directory(runtime.run) if runtime is not None
-                     else _run_dir(prepared_plan))
         if saved_count < 1:
             raise FileNotFoundError(
                 "H3 Chain Manifest Load found no saved scenes for run %s in %s."
-                % (prepared_plan["run_name"], directory))
+                % (prepared_plan["run_name"], _run_dir(prepared_plan)))
         recovered = _load_resume_state(
             prepared_plan, saved_count + 1,
             source_timeline=runtime_timeline,
@@ -24222,23 +23668,6 @@ class MiniMaxH3ChainManifestLoad:
         complete = saved_count == len(prepared_plan["shots"])
         manifest = _manifest_from_segments(
             prepared_plan, recovered["segments"], complete=complete)
-        if runtime is not None:
-            persisted = False
-            if runtime.generation_writes and runtime.node_generation_write.get() is not False:
-                try:
-                    manifest = runtime.delivery.publish(prepared_plan, manifest)["manifest"]
-                    manifest["_storage_pin"] = runtime.output_pin
-                    persisted = True
-                except ProjectOwnershipError:
-                    pass  # Existing non-owner recovery remains read-only.
-            kind = "completed" if complete else "partial"
-            status = "loaded and verified %s manifest through clip %d/%d from %s" % (
-                kind, saved_count, len(prepared_plan["shots"]), directory)
-            if not persisted:
-                status += "; read-only storage session, disk manifest left unchanged"
-            from .storage_delivery import delivery_carrier
-            manifest = delivery_carrier(manifest, prepared_plan)
-            return manifest, json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True), status
         if complete:
             manifest_path = _manifest_path(prepared_plan)
             kind = "completed"
@@ -24290,7 +23719,6 @@ class MiniMaxH3ChainChapterDelivery:
                                "chapters export their generated scenes now; "
                                "later exports can include new scenes."}),
             },
-            "hidden": {"unique_id": "UNIQUE_ID"},
         }
 
     RETURN_TYPES = (MANIFEST_TYPE, "STRING", "INT", "STRING", "STRING")
@@ -24316,9 +23744,7 @@ class MiniMaxH3ChainChapterDelivery:
     def IS_CHANGED(cls, *args, **kwargs):
         return float("NaN")
 
-    def select(self, manifest, enabled=True, chapter_number=0, unique_id=None):
-        if not isinstance(manifest, dict):
-            raise ValueError("H3 Chapter Delivery requires a manifest.")
+    def select(self, manifest, enabled=True, chapter_number=0):
         if not bool(enabled):
             document = _json_document(manifest)
             if not isinstance(document, dict):
@@ -24327,17 +23753,8 @@ class MiniMaxH3ChainChapterDelivery:
             return (document, json.dumps(
                 document, ensure_ascii=False, indent=2, sort_keys=True),
                 0, "", status)
-        from .storage_runtime import current_runtime
-        runtime = current_runtime(_output_root(), manifest.get("run_name"))
-        if runtime is not None:
-            from .storage_chapters import ChapterSnapshots
-            from .storage_carriers import export_operation
-            from . import upscale_nodes
-            chapter_manifest, path = ChapterSnapshots(runtime, sys.modules[__name__], upscale_nodes).seal(
-                manifest, int(chapter_number), export_operation(type(self).select, unique_id))
-        else:
-            chapter_manifest, path = _chapter_manifest_from_manifest(
-                manifest, int(chapter_number))
+        chapter_manifest, path = _chapter_manifest_from_manifest(
+            manifest, int(chapter_number))
         chapter = chapter_manifest["chapter"]
         status = (
             "saved Chapter %d %r, scenes %d:%d, snapshot %s -> %s" %
@@ -24371,10 +23788,6 @@ class MiniMaxH3ChainChapterLoad:
                                "this chapter. Paste a complete 32-character id "
                                "to recover a particular older chapter final."}),
             },
-            "optional": {
-                "plan": (PLAN_TYPE, {"tooltip": "Optional current Plan supplies the exact branch, storage snapshot and workflow ownership for downstream exports. Loading never changes the Plan."}),
-                "working_branch_id": ("STRING", {"default": "main", "tooltip": "Exact branch to read when no Plan is connected. Loading alone does not grant project ownership."}),
-            },
         }
 
     RETURN_TYPES = (MANIFEST_TYPE, "STRING", "STRING", "STRING")
@@ -24397,21 +23810,9 @@ class MiniMaxH3ChainChapterLoad:
     def IS_CHANGED(cls, *args, **kwargs):
         return float("NaN")
 
-    def load(self, run_name, chapter_number, chapter_manifest_id="", plan=None,
-             working_branch_id="main"):
-        from .storage_runtime import current_runtime
-        runtime = current_runtime(_output_root(), run_name)
-        if plan is not None and plan.get("run_name") != _strict_run_name(run_name):
-            raise ValueError("Chapter Load Plan belongs to a different project.")
-        if runtime is not None:
-            from .storage_chapters import ChapterSnapshots
-            from . import upscale_nodes
-            manifest, path = ChapterSnapshots(runtime, sys.modules[__name__], upscale_nodes).load(
-                int(chapter_number), chapter_manifest_id,
-                proof=plan.get("_project_ownership") if plan is not None else None)
-        else:
-            manifest, path = _load_chapter_manifest(
-                run_name, int(chapter_number), chapter_manifest_id)
+    def load(self, run_name, chapter_number, chapter_manifest_id=""):
+        manifest, path = _load_chapter_manifest(
+            run_name, int(chapter_number), chapter_manifest_id)
         chapter = manifest["chapter"]
         status = (
             "loaded Chapter %d %r scenes %d:%d snapshot %s from %s" %
@@ -24423,7 +23824,7 @@ class MiniMaxH3ChainChapterLoad:
             status)
 
 
-def _generated_audio(manifest: dict[str, Any], *, rehearsal_view=None) -> dict[str, Any]:
+def _generated_audio(manifest: dict[str, Any]) -> dict[str, Any]:
     if _st_load is None or torch is None:
         raise RuntimeError("Generated-audio assembly requires safetensors and torch.")
     segments = list(manifest["segments"])
@@ -24435,19 +23836,7 @@ def _generated_audio(manifest: dict[str, Any], *, rehearsal_view=None) -> dict[s
     default_mode = migrate_continuation_mode(
         compatibility.get("continuation_mode", "guide"))
     for segment in segments:
-        # An explicit ALT delivery carries the chosen picture checkpoint, not
-        # a new soundtrack. Its immutable original remains the audio owner.
-        original = (segment.get("presentation_source") or {}).get("original")
-        if isinstance(original, dict):
-            segment = original
-        elif segment.get("take_kind") == "editorial_alternate":
-            metadata, _ = _load_checkpoint_revision(
-                manifest["run_name"], int(segment["index"]),
-                segment.get("alternate_of_revision"),
-                **({"rehearsal_view": rehearsal_view} if rehearsal_view is not None else {}))
-            segment = metadata["segment"]
-        checkpoint = (str(rehearsal_view.path(segment["checkpoint"])) if rehearsal_view is not None
-                      else _absolute_output_path(segment["checkpoint"]))
+        checkpoint = _absolute_output_path(segment["checkpoint"])
         tensors = _st_load(checkpoint)
         if "delivered_audio" not in tensors:
             raise ValueError(
@@ -24668,8 +24057,7 @@ def _audio_with_editorial_timeline(
     return result
 
 
-def _validate_prelude(manifest: dict[str, Any], *, rehearsal_view=None) -> dict[str, Any] | None:
-    resolve = (lambda value: str(rehearsal_view.path(value))) if rehearsal_view is not None else _absolute_output_path
+def _validate_prelude(manifest: dict[str, Any]) -> dict[str, Any] | None:
     value = manifest.get("prelude")
     if value is None:
         return None
@@ -24689,7 +24077,7 @@ def _validate_prelude(manifest: dict[str, Any], *, rehearsal_view=None) -> dict[
     expected_video_hash = str(value.get("video_sha256") or "")
     if not isinstance(video_value, str) or not expected_video_hash:
         raise ValueError("H3 chain prelude has no verified video artifact.")
-    video_path = resolve(video_value)
+    video_path = _absolute_output_path(video_value)
     if not os.path.isfile(video_path):
         raise FileNotFoundError("H3 chain prelude video is missing: %s" % video_path)
     if _file_sha256(video_path) != expected_video_hash:
@@ -24699,7 +24087,7 @@ def _validate_prelude(manifest: dict[str, Any], *, rehearsal_view=None) -> dict[
         expected_audio_hash = str(value.get("audio_sha256") or "")
         if not isinstance(audio_value, str) or not expected_audio_hash:
             raise ValueError("H3 chain prelude has an unverified audio artifact.")
-        audio_path = resolve(audio_value)
+        audio_path = _absolute_output_path(audio_value)
         if not os.path.isfile(audio_path):
             raise FileNotFoundError(
                 "H3 chain prelude audio is missing: %s" % audio_path)
@@ -24709,13 +24097,13 @@ def _validate_prelude(manifest: dict[str, Any], *, rehearsal_view=None) -> dict[
     return value
 
 
-def _prelude_audio(record: dict[str, Any], *, rehearsal_view=None) -> dict[str, Any] | None:
+def _prelude_audio(record: dict[str, Any]) -> dict[str, Any] | None:
     value = record.get("audio")
     if value is None:
         return None
     if _st_load is None:
         raise RuntimeError("safetensors is required to load H3 prelude audio.")
-    tensors = _st_load(str(rehearsal_view.path(value)) if rehearsal_view is not None else _absolute_output_path(value))
+    tensors = _st_load(_absolute_output_path(value))
     waveform = tensors.get("waveform")
     if waveform is None:
         raise ValueError("H3 chain prelude audio contains no waveform tensor.")
@@ -24730,7 +24118,6 @@ def _audio_with_prelude(
     audio: dict[str, Any],
     extension_frames: int,
     prelude: dict[str, Any],
-    *, rehearsal_view=None,
 ) -> dict[str, Any]:
     waveform, sample_rate = _audio_waveform_3d(
         audio, "H3 extension assembly audio")
@@ -24746,7 +24133,7 @@ def _audio_with_prelude(
         {"waveform": waveform, "sample_rate": sample_rate},
         sample_rate, extension_samples, channels,
         "H3 extension assembly audio")
-    saved = _prelude_audio(prelude, **({"rehearsal_view": rehearsal_view} if rehearsal_view is not None else {}))
+    saved = _prelude_audio(prelude)
     if saved is None:
         prefix = torch.zeros(
             (1, channels, prelude_samples), dtype=torch.float32)
@@ -24833,8 +24220,7 @@ def _audio_with_prelude(
     return {"waveform": assembled, "sample_rate": sample_rate}
 
 
-def _validate_manifest(manifest: dict[str, Any], *,
-                       rehearsal_view=None) -> list[dict[str, Any]]:
+def _validate_manifest(manifest: dict[str, Any]) -> list[dict[str, Any]]:
     segments = manifest.get("segments") or []
     clip_count = int(manifest.get("clip_count", 0))
     if clip_count < 1 or len(segments) != clip_count:
@@ -24845,8 +24231,7 @@ def _validate_manifest(manifest: dict[str, Any], *,
     total_frames = 0
     for segment in segments:
         index = int(segment["index"])
-        _verify_segment_artifacts(segment, index,
-            **({"rehearsal_view": rehearsal_view} if rehearsal_view is not None else {}))
+        _verify_segment_artifacts(segment, index)
         total_frames += int(segment.get("delivered_frames", 0))
     expected_frames = int(manifest.get("total_delivered_frames", -1))
     if total_frames != expected_frames:
@@ -25063,7 +24448,6 @@ def _decode_scheduled_blend_artifact(
     requested_blend: int,
     video_vae: Any,
     output_path: str,
-    *, rehearsal_view=None,
 ) -> None:
     """Re-decode one checkpoint's raw video for a larger recovery blend."""
     if video_vae is None:
@@ -25077,8 +24461,7 @@ def _decode_scheduled_blend_artifact(
     if _st_load is None or torch is None:
         raise RuntimeError(
             "Scheduled H3 recovery blending requires safetensors and torch.")
-    checkpoint = (str(rehearsal_view.path(segment["checkpoint"])) if rehearsal_view is not None
-                  else _absolute_output_path(segment["checkpoint"]))
+    checkpoint = _absolute_output_path(segment["checkpoint"])
     tensors = _st_load(checkpoint)
     video = tensors.get("video")
     if video is None:
@@ -25140,11 +24523,8 @@ def _blend_video_records(
     video_vae: Any = None,
     temporary_paths: list[str] | None = None,
     force_records: bool = False,
-    temporary_directory: str | None = None,
-    rehearsal_view=None,
 ) -> list[dict[str, Any]]:
     """Resolve scheduled joins and their disk-backed overlap continuations."""
-    resolve = (lambda value: str(rehearsal_view.path(value))) if rehearsal_view is not None else _absolute_output_path
     configured = int(
         (manifest.get("compatibility") or {}).get("video_blend_frames", 0))
     boundary_count = len(segments) if prelude is not None else max(
@@ -25175,7 +24555,7 @@ def _blend_video_records(
     if prelude is not None:
         records.append({
             "kind": "prelude",
-            "path": resolve(prelude["video"]),
+            "path": _absolute_output_path(prelude["video"]),
             "input_frames": int(prelude["frame_count"]),
             "delivered_frames": int(prelude["frame_count"]),
             "blend_frames": 0,
@@ -25199,32 +24579,24 @@ def _blend_video_records(
             recorded_blend = int(item.get("blend_frames", 0))
             value = item.get("blend_segment")
             if recorded_blend >= expected_blend and isinstance(value, str):
-                path = resolve(value)
+                path = _absolute_output_path(value)
                 skip_frames = recorded_blend - expected_blend
             else:
                 if temporary_paths is None:
                     raise RuntimeError(
                         "H3 Chain scheduled blend recovery has no temporary "
                         "artifact owner.")
-                if temporary_directory is not None:
-                    # The assembly workspace exclusively owns this attempt.
-                    path = os.path.join(temporary_directory,
-                        ".blend_%04d.mkv" % int(item.get("index", 0)))
-                else:
-                    final_dir = os.path.join(
-                        _chapter_delivery_root(manifest), "final")
-                    final_dir = reserve_directory(_output_root(), os.path.join(
-                        final_dir, ".blend_staging"), "previews")
-                    os.makedirs(final_dir, exist_ok=True)
-                    path = os.path.join(
-                        final_dir, ".scheduled_blend_clip_%04d.%s.mkv" %
-                        (int(item.get("index", 0)), uuid.uuid4().hex))
+                final_dir = os.path.join(
+                    _chapter_delivery_root(manifest), "final")
+                os.makedirs(final_dir, exist_ok=True)
+                path = os.path.join(
+                    final_dir, ".scheduled_blend_clip_%04d.%s.mkv" %
+                    (int(item.get("index", 0)), uuid.uuid4().hex))
                 _decode_scheduled_blend_artifact(
-                    manifest, item, expected_blend, video_vae, path,
-                    **({"rehearsal_view": rehearsal_view} if rehearsal_view is not None else {}))
+                    manifest, item, expected_blend, video_vae, path)
                 temporary_paths.append(path)
         else:
-            path = resolve(item["segment"])
+            path = _absolute_output_path(item["segment"])
         if not os.path.isfile(path):
             raise FileNotFoundError("H3 chain blend input is missing: %s" % path)
         records.append({
@@ -25254,9 +24626,7 @@ def _apply_editorial_timeline_records(
     timeline_records: list[dict[str, Any]],
     segments: list[dict[str, Any]],
     compatibility: dict[str, Any],
-    *, rehearsal_view=None,
 ) -> list[dict[str, Any]]:
-    resolve = (lambda value: str(rehearsal_view.path(value))) if rehearsal_view is not None else _absolute_output_path
     timeline_scene_order = [
         int(item["scene"])
         for item in timeline_records if item.get("kind") == "scene"
@@ -25343,7 +24713,7 @@ def _apply_editorial_timeline_records(
             # black gap also establishes a hard boundary. Use the complete
             # delivered clip without resampling or touching its checkpoint.
             record.update({
-            "path": resolve(source["segment"]),
+                "path": _absolute_output_path(source["segment"]),
                 "input_frames": used_frames,
                 "delivered_frames": used_frames,
                 "blend_frames": 0,
@@ -26178,7 +25548,7 @@ def _pyav_mux_audio(video_path: str, audio: dict[str, Any], path: str,
         raise
 
 
-def _write_ffmetadata(path: str, metadata: dict[str, Any], *, write_text=None) -> None:
+def _write_ffmetadata(path: str, metadata: dict[str, Any]) -> None:
     def escape(value: Any) -> str:
         text = str(value).replace("\\", "\\\\")
         for character in ("=", ";", "#"):
@@ -26188,22 +25558,11 @@ def _write_ffmetadata(path: str, metadata: dict[str, Any], *, write_text=None) -
     lines = [";FFMETADATA1"]
     lines.extend("%s=%s" % (escape(key), escape(value))
                  for key, value in metadata.items() if value is not None)
-    (write_text or _atomic_text)(path, "\n".join(lines) + "\n")
+    _atomic_text(path, "\n".join(lines) + "\n")
 
 
-def _manifest_media_metadata(manifest: dict[str, Any], *, rehearsal_view=None) -> dict[str, str]:
-    read_options = {"rehearsal_view": rehearsal_view} if rehearsal_view is not None else {}
-    metadata = _archive_media_metadata(manifest.get("archives"), **read_options)
-    if manifest.get("upscale"):
-        from .processing_execution import assembly_tags
-        # Also handle old converted manifests whose archives still point at
-        # generation: source metadata is provenance, never processing settings.
-        source_archives = manifest.get("source_archives", manifest.get("archives"))
-        for key, value in _archive_media_metadata(source_archives, **read_options).items():
-            metadata["h3_source_" + ("plan" if key == "h3_plan" else key)] = value
-        metadata.pop("workflow", None)
-        metadata.pop("prompt", None)
-        metadata.update(assembly_tags(sys.modules[__name__], manifest["segments"], **read_options))
+def _manifest_media_metadata(manifest: dict[str, Any]) -> dict[str, str]:
+    metadata = _archive_media_metadata(manifest.get("archives"))
     chapter = manifest.get("chapter")
     chapter_suffix = ""
     chapter_comment = ""
@@ -26218,17 +25577,15 @@ def _manifest_media_metadata(manifest: dict[str, Any], *, rehearsal_view=None) -
         "title": "MiniMax H3 chain - %s%s" % (
             manifest.get("run_name", "h3_chain"), chapter_suffix),
         "comment": (
-            "%d H3 scenes%s; %s" %
-            (int(manifest.get("clip_count", 0)), chapter_comment,
-             "per-scene processing provenance embedded" if manifest.get("upscale")
-             else "prompts and recovery workflow embedded")),
+            "%d H3 scenes%s; prompts and recovery workflow embedded" %
+            (int(manifest.get("clip_count", 0)), chapter_comment)),
         "h3_manifest": json.dumps(
             manifest, ensure_ascii=False, separators=(",", ":")),
     })
     return metadata
 
 
-def _checkpoint_export_segments(manifest: dict[str, Any], *, rehearsal_view=None) -> list[dict[str, Any]]:
+def _checkpoint_export_segments(manifest: dict[str, Any]) -> list[dict[str, Any]]:
     segments = manifest.get("segments") or []
     clip_count = int(manifest.get("clip_count", 0))
     if clip_count < 1 or len(segments) != clip_count:
@@ -26243,8 +25600,7 @@ def _checkpoint_export_segments(manifest: dict[str, Any], *, rehearsal_view=None
         if not isinstance(checkpoint_value, str):
             raise ValueError(
                 "H3 PNG export clip %d has no checkpoint path." % expected_index)
-        checkpoint = (str(rehearsal_view.path(checkpoint_value)) if rehearsal_view is not None
-                      else _absolute_output_path(checkpoint_value))
+        checkpoint = _absolute_output_path(checkpoint_value)
         if not os.path.isfile(checkpoint):
             raise FileNotFoundError(
                 "H3 PNG export checkpoint is missing: %s" % checkpoint)
@@ -26261,20 +25617,6 @@ def _checkpoint_export_segments(manifest: dict[str, Any], *, rehearsal_view=None
             "H3 PNG export segment durations total %d frames; expected %d." %
             (delivered_total, expected_total))
     return segments
-
-
-def _checkpoint_export_views(manifest, *, rehearsal_view=None):
-    """Separate accepted picture choices from their original audio owners."""
-    from .deferred_checkpoint_source import editorial_source_manifest
-    _checkpoint_export_segments(manifest, rehearsal_view=rehearsal_view)
-    resolved = editorial_source_manifest(manifest, sys.modules[__name__])
-    editorial = _manifest_editorial(resolved)
-    sources = resolved["segments"]
-    audio_segments = [(s.get("presentation_source") or {}).get("original", s) for s in sources]
-    trimmed = [_editorial_trimmed_segment(s, editorial) for s in audio_segments]
-    _require_current_editorial_dependencies({s["index"]:s for s in trimmed}, "H3 PNG export")
-    pictures = [_editorial_trimmed_segment(s, editorial) for s in sources]
-    return audio_segments, pictures, editorial, sources
 
 
 def _png_export_hash_cache_path(manifest: dict[str, Any]) -> str:
@@ -26311,7 +25653,7 @@ def _png_export_checkpoint_cache_key(checkpoint: str) -> str:
 
 def _verify_png_export_checkpoint(
         checkpoint: str, expected_hash: str, verification: str,
-        cache: dict[str, Any], *, cache_key=None) -> tuple[str, bool]:
+        cache: dict[str, Any]) -> tuple[str, bool]:
     mode = str(verification or "cached").strip().lower()
     if mode not in ("cached", "strict"):
         raise ValueError(
@@ -26320,7 +25662,7 @@ def _verify_png_export_checkpoint(
     if not expected:
         return "no recorded hash", False
     stat = os.stat(checkpoint)
-    key = cache_key if cache_key is not None else _png_export_checkpoint_cache_key(checkpoint)
+    key = _png_export_checkpoint_cache_key(checkpoint)
     entry = (cache.get("entries") or {}).get(key)
     cache_matches = False
     if mode == "cached" and isinstance(entry, dict):
@@ -26347,16 +25689,14 @@ def _verify_png_export_checkpoint(
 
 
 def _new_export_directory(manifest: dict[str, Any], export_name: str) -> str:
-    from .storage_legacy import LegacyStoragePaths
     name = _safe_name(export_name, "png_sequence")
-    base = os.path.abspath(LegacyStoragePaths.png_sequence(
-        _chapter_delivery_root(manifest), name))
+    base = os.path.abspath(os.path.join(
+        _chapter_delivery_root(manifest), "frames", name))
     root = _output_root()
     if os.path.commonpath([root, base]) != root:
         raise ValueError("H3 PNG export path escapes the ComfyUI output directory.")
     for suffix in range(0, 10000):
         candidate = base if suffix == 0 else "%s_%04d" % (base, suffix + 1)
-        candidate = reserve_directory(_output_root(), candidate, "png")
         try:
             os.makedirs(candidate, exist_ok=False)
             return candidate
@@ -26418,7 +25758,7 @@ def _png_export_file_unchanged(
         return False
     if re.fullmatch(r"[0-9a-f]{64}", str(record.get("sha256") or "")) is None:
         return False
-    path = _absolute_output_path(os.path.join(directory, filename))
+    path = os.path.join(directory, filename)
     if os.path.islink(path) or not os.path.isfile(path):
         return False
     stat = os.stat(path)
@@ -26432,9 +25772,8 @@ def _png_export_file_unchanged(
     return _file_sha256(path) == record.get("sha256")
 
 
-def _png_export_source_identity(segment: dict[str, Any], *, rehearsal_view=None) -> dict[str, Any]:
-    path = (str(rehearsal_view.path(segment["checkpoint"])) if rehearsal_view is not None
-            else _absolute_output_path(segment["checkpoint"]))
+def _png_export_source_identity(segment: dict[str, Any]) -> dict[str, Any]:
+    path = _absolute_output_path(segment["checkpoint"])
     stat = os.stat(path)
     return {"segment": _json_document(segment),
             "checkpoint_size": stat.st_size,
@@ -26445,7 +25784,7 @@ def _png_export_source_identity(segment: dict[str, Any], *, rehearsal_view=None)
 
 def _png_export_incremental_identity(
         manifest, segments, editorial_segments, video_vae, audio_vae,
-        first_frame_number, compression, embed_workflow, png_bit_depth=8, *, rehearsal_view=None):
+        first_frame_number, compression, embed_workflow, png_bit_depth=8):
     chapter = manifest.get("chapter") or {}
     sources = {int(item["index"]): item for item in segments}
     placements = {
@@ -26475,9 +25814,9 @@ def _png_export_incremental_identity(
                 "continuation_mode", "guide"),
         },
         "sources": [{
-            "picture": (_png_export_source_identity(item, rehearsal_view=rehearsal_view)
+            "picture": (_png_export_source_identity(item)
                         if video_vae is not None else None),
-            "audio": (_png_export_source_identity(sources[int(item["index"])], rehearsal_view=rehearsal_view)
+            "audio": (_png_export_source_identity(sources[int(item["index"])])
                       if audio_vae is not None else None),
             "frames": _editorial_segment_delivered_frames(item),
             "index": int(item["index"]),
@@ -26486,45 +25825,21 @@ def _png_export_incremental_identity(
     }
 
 
-def _png_export_sources_match(previous, current):
-    """Copied checkpoint mtimes are hints, not different content or settings.
-
-    Keep every other source field, size and saved SHA-256 in the comparison.
-    The caller still verifies actual checkpoint and exported-file integrity.
-    """
-    def normalized(sources):
-        if not isinstance(sources, list):
-            return None
-        result = []
-        for source in sources:
-            if not isinstance(source, dict):
-                return None
-            item = dict(source)
-            for stream in ("picture", "audio"):
-                if isinstance(item.get(stream), dict):
-                    item[stream] = {k:v for k,v in item[stream].items() if k != "checkpoint_mtime_ns"}
-            result.append(item)
-        return result
-    left, right = normalized(previous), normalized(current)
-    return left is not None and right is not None and left == right
-
-
 def _find_incremental_png_export(manifest, export_name, identity, verification):
     """Reuse only a successful, unchanged prefix; never repair files in place."""
-    from .storage_legacy import LegacyStoragePaths
     chapter_root = _chapter_delivery_root(manifest)
-    root = os.path.realpath(LegacyStoragePaths.png_root(chapter_root))
+    root = os.path.realpath(os.path.join(chapter_root, "frames"))
     if os.path.commonpath([chapter_root, root]) != chapter_root:
         raise ValueError("H3 chapter frames directory escapes its chapter.")
-    from .storage_resolver import logical_children
+    if not os.path.isdir(root):
+        return None
     name = _safe_name(export_name, "png_sequence")
     pattern = re.compile(re.escape(name) + r"(?:_([0-9]{4}))?")
     candidates = []
-    for entry in logical_children(_output_root(), root):
+    for entry in os.scandir(root):
         match = pattern.fullmatch(entry.name)
-        physical = _absolute_output_path(str(entry))
-        if match and not entry.is_symlink() and os.path.isdir(physical):
-            candidates.append((int(match.group(1) or 1), physical))
+        if match and not entry.is_symlink() and entry.is_dir():
+            candidates.append((int(match.group(1) or 1), entry.path))
     for _suffix, directory in sorted(candidates, reverse=True):
         try:
             sidecar = os.path.join(directory, "export.json")
@@ -26542,7 +25857,7 @@ def _find_incremental_png_export(manifest, export_name, identity, verification):
                     prior.get("format") != identity["format"] or
                     prior.get("settings") != identity["settings"] or
                     not sources or len(sources) != len(clips) or
-                    not _png_export_sources_match(sources, identity["sources"][:len(sources)])):
+                    sources != identity["sources"][:len(sources)]):
                 continue
             frames = sum(int(item["frames"]) for item in sources)
             video_enabled = identity["settings"]["video_vae"] is not None
@@ -26775,7 +26090,6 @@ class MiniMaxH3ChainExportPNG:
     @classmethod
     def INPUT_TYPES(cls):
         return {
-            "hidden": {"unique_id": "UNIQUE_ID"},
             "required": {
                 "export_name": ("STRING", {
                     "default": "png_sequence",
@@ -26851,8 +26165,7 @@ class MiniMaxH3ChainExportPNG:
     RETURN_TYPES = ("STRING", "INT", "STRING", "STRING", "VIDEO")
     RETURN_NAMES = ("output_directory", "frame_count", "status", "audio_path", "video")
     OUTPUT_TOOLTIPS = (
-        "Absolute folder containing the selected deliverables. Legacy exports include export.json; "
-        "organized storage reports the accepted versioned index path in status.",
+        "Absolute folder containing the selected deliverables and export.json.",
         "Total PNG frames available, including reused frames; zero in "
         "audio-only mode.",
         "Export folder, generated deliverables, scene count, and duration.",
@@ -26872,33 +26185,16 @@ class MiniMaxH3ChainExportPNG:
     def IS_CHANGED(cls, *args, **kwargs):
         return float("NaN")
 
-    @project_writer(domain='exports')
     def export(self, manifest=None, video_vae=None, export_name="png_sequence",
                first_frame_number=1, png_compression=1, embed_workflow=True,
                save_workers=0, checkpoint_verification="cached",
                audio_vae=None, reuse_existing=True, video=None, state=None,
-               output_folder="", png_bit_depth="8", unique_id=None):
+               output_folder="", png_bit_depth="8"):
         from .png_video_export import bit_depth, export_video
-        from .storage_runtime import current_runtime
         bits = bit_depth(png_bit_depth)
-        incoming = state if state is not None else manifest
-        runtime = current_runtime(_output_root(), incoming.get('run_name')) if isinstance(incoming, dict) else None
         if video is not None:
             if manifest is not None or video_vae is not None or audio_vae is not None:
                 raise ValueError("VIDEO passthrough uses video + state inside the scene loop. Disconnect manifest and VAEs; the segment saver preserves audio.")
-            if runtime is not None:
-                from .storage_carriers import export_operation
-                from .storage_png_sequence import PNGSequenceExport
-                from . import upscale_nodes
-                operation = export_operation(type(self).export, unique_id)
-                if operation is None:
-                    raise ValueError('PNG export needs a host-issued exact node operation ID.')
-                workspace = PNGSequenceExport(runtime, upscale_nodes, state, video, operation=operation,
-                    export_name=export_name, output_folder=output_folder, first_frame_number=first_frame_number,
-                    png_compression=png_compression, png_bit_depth=bits, embed_workflow=embed_workflow,
-                    checkpoint_verification=checkpoint_verification, reuse_existing=reuse_existing)
-                workspace.prepare(workers=save_workers)
-                return workspace.publish()
             return export_video(
                 sys.modules[__name__], video, state, export_name, output_folder,
                 first_frame_number, png_compression, bits, embed_workflow,
@@ -26907,20 +26203,6 @@ class MiniMaxH3ChainExportPNG:
             raise ValueError("state/output_folder require the VIDEO passthrough input. For latent export connect manifest + VAE.")
         if manifest is None:
             raise ValueError("Connect manifest + VAE for latent export, or VIDEO + state inside the pixel upscale scene loop.")
-        if runtime is not None:
-            from .storage_carriers import export_operation
-            from .storage_latent_export import LatentPNGExport
-            from . import upscale_nodes
-            operation = export_operation(type(self).export, unique_id)
-            if operation is None:
-                raise ValueError('PNG/WAV export needs a host-issued exact node operation ID.')
-            workspace = LatentPNGExport(runtime, upscale_nodes, manifest, operation=operation,
-                export_name=export_name, video_vae=video_vae, audio_vae=audio_vae,
-                first_frame_number=first_frame_number, png_compression=png_compression,
-                png_bit_depth=bits, embed_workflow=embed_workflow,
-                checkpoint_verification=checkpoint_verification, reuse_existing=reuse_existing)
-            workspace.prepare(self, workers=save_workers)
-            return workspace.publish()
         incremental = (bool(reuse_existing) and isinstance(manifest, dict)
                        and manifest.get("format") == CHAPTER_MANIFEST_FORMAT)
         guard = (_chapter_png_export_lock(manifest, export_name)
@@ -26935,8 +26217,7 @@ class MiniMaxH3ChainExportPNG:
 
     def _export(self, manifest, video_vae, export_name, first_frame_number,
                 png_compression, embed_workflow, save_workers,
-                checkpoint_verification, audio_vae, incremental, png_bit_depth=8,
-                _workspace=None):
+                checkpoint_verification, audio_vae, incremental, png_bit_depth=8):
         if _st_load is None or torch is None or np is None:
             raise RuntimeError(
                 "H3 PNG/WAV export requires safetensors, torch, and NumPy.")
@@ -26946,12 +26227,21 @@ class MiniMaxH3ChainExportPNG:
             raise ValueError(
                 "H3 PNG/WAV export needs video_vae, audio_vae, or both. "
                 "Connect only audio_vae for an audio-only export.")
-        if _workspace is not None:
-            segments, editorial_segments = _workspace.audio_segments, _workspace.picture_segments
-        else:
-            segments, editorial_segments, editorial, _sources = _checkpoint_export_views(manifest)
-        resolve_checkpoint = _workspace.path if _workspace is not None else _absolute_output_path
-        verify_checkpoint = _workspace.verify_checkpoint if _workspace is not None else _verify_png_export_checkpoint
+        segments = _checkpoint_export_segments(manifest)
+        editorial = _manifest_editorial(manifest)
+        editorial_segments = [
+            _editorial_trimmed_segment(segment, editorial)
+            for segment in segments
+        ]
+        _require_current_editorial_dependencies({
+            int(segment.get("index", offset)): segment
+            for offset, segment in enumerate(editorial_segments, start=1)
+        }, "H3 PNG export")
+        editorial_segments = [
+            _editorial_trimmed_segment(segment, editorial)
+            for segment in _editorial_presentation_segments(
+                manifest.get("run_name"), segments, editorial)
+        ]
         compression = max(0, min(9, int(png_compression)))
         workers = _png_export_worker_count(save_workers)
         verification = str(
@@ -26970,23 +26260,17 @@ class MiniMaxH3ChainExportPNG:
         chunk_frames = min(
             PNG_EXPORT_MAX_CHUNK_FRAMES,
             max(PNG_EXPORT_MIN_CHUNK_FRAMES, workers * 4))
-        if _workspace is not None:
-            output_dir, previous = _workspace.render_directory, _workspace.previous
-            cache_path, hash_cache = _workspace.cache_path, _workspace.hash_cache
-            identity = _workspace.identity
-            write_json = _workspace.write_json
+        cache_path, hash_cache = _load_png_export_hash_cache(manifest)
+        identity = (_png_export_incremental_identity(
+            manifest, segments, editorial_segments, video_vae, audio_vae,
+            first_frame_number, compression, embed_workflow, png_bit_depth) if incremental else None)
+        previous_export = (_find_incremental_png_export(
+            manifest, export_name, identity, verification) if incremental else None)
+        if previous_export is None:
+            output_dir = _new_export_directory(manifest, export_name)
+            previous = {}
         else:
-            cache_path, hash_cache = _load_png_export_hash_cache(manifest)
-            identity = (_png_export_incremental_identity(
-                manifest, segments, editorial_segments, video_vae, audio_vae,
-                first_frame_number, compression, embed_workflow, png_bit_depth) if incremental else None)
-            previous_export = (_find_incremental_png_export(
-                manifest, export_name, identity, verification) if incremental else None)
-            if previous_export is None:
-                output_dir, previous = _new_export_directory(manifest, export_name), {}
-            else:
-                output_dir, previous = previous_export
-            write_json = _atomic_json
+            output_dir, previous = previous_export
         reused_clips = len(previous.get("clips") or [])
         reused_frames = int(previous.get("frame_count", 0))
         audio_reused = (audio_enabled and reused_clips == len(editorial_segments))
@@ -27001,8 +26285,8 @@ class MiniMaxH3ChainExportPNG:
         audio_path = ""
         audio_record = None
         audio_timings = []
-        archive_metadata = (_workspace.archive_tags if _workspace is not None else
-                            _archive_media_metadata(manifest.get("archives"))) if bool(embed_workflow) else {}
+        archive_metadata = (_archive_media_metadata(manifest.get("archives"))
+                            if bool(embed_workflow) else {})
         manifest_metadata = json.dumps(
             manifest, ensure_ascii=False, separators=(",", ":"))
         started = time.perf_counter()
@@ -27039,7 +26323,7 @@ class MiniMaxH3ChainExportPNG:
                 "audio": audio_record,
                 "archives": manifest.get("archives", {}),
             }
-            write_json(partial_path, partial)
+            _atomic_json(partial_path, partial)
 
         _LOG.info(
             "H3 PNG/WAV export starting: %d clips, %d timeline frames, "
@@ -27063,7 +26347,7 @@ class MiniMaxH3ChainExportPNG:
                 _png_export_check_interrupted()
                 segment = editorial_segment
                 index = int(segment["index"])
-                checkpoint = resolve_checkpoint(segment["checkpoint"])
+                checkpoint = _absolute_output_path(segment["checkpoint"])
                 raw_frames = int(segment["raw_frames"])
                 delivered_frames = _editorial_segment_delivered_frames(
                     editorial_segment)
@@ -27079,12 +26363,12 @@ class MiniMaxH3ChainExportPNG:
                     "checkpoint (%s)", clip_position, len(editorial_segments),
                     index, checkpoint_mib, verification)
                 verification_result, cache_changed = (
-                    verify_checkpoint(
+                    _verify_png_export_checkpoint(
                         checkpoint, segment.get("checkpoint_sha256", ""),
                         verification, hash_cache))
                 verification_seconds = time.perf_counter() - phase_started
                 if cache_changed:
-                    write_json(cache_path, hash_cache)
+                    _atomic_json(cache_path, hash_cache)
                 progress_done += delivered_frames
                 _png_export_update_progress(
                     progress_bar, progress_done, progress_total)
@@ -27106,8 +26390,7 @@ class MiniMaxH3ChainExportPNG:
 
                 save_partial("loading checkpoint", index)
                 phase_started = time.perf_counter()
-                tensors = (_workspace.load_tensors(segment, "video") if _workspace is not None
-                           else _st_load(checkpoint))
+                tensors = _st_load(checkpoint)
                 load_seconds = time.perf_counter() - phase_started
                 video = tensors.get("video")
                 if video is None:
@@ -27266,11 +26549,11 @@ class MiniMaxH3ChainExportPNG:
             # Alternates may select different picture checkpoints above.
             for segment in segments:
                 _png_export_check_interrupted()
-                _result, changed = verify_checkpoint(
-                    resolve_checkpoint(segment["checkpoint"]),
+                _result, changed = _verify_png_export_checkpoint(
+                    _absolute_output_path(segment["checkpoint"]),
                     segment.get("checkpoint_sha256", ""), verification, hash_cache)
                 if changed:
-                    write_json(cache_path, hash_cache)
+                    _atomic_json(cache_path, hash_cache)
             audio_path = os.path.join(output_dir, "audio.wav")
             audio_record = dict(previous["audio"])
             _LOG.info("H3 WAV export reusing unchanged soundtrack: %s", audio_path)
@@ -27290,25 +26573,24 @@ class MiniMaxH3ChainExportPNG:
                 _png_export_check_interrupted()
                 index = int(segment["index"])
                 delivered_progress = int(audio_frames_by_index.get(index, 0))
-                checkpoint = resolve_checkpoint(segment["checkpoint"])
+                checkpoint = _absolute_output_path(segment["checkpoint"])
 
                 save_partial("verifying audio checkpoint", index)
                 phase_started = time.perf_counter()
                 verification_result, cache_changed = (
-                    verify_checkpoint(
+                    _verify_png_export_checkpoint(
                         checkpoint, segment.get("checkpoint_sha256", ""),
                         verification, hash_cache))
                 verification_seconds = time.perf_counter() - phase_started
                 if cache_changed:
-                    write_json(cache_path, hash_cache)
+                    _atomic_json(cache_path, hash_cache)
                 progress_done += delivered_progress
                 _png_export_update_progress(
                     progress_bar, progress_done, progress_total)
 
                 save_partial("decoding audio VAE on GPU", index)
                 phase_started = time.perf_counter()
-                tensors = (_workspace.load_tensors(segment, "audio") if _workspace is not None
-                           else _st_load(checkpoint))
+                tensors = _st_load(checkpoint)
                 load_seconds = time.perf_counter() - phase_started
                 phase_started = time.perf_counter()
                 record = _png_export_audio_record(
@@ -27447,7 +26729,7 @@ class MiniMaxH3ChainExportPNG:
             export_record["incremental"] = identity
             export_record["frame_files"] = sorted(
                 frame_files, key=lambda item: int(item["file"][6:-4]))
-            if previous and _workspace is None:
+            if previous:
                 history_root = os.path.realpath(os.path.join(
                     output_dir, "export.history"))
                 if os.path.commonpath([output_dir, history_root]) != output_dir:
@@ -27456,11 +26738,8 @@ class MiniMaxH3ChainExportPNG:
                     history_root, _fingerprint(previous) + ".json")
                 if not os.path.isfile(history_path):
                     _atomic_json(history_path, previous)
-        if _workspace is not None:
-            _workspace.finish(export_record)
-        else:
-            _atomic_json(final_path, export_record)
-            _safe_unlink(partial_path)
+        _atomic_json(final_path, export_record)
+        _safe_unlink(partial_path)
         if video_enabled and audio_enabled:
             status = (
                 "exported %d clips / %d PNG frames (%d..%d) + synchronized "
@@ -27869,7 +27148,6 @@ class MiniMaxH3ChainLatentVideoAdapter:
     def IS_CHANGED(cls, *args, **kwargs):
         return float("NaN")
 
-    @project_writer
     def adapt(self, manifest, video_vae, audio_source, blend_schedule,
               decode_buffer, reuse_cache, audio_bitrate, source_audio=None):
         if _st_load is None or torch is None or av is None or np is None:
@@ -27925,7 +27203,6 @@ class MiniMaxH3ChainLatentVideoAdapter:
             } for item in editorial.get("trims", [])])
         cache_dir = os.path.join(
             _chapter_delivery_root(manifest), "upscaled", "seedvr2", "source")
-        cache_dir = reserve_directory(_output_root(), cache_dir, "previews")
         os.makedirs(cache_dir, exist_ok=True)
         final_path = os.path.join(cache_dir, digest + ".mkv")
         sidecar_path = os.path.join(cache_dir, digest + ".json")
@@ -28146,7 +27423,6 @@ class MiniMaxH3ChainAssemble:
     @classmethod
     def INPUT_TYPES(cls):
         return {
-            "hidden": {"unique_id": "UNIQUE_ID"},
             "required": {
                 "manifest": (MANIFEST_TYPE, {
                     "tooltip": "Complete or partial source/upscale manifest from "
@@ -28259,45 +27535,12 @@ class MiniMaxH3ChainAssemble:
     def IS_CHANGED(cls, *args, **kwargs):
         return float("NaN")
 
-    @project_writer(domain="exports")
     def assemble(self, manifest, audio_source, filename, audio_bitrate,
                  source_audio=None, overwrite_existing=False,
                  copy_to_output=False, output_subfolder="",
                  source_timeline=None, blend_schedule="plan",
                  blend_video_vae=None, boundary_tone_match="off",
-                 color_stabilization="off", unique_id=None):
-        from .storage_runtime import current_runtime
-        runtime = current_runtime(_output_root(), manifest.get("run_name"))
-        settings = dict(audio_source=audio_source, filename=filename,
-            audio_bitrate=audio_bitrate, source_audio=source_audio,
-            overwrite_existing=overwrite_existing, copy_to_output=copy_to_output,
-            output_subfolder=output_subfolder, source_timeline=source_timeline,
-            blend_schedule=blend_schedule, blend_video_vae=blend_video_vae,
-            boundary_tone_match=boundary_tone_match,
-            color_stabilization=color_stabilization)
-        if runtime is not None:
-            from .storage_assembly import AssemblyExport
-            from .storage_carriers import export_operation
-            from . import upscale_nodes
-            operation = export_operation(type(self).assemble, unique_id)
-            if operation is None:
-                raise ValueError('Assembly needs a host-issued exact node operation ID.')
-            workspace = AssemblyExport(runtime, upscale_nodes, manifest,
-                operation=operation, **settings)
-            workspace.prepare(self)
-            return workspace.publish()
-        return self._assemble(manifest, **settings)
-
-    def _assemble(self, manifest, audio_source, filename, audio_bitrate,
-                  source_audio=None, overwrite_existing=False,
-                  copy_to_output=False, output_subfolder="",
-                  source_timeline=None, blend_schedule="plan",
-                  blend_video_vae=None, boundary_tone_match="off",
-                  color_stabilization="off", *, _workspace=None):
-        view = _workspace.runtime.reader if _workspace is not None else None
-        read_options = {"rehearsal_view": view} if view is not None else {}
-        resolve = (lambda value: str(view.path(value))) if view is not None else _absolute_output_path
-        write_options = {"write_text": _workspace.write_text} if _workspace is not None else {}
+                 color_stabilization="off"):
         upscale_manifest = None
         upscale_support = None
         manifest_format = str((manifest or {}).get("format") or "")
@@ -28312,12 +27555,12 @@ class MiniMaxH3ChainAssemble:
                 upscale_manifest)
             manifest = upscale_support._assembly_manifest(
                 upscale_manifest, upscale_segments)
-        segments = _validate_manifest(manifest, **read_options)
+        segments = _validate_manifest(manifest)
         geometry = common_saved_resolution(segments, "H3 Chain Assemble")
         if geometry:
             manifest = {**manifest, "compatibility": {
                 **(manifest.get("compatibility") or {}), **geometry}}
-        prelude = _validate_prelude(manifest, **read_options)
+        prelude = _validate_prelude(manifest)
         run_name = _strict_run_name(manifest.get("run_name"))
         editorial = _manifest_editorial(manifest)
         editorial, editorial_records, editorial_extension_frames = (
@@ -28362,15 +27605,12 @@ class MiniMaxH3ChainAssemble:
         if selected == "plan":
             selected = _audio_policy_final(manifest)
         preserve_generated = upscale_manifest is not None or manifest.get("format") in (
-            "h3_chain_manifest_v3", "h3_chain_partial_manifest_v3",
-            "h3_chain_alternate_manifest_v1", CHAPTER_MANIFEST_FORMAT)
+            "h3_chain_manifest_v3", CHAPTER_MANIFEST_FORMAT)
         generated_track = None
         generated_warning = ""
         if preserve_generated or selected == "generated":
             try:
-                audio_manifest = (dict(manifest, segments=_workspace.audio_segments)
-                                  if _workspace is not None else manifest)
-                generated_track = _generated_audio(audio_manifest, **read_options)
+                generated_track = _generated_audio(manifest)
             except Exception as exc:
                 if selected == "generated":
                     raise
@@ -28455,16 +27695,16 @@ class MiniMaxH3ChainAssemble:
         prelude_frames = int(prelude["frame_count"]) if prelude is not None else 0
         total_output_frames = prelude_frames + extension_frames
         if audio is not None and prelude is not None:
-            audio = _audio_with_prelude(audio, extension_frames, prelude, **read_options)
+            audio = _audio_with_prelude(audio, extension_frames, prelude)
         generated_sidecar_audio = generated_track if preserve_generated else None
         if generated_sidecar_audio is not None and prelude is not None:
             generated_sidecar_audio = _audio_with_prelude(
-                generated_sidecar_audio, extension_frames, prelude, **read_options)
+                generated_sidecar_audio, extension_frames, prelude)
         subtitle_cues = _editorial_subtitle_cues(
             run_name, editorial, editorial_extension_frames,
             timeline_origin_frames=int(
                 (manifest.get("chapter") or {}).get(
-                    "editorial_origin_frame", 0)), **read_options)
+                    "editorial_origin_frame", 0)))
         if prelude_frames and subtitle_cues:
             subtitle_shift = prelude_frames / float(FPS)
             subtitle_cues = [{
@@ -28473,9 +27713,7 @@ class MiniMaxH3ChainAssemble:
                 "end": float(cue["end"]) + subtitle_shift,
             } for cue in subtitle_cues]
 
-        if _workspace is not None:
-            final_dir = _workspace.final_directory
-        elif upscale_manifest is not None:
+        if upscale_manifest is not None:
             final_dir = upscale_support._profile_paths(
                 upscale_manifest["run_name"],
                 upscale_manifest["profile"], 1,
@@ -28483,33 +27721,16 @@ class MiniMaxH3ChainAssemble:
         else:
             final_dir = os.path.join(
                 _chapter_delivery_root(manifest), "final")
-        if _workspace is None:
-            os.makedirs(final_dir, exist_ok=True)
-        final_name = (_workspace.final_name if _workspace is not None else
-                      _safe_name(_expand_filename_date(filename), "final"))
+        os.makedirs(final_dir, exist_ok=True)
+        final_name = _safe_name(_expand_filename_date(filename), "final")
         final_path = os.path.join(final_dir, final_name + ".mp4")
-        if not overwrite_existing and _workspace is None:
+        if not overwrite_existing:
             final_path = _available_versioned_path(final_path)
         generated_sidecar_path = (
             os.path.splitext(final_path)[0] + ".generated.wav"
             if generated_sidecar_audio is not None else None)
         subtitle_path = (os.path.splitext(final_path)[0] + ".srt"
                          if subtitle_cues else None)
-        outputs = {"video": final_path}
-        if upscale_manifest is not None:
-            outputs["metadata"] = os.path.splitext(final_path)[0] + ".json"
-        if generated_sidecar_path:
-            outputs["audio"] = generated_sidecar_path
-        if subtitle_path:
-            outputs["subtitles"] = subtitle_path
-        if _workspace is not None:
-            outputs = _workspace.reserve(outputs)
-        else:
-            outputs = reserve_export(_output_root(), outputs, identity=_relative_output_path(final_path))
-        final_path = outputs["video"]
-        generated_sidecar_path, subtitle_path = outputs.get("audio"), outputs.get("subtitles")
-        final_dir = os.path.dirname(final_path)
-        os.makedirs(final_dir, exist_ok=True)
         concat_path = os.path.join(final_dir, ".concat.txt")
         video_tmp = os.path.join(final_dir, ".video.tmp.mp4")
         final_tmp = os.path.join(final_dir, ".final.tmp.mp4")
@@ -28519,10 +27740,10 @@ class MiniMaxH3ChainAssemble:
         segment_paths = []
         delivered_frames = []
         if prelude is not None:
-            segment_paths.append(resolve(prelude["video"]))
+            segment_paths.append(_absolute_output_path(prelude["video"]))
             delivered_frames.append(prelude_frames)
         for item in presentation_segments:
-            path = resolve(item["segment"])
+            path = _absolute_output_path(item["segment"])
             if not os.path.isfile(path):
                 raise FileNotFoundError("H3 chain segment is missing: %s" % path)
             segment_paths.append(path)
@@ -28546,15 +27767,13 @@ class MiniMaxH3ChainAssemble:
                 video_vae=blend_video_vae,
                 temporary_paths=scheduled_blend_temps,
                 force_records=(color_stabilization_mode != "off"
-                               or editorial_changed),
-                **read_options,
-                **({"temporary_directory": final_dir} if _workspace is not None else {}))
+                               or editorial_changed))
             _require_alternate_hard_cut_boundaries(
                 blend_records, presentation_segments, "H3 Chain Assemble")
             if editorial_changed:
                 blend_records = _apply_editorial_timeline_records(
                     blend_records, editorial_records, presentation_segments,
-                    manifest.get("compatibility") or {}, **read_options)
+                    manifest.get("compatibility") or {})
             if tone_match_mode == "auto" and blend_records:
                 blend_records = _auto_boundary_tone_match_records(
                     blend_records)
@@ -28566,9 +27785,9 @@ class MiniMaxH3ChainAssemble:
             has_visual_blends = any(
                 int(record.get("blend_frames", 0))
                 for record in blend_records)
-            media_metadata = _manifest_media_metadata(manifest, **read_options)
+            media_metadata = _manifest_media_metadata(manifest)
             if blend_enabled:
-                _write_ffmetadata(metadata_tmp, media_metadata, **write_options)
+                _write_ffmetadata(metadata_tmp, media_metadata)
                 if ffmpeg:
                     try:
                         _ffmpeg_blend_video(
@@ -28617,7 +27836,7 @@ class MiniMaxH3ChainAssemble:
                         # the quoted span.
                         escaped = path.replace("'", "'\\''")
                         handle.write("file '%s'\n" % escaped)
-                _write_ffmetadata(metadata_tmp, media_metadata, **write_options)
+                _write_ffmetadata(metadata_tmp, media_metadata)
                 _run_ffmpeg([
                     ffmpeg, "-y", "-f", "concat", "-safe", "0", "-i",
                     concat_path, "-f", "ffmetadata", "-i", metadata_tmp,
@@ -28650,12 +27869,10 @@ class MiniMaxH3ChainAssemble:
                     video_tmp, audio, final_tmp, int(audio_bitrate),
                     total_output_frames)
             if generated_sidecar_path is not None:
-                (_write_wav if _workspace is not None else _atomic_wav)(
-                    generated_sidecar_audio, generated_sidecar_path)
+                _atomic_wav(generated_sidecar_audio, generated_sidecar_path)
             os.replace(final_tmp, final_path)
             if subtitle_path is not None:
-                _write_editorial_srt(subtitle_path, subtitle_cues,
-                    **({"write_text": _workspace.write_text} if _workspace is not None else {}))
+                _write_editorial_srt(subtitle_path, subtitle_cues)
         finally:
             for temporary in (concat_path, video_tmp, final_tmp, wav_tmp,
                               metadata_tmp, *scheduled_blend_temps):
@@ -28664,8 +27881,7 @@ class MiniMaxH3ChainAssemble:
 
         if upscale_manifest is not None:
             upscale_support._write_upscale_final_record(
-                upscale_manifest, final_path,
-                **({"_workspace": _workspace} if _workspace is not None else {}))
+                upscale_manifest, final_path)
 
         output_copy = (_copy_final_to_output(final_path, output_subfolder)
                        if copy_to_output else None)
@@ -28724,10 +27940,8 @@ class MiniMaxH3ChainAssemble:
                 "h3_chain_upscale_partial_manifest_v1"):
             status += "; partial upscale %d/%d scenes; remaining scenes can be resumed" % (
                 len(segments), int(upscale_manifest["clip_count"]))
-        published_video = output_copy or final_path
-        if _workspace is not None:
-            return _workspace.finish(outputs, manifest, status, total_output_frames)
         _LOG.info("H3 Chain %s", status)
+        published_video = output_copy or final_path
         _publish_final_review_preview(manifest, published_video, status)
         return {
             "ui": {
@@ -29223,40 +28437,8 @@ def _retire_superseded_review_snapshots(
                 run_dir, str(snapshot.get("token") or ""), "superseded", time.time())
 
 
-def _saved_review_snapshots(run_dir: str, run_name: str) -> list[dict[str, Any]]:
-    """Read main and named branches from one accepted project snapshot."""
-    if __package__:
-        from .storage_host import project_read
-    else:
-        from storage_host import project_read
-    if not os.path.isdir(run_dir):
-        return []
-    with project_read(_output_root(), run_name) as bound:
-        snapshots = list(_load_review_snapshots(run_dir))
-        try:
-            branches = WorkingBranches(_output_root(), run_name).listing()["branches"]
-            for branch in branches:
-                if branch["id"] != "main":
-                    directory = (os.path.join(run_dir, "branches", branch["id"])
-                                 if bound is not None else _run_dir({
-                                     "run_name": run_name, "_branch_id": branch["id"]}))
-                    snapshots.extend(dict(item, _branch_id=branch["id"])
-                                     for item in _load_review_snapshots(directory))
-        except (OSError, ValueError, TypeError):
-            if bound is not None:
-                raise
-            _LOG.warning("Could not list working-branch review snapshots for %s", run_name)
-        return snapshots
-
-
 async def _list_pending_reviews(_request):
-    if __package__:
-        from .storage_runtime import current_runtime
-    else:
-        from storage_runtime import current_runtime
-    runtime = current_runtime(_output_root())
     reviews = []
-    unavailable_runs = []
     live_tokens = set()
     live_run_scenes = set()
 
@@ -29273,8 +28455,6 @@ async def _list_pending_reviews(_request):
     for entry in list(_ACTIVE_CANDIDATE_BATCHES.values()):
         payload = entry.get("public")
         if not isinstance(payload, dict):
-            continue
-        if runtime is not None and payload.get("run_name") != runtime.run:
             continue
         payload = dict(payload)
         token = str(payload.get("token") or "")
@@ -29293,8 +28473,6 @@ async def _list_pending_reviews(_request):
         if item["future"].done():
             continue
         payload = dict(item["public"])
-        if runtime is not None and payload.get("run_name") != runtime.run:
-            continue
         token = str(payload.get("token") or "")
         if token in live_tokens:
             continue
@@ -29310,29 +28488,28 @@ async def _list_pending_reviews(_request):
     # pending snapshots that have no live entry; media previews come from the
     # saved segment/checkpoint inventory, never from live tensors.
     runs_dir = os.path.join(_output_root(), "h3_chains")
-    if runtime is not None:
-        run_names = [runtime.run]
-    else:
-        try:
-            run_names = sorted(await asyncio.to_thread(os.listdir, runs_dir))
-        except OSError:
-            run_names = []
+    try:
+        run_names = sorted(os.listdir(runs_dir))
+    except OSError:
+        run_names = []
     for run_name in run_names:
         run_dir = os.path.join(runs_dir, run_name)
+        if not os.path.isdir(run_dir):
+            continue
         try:
             _strict_run_name(run_name)
         except ValueError:
             continue
+        snapshots = list(_load_review_snapshots(run_dir))
         try:
-            snapshots = await asyncio.to_thread(_saved_review_snapshots, run_dir, run_name)
-        except (OSError, ValueError, TypeError) as exc:
-            if runtime is not None:
-                raise
-            # One unavailable project must not hide another project's live
-            # controls, or be misreported as having no pending reviews.
-            unavailable_runs.append({"run_name": run_name, "error": str(exc)})
-            _LOG.warning("Could not read review inventory for %s: %s", run_name, exc)
-            continue
+            branches = WorkingBranches(_output_root(), run_name).listing()["branches"]
+            for branch in branches:
+                if branch["id"] != "main":
+                    directory = _run_dir({"run_name": run_name, "_branch_id": branch["id"]})
+                    snapshots.extend(dict(item, _branch_id=branch["id"])
+                                     for item in _load_review_snapshots(directory))
+        except (OSError, ValueError, TypeError):
+            _LOG.warning("Could not list working-branch review snapshots for %s", run_name)
         for snapshot in snapshots:
             if snapshot.get("status") != "pending":
                 continue
@@ -29362,12 +28539,7 @@ async def _list_pending_reviews(_request):
                     "after a restart; previews load from the saved "
                     "segment/checkpoint inventory."),
             })
-    result = {"reviews": reviews}
-    if runtime is not None:
-        result["storage_pin"] = runtime.pin
-    if unavailable_runs:
-        result["unavailable_runs"] = unavailable_runs
-    return web.json_response(result)
+    return web.json_response({"reviews": reviews})
 
 
 async def _list_deferred_reviews(request):
@@ -29395,7 +28567,6 @@ def _deferred_review_selection(
 
 
 async def _submit_deferred_review(request):
-    from .storage_state import StateConflict
     try:
         body = await request.json()
     except (json.JSONDecodeError, TypeError):
@@ -29414,9 +28585,6 @@ async def _submit_deferred_review(request):
             return rejection
         document, path = _load_deferred_review(
             run_name, body.get("token"))
-        from .storage_runtime import current_runtime
-        runtime = current_runtime(_output_root(), run_name)
-        read_options = {"rehearsal_view": runtime.reader} if runtime is not None else {}
         action = str(body.get("action") or "")
         if action not in ("prepare", "finalize"):
             raise ValueError("Unknown pending H3 review action.")
@@ -29426,14 +28594,8 @@ async def _submit_deferred_review(request):
         revision = str(selected.get("revision") or "")
         kept = _review_requested_kept_revisions(
             body, document["candidates"], revision)
-        from .storage_deferred_finalization import check_choice, DeferredFinalization
-        check_choice(document, revision, kept)
-        if runtime is None and document.get("_finalization"):
-            from .storage_recovered_review import RecoveredReview
-            recovered_review = RecoveredReview(sys.modules[__name__], run_name, document["token"])
-            return web.json_response(recovered_review.run_action(action, revision, kept, ownership_proof))
         metadata, _metadata_path = _load_checkpoint_revision(
-            run_name, scene, revision, **read_options)
+            run_name, scene, revision)
         authoritative = metadata.get("segment")
         if not isinstance(authoritative, dict):
             raise ValueError(
@@ -29461,16 +28623,9 @@ async def _submit_deferred_review(request):
             "length": int(authoritative.get("raw_frames", 0)),
         }
         if action == "prepare":
-            response["activation_required"] = not bool(document.get("_finalization"))
             response["resume_revisions"] = _review_candidate_resume_revisions(
-                run_name, scene, revision, **read_options)
-            if runtime is not None:
-                response["storage_pin"] = runtime.pin
+                run_name, scene, revision)
             return web.json_response(response)
-
-        if runtime is not None:
-            return web.json_response(DeferredFinalization(runtime, sys.modules[__name__],
-                document["token"], revision, kept, ownership_proof, response).run())
 
         with checkpoint_run_lock(
                 _output_root(), run_name), project_write_guard(
@@ -29505,20 +28660,15 @@ async def _submit_deferred_review(request):
             "error": str(exc), "code": "h3_project_read_only",
             "run_name": locals().get("run_name", ""),
         }, status=423)
-    except StateConflict as exc:
-        return web.json_response({"error": str(exc)}, status=409)
     except FileNotFoundError as exc:
         return web.json_response({"error": str(exc)}, status=404)
-    except OSError as exc:
-        return web.json_response({"error": str(exc), "retry_automatically": False},
-            status=503 if locals().get("runtime") is not None or locals().get("document", {}).get("_finalization") else 400)
-    except (TypeError, ValueError, json.JSONDecodeError, KeyError) as exc:
+    except (OSError, TypeError, ValueError, json.JSONDecodeError, KeyError) as exc:
         return web.json_response({"error": str(exc)}, status=400)
 
 
 def _checkpoint_review_preview(
         index: int, segment: dict[str, Any], review_dir: str,
-        review_filenames: list[str], *, rehearsal_view=None) -> str | None:
+        review_filenames: list[str]) -> str | None:
     video_hash = str(segment.get("segment_sha256") or "")[:12]
     if not video_hash or not review_filenames:
         return None
@@ -29529,8 +28679,6 @@ def _checkpoint_review_preview(
                 not candidate.endswith(".review.mp4")):
             continue
         preview_path = os.path.join(review_dir, candidate)
-        if rehearsal_view is not None:
-            preview_path = str(rehearsal_view.path(preview_path))
         try:
             previews.append((os.path.getmtime(preview_path), preview_path))
         except OSError:
@@ -29541,24 +28689,20 @@ def _checkpoint_review_preview(
 
 
 def _checkpoint_audio_sidecar(
-        segment: dict[str, Any], *, rehearsal_view=None) -> dict[str, str] | None:
+        segment: dict[str, Any]) -> dict[str, str] | None:
     """Expose saved delivered audio without making Review Gate a dependency."""
     value = segment.get("generated_audio")
     if not isinstance(value, str) or not value:
         return None
     try:
-        path = str(rehearsal_view.path(value)) if rehearsal_view else _absolute_output_path(value)
+        path = _absolute_output_path(value)
     except (OSError, TypeError, ValueError):
-        if rehearsal_view is not None:
-            raise
         return None
-    return _video_output_item(path, **({"rehearsal_view": rehearsal_view} if rehearsal_view else {})) \
-        if os.path.isfile(path) else None
+    return _video_output_item(path) if os.path.isfile(path) else None
 
 
 def _load_checkpoint_revision(
-        run_name: str, scene: Any, revision: Any, *, verify_artifacts: bool = True,
-        rehearsal_view=None
+        run_name: str, scene: Any, revision: Any, *, verify_artifacts: bool = True
 ) -> tuple[dict[str, Any], str]:
     run_name = _strict_run_name(run_name)
     index = int(scene)
@@ -29571,13 +28715,10 @@ def _load_checkpoint_revision(
         _output_root(), "h3_chains", run_name, "checkpoints")
     metadata_path = os.path.join(
         checkpoint_dir, "clip_%04d.%s.json" % (index, token))
-    metadata_path = (str(rehearsal_view.path(metadata_path)) if rehearsal_view is not None
-                     else _absolute_output_path(metadata_path))
     if not os.path.isfile(metadata_path):
         raise FileNotFoundError(
             "Scene %d revision %s is no longer available." % (index, token[:8]))
-    metadata = (rehearsal_view.read(metadata_path) if rehearsal_view is not None
-                else _read_json(metadata_path))
+    metadata = _read_json(metadata_path)
     if not isinstance(metadata, dict):
         raise ValueError("Checkpoint revision metadata is not a JSON object.")
     stored_run = str(metadata.get("run_name") or run_name).strip()
@@ -29591,10 +28732,7 @@ def _load_checkpoint_revision(
     if str(segment.get("revision") or "").lower() != token:
         raise ValueError("Checkpoint revision id does not match its metadata.")
     if verify_artifacts:
-        if rehearsal_view is not None:
-            _verify_segment_artifacts(segment, index, rehearsal_view=rehearsal_view)
-        else:
-            _verify_segment_artifacts(segment, index)
+        _verify_segment_artifacts(segment, index)
     return metadata, metadata_path
 
 
@@ -29901,8 +29039,7 @@ def _checkpoint_selection_manifest(value: Any) -> dict[str, Any] | None:
     return manifest
 
 
-def _checkpoint_plan_revision(segment: dict[str, Any], *, rehearsal_view=None) -> dict[str, Any]:
-    resolve = rehearsal_view.path if rehearsal_view is not None else _absolute_output_path
+def _checkpoint_plan_revision(segment: dict[str, Any]) -> dict[str, Any]:
     revision = {
         "scene": int(segment["index"]),
         "scene_id": str(segment.get("id") or ""),
@@ -29914,8 +29051,7 @@ def _checkpoint_plan_revision(segment: dict[str, Any], *, rehearsal_view=None) -
         "seed": str(segment.get("seed") or "0"),
         "steps": int(segment.get("steps", 0)),
         "raw_frames": int(segment.get("raw_frames", 0)),
-        "video": _video_output_item(str(resolve(segment["segment"])),
-            **({"rehearsal_view": rehearsal_view} if rehearsal_view else {})),
+        "video": _video_output_item(_absolute_output_path(segment["segment"])),
     }
     if "context_length" in segment:
         revision["context_length"] = int(segment["context_length"])
@@ -30076,43 +29212,7 @@ def _recover_checkpoint_pointer_transactions(run_name: Any) -> int:
     return recovered
 
 
-def _publish_runtime_checkpoint_restore(runtime, loaded, resume_scene,
-                                        scope_end_scene, ownership_proof):
-    """One assignment transaction; immutable revisions/media are never moved."""
-    checkpoint_dir = os.path.join(runtime.reader.working_directory(runtime.run), "checkpoints")
-    expected_dir = (runtime.project if runtime.selected == "main" else
-                    runtime.project / "branches" / runtime.selected)
-    if os.path.dirname(checkpoint_dir) != str(expected_dir):
-        raise ValueError("Checkpoint restore belongs to a different runtime branch.")
-    transaction = uuid.uuid4().hex
-    retired = []
-    # Graph ancestry and payload ownership came from this exact input root.
-    # Fence their scopes too, so future archive retirement cannot race restore.
-    documents = runtime.base.state["documents"]
-    dependencies = [runtime.project / address for address, descriptor in documents.items()
-                    if descriptor["category"] in ("takes", "payloads")]
-    with project_write_guard(_output_root(), runtime.run, ownership_proof,
-                             "activate checkpoint revisions"), runtime.branches.operation():
-        runtime.branches.watch_documents(dependencies)
-        for canonical in runtime.branches.matching(checkpoint_dir, "clip_*.json"):
-            match = re.fullmatch(r"clip_(\d{4})\.json", canonical.name)
-            if match and resume_scene <= int(match[1]) <= scope_end_scene:
-                runtime.branches.retire_pointer(canonical)
-                retired.append(canonical)
-        for scene, metadata, _metadata_path in loaded:
-            runtime.branches.write(expected_dir / "checkpoints" / ("clip_%04d.json" % scene),
-                                   dict(metadata, _authoring_assignment=transaction))
-    return retired
-
-
 async def _restore_checkpoint_revisions(request):
-    if __package__:
-        from .storage_runtime import current_runtime
-        from .storage_state import StateConflict
-    else:
-        from storage_runtime import current_runtime
-        from storage_state import StateConflict
-    runtime = None
     try:
         body = await request.json()
     except (json.JSONDecodeError, TypeError):
@@ -30120,17 +29220,13 @@ async def _restore_checkpoint_revisions(request):
             {"error": "Checkpoint recovery requires a JSON request."},
             status=400)
     try:
-        if not isinstance(body, dict):
-            raise ValueError("Checkpoint recovery requires a JSON object.")
         run_name = _strict_run_name(body.get("run_name", ""))
         ownership_proof = _request_project_ownership(request)
         rejection = _project_write_rejection(
             request, run_name, "activate checkpoint revisions")
         if rejection is not None:
             return rejection
-        runtime = current_runtime(_output_root(), run_name)
-        if runtime is None:
-            _recover_checkpoint_pointer_transactions(run_name)
+        _recover_checkpoint_pointer_transactions(run_name)
         activate_only = body.get("activate_only") is True
         scope_start_scene = int(body.get("scope_start_scene", 1))
         scope_end_scene = int(body.get("scope_end_scene", MAX_SHOTS))
@@ -30164,8 +29260,7 @@ async def _restore_checkpoint_revisions(request):
                 "Select exactly scenes %d through %d before restoring this "
                 "chapter branch." % (scope_start_scene, resume_scene - 1))
 
-        graph = CheckpointGraphManager(_output_root()).graph(
-            run_name, **({"adopt_legacy": False} if runtime else {}))
+        graph = CheckpointGraphManager(_output_root()).graph(run_name)
         graph_hash = str(graph.get("graph_hash") or "")
         graph_records = {
             (int(item.get("scene", 0)),
@@ -30209,8 +29304,7 @@ async def _restore_checkpoint_revisions(request):
         prompt_prefix = None
         for scene in range(scope_start_scene, resume_scene):
             metadata, metadata_path = _load_checkpoint_revision(
-                run_name, scene, by_scene[scene],
-                **({"rehearsal_view": runtime.reader} if runtime else {}))
+                run_name, scene, by_scene[scene])
             current_compatibility = metadata.get("compatibility")
             if compatibility is None:
                 compatibility = current_compatibility
@@ -30278,115 +29372,107 @@ async def _restore_checkpoint_revisions(request):
                         (scene, dependency_scene,
                          dependency_revision[:8]))
 
-        # Construct the response before publishing: malformed archived authoring
-        # must not report a failure after assignments have already changed.
-        restored = [
-            _checkpoint_plan_revision(metadata["segment"],
-                **({"rehearsal_view": runtime.reader} if runtime else {}))
-            for _scene, metadata, _metadata_path in loaded
-        ]
-        policy_inputs = archive_policy_inputs({"compatibility": compatibility})
-        if runtime is not None:
-            retired = _publish_runtime_checkpoint_restore(
-                runtime, loaded, resume_scene, scope_end_scene, ownership_proof)
-        else:
-            checkpoint_dir = os.path.join(_run_dir({"run_name": run_name}), "checkpoints")
-            os.makedirs(checkpoint_dir, exist_ok=True)
-            originals = {}
-            committed = []
-            retired = []
-            transaction = uuid.uuid4().hex
-            with checkpoint_run_lock(
-                    _output_root(), run_name), project_write_guard(
-                        _output_root(), run_name, ownership_proof,
-                        "activate checkpoint revisions"):
-                current_graph_hash = str(CheckpointGraphManager(
-                    _output_root()).graph(run_name).get("graph_hash") or "")
-                if current_graph_hash != graph_hash:
-                    raise ValueError(
-                        "Checkpoint revisions changed while this restore was "
-                        "being prepared. Refresh Checkpoint Manager and select "
-                        "the branch again; no pointers were changed.")
-                retirement_plan = []
-                for filename in sorted(os.listdir(checkpoint_dir)):
-                    match = re.fullmatch(r"clip_(\d{4})\.json", filename)
-                    pointer_scene = (int(match.group(1))
-                                     if match is not None else -1)
-                    if (match is None or pointer_scene < resume_scene or
-                            pointer_scene > scope_end_scene):
-                        continue
-                    canonical = os.path.join(checkpoint_dir, filename)
-                    temporary = "%s.restore.%s.tmp" % (canonical, transaction)
-                    retirement_plan.append((canonical, temporary))
-                for scene, _metadata, _metadata_path in loaded:
+        checkpoint_dir = os.path.join(_run_dir({"run_name": run_name}), "checkpoints")
+        os.makedirs(checkpoint_dir, exist_ok=True)
+        originals = {}
+        committed = []
+        retired = []
+        transaction = uuid.uuid4().hex
+        with checkpoint_run_lock(
+                _output_root(), run_name), project_write_guard(
+                    _output_root(), run_name, ownership_proof,
+                    "activate checkpoint revisions"):
+            current_graph_hash = str(CheckpointGraphManager(
+                _output_root()).graph(run_name).get("graph_hash") or "")
+            if current_graph_hash != graph_hash:
+                raise ValueError(
+                    "Checkpoint revisions changed while this restore was "
+                    "being prepared. Refresh Checkpoint Manager and select "
+                    "the branch again; no pointers were changed.")
+            retirement_plan = []
+            for filename in sorted(os.listdir(checkpoint_dir)):
+                match = re.fullmatch(r"clip_(\d{4})\.json", filename)
+                pointer_scene = (int(match.group(1))
+                                 if match is not None else -1)
+                if (match is None or pointer_scene < resume_scene or
+                        pointer_scene > scope_end_scene):
+                    continue
+                canonical = os.path.join(checkpoint_dir, filename)
+                temporary = "%s.restore.%s.tmp" % (canonical, transaction)
+                retirement_plan.append((canonical, temporary))
+            for scene, _metadata, _metadata_path in loaded:
+                canonical = os.path.join(
+                    checkpoint_dir, "clip_%04d.json" % scene)
+                originals[canonical] = (
+                    _read_json(canonical) if os.path.isfile(canonical) else None)
+            journal_path = os.path.join(
+                checkpoint_dir, ".transactions",
+                "restore.%s.json" % transaction)
+            journal = {
+                "format": "h3_checkpoint_pointer_restore_v1",
+                "run_name": run_name,
+                "transaction": transaction,
+                "state": "prepared",
+                "originals": [{
+                    "filename": os.path.basename(canonical),
+                    "document": document,
+                } for canonical, document in originals.items()],
+                "retired": [{
+                    "canonical": os.path.basename(canonical),
+                    "temporary": os.path.basename(temporary),
+                } for canonical, temporary in retirement_plan],
+            }
+            _atomic_json(journal_path, journal)
+            try:
+                # Loading an earlier branch is a rollback only inside its
+                # editorial chapter. Retire mutable pointers at and after the
+                # resume scene through the scope end while preserving every
+                # immutable revision file and every other chapter's pointers.
+                for canonical, temporary in retirement_plan:
+                    os.replace(canonical, temporary)
+                    retired.append((canonical, temporary))
+                for scene, metadata, _metadata_path in loaded:
                     canonical = os.path.join(
                         checkpoint_dir, "clip_%04d.json" % scene)
-                    originals[canonical] = (
-                        _read_json(canonical) if os.path.isfile(canonical) else None)
-                journal_path = os.path.join(
-                    checkpoint_dir, ".transactions",
-                    "restore.%s.json" % transaction)
-                journal = {
-                    "format": "h3_checkpoint_pointer_restore_v1",
-                    "run_name": run_name,
-                    "transaction": transaction,
-                    "state": "prepared",
-                    "originals": [{
-                        "filename": os.path.basename(canonical),
-                        "document": document,
-                    } for canonical, document in originals.items()],
-                    "retired": [{
-                        "canonical": os.path.basename(canonical),
-                        "temporary": os.path.basename(temporary),
-                    } for canonical, temporary in retirement_plan],
-                }
+                    # This marker belongs only to the mutable assignment, never
+                    # the immutable take. Branch loading uses it to recover the
+                    # matching authoring snapshot even with no Plan connected.
+                    _atomic_json(canonical, dict(metadata, _authoring_assignment=transaction))
+                    committed.append(canonical)
+                journal["state"] = "committed"
                 _atomic_json(journal_path, journal)
-                try:
-                    # Loading an earlier branch is a rollback only inside its
-                    # editorial chapter. Retire mutable pointers at and after the
-                    # resume scene through the scope end while preserving every
-                    # immutable revision file and every other chapter's pointers.
-                    for canonical, temporary in retirement_plan:
-                        os.replace(canonical, temporary)
-                        retired.append((canonical, temporary))
-                    for scene, metadata, _metadata_path in loaded:
-                        canonical = os.path.join(
-                            checkpoint_dir, "clip_%04d.json" % scene)
-                        # This marker belongs only to the mutable assignment, never
-                        # the immutable take. Branch loading uses it to recover the
-                        # matching authoring snapshot even with no Plan connected.
-                        _atomic_json(canonical, dict(metadata, _authoring_assignment=transaction))
-                        committed.append(canonical)
-                    journal["state"] = "committed"
-                    _atomic_json(journal_path, journal)
-                except Exception:
-                    rollback_failed = False
-                    for canonical in reversed(committed):
-                        original = originals.get(canonical)
-                        try:
-                            if original is None:
-                                _safe_unlink(canonical)
-                            else:
-                                _atomic_json(canonical, original)
-                        except Exception:
-                            rollback_failed = True
-                            _LOG.exception(
-                                "Could not roll back checkpoint pointer %s", canonical)
-                    for canonical, temporary in reversed(retired):
-                        try:
-                            os.replace(temporary, canonical)
-                        except Exception:
-                            rollback_failed = True
-                            _LOG.exception(
-                                "Could not restore retired checkpoint pointer %s",
-                                canonical)
-                    if not rollback_failed:
-                        _safe_unlink(journal_path)
-                    raise
-                for _canonical, temporary in retired:
-                    _safe_unlink(temporary)
-                _safe_unlink(journal_path)
+            except Exception:
+                rollback_failed = False
+                for canonical in reversed(committed):
+                    original = originals.get(canonical)
+                    try:
+                        if original is None:
+                            _safe_unlink(canonical)
+                        else:
+                            _atomic_json(canonical, original)
+                    except Exception:
+                        rollback_failed = True
+                        _LOG.exception(
+                            "Could not roll back checkpoint pointer %s", canonical)
+                for canonical, temporary in reversed(retired):
+                    try:
+                        os.replace(temporary, canonical)
+                    except Exception:
+                        rollback_failed = True
+                        _LOG.exception(
+                            "Could not restore retired checkpoint pointer %s",
+                            canonical)
+                if not rollback_failed:
+                    _safe_unlink(journal_path)
+                raise
+            for _canonical, temporary in retired:
+                _safe_unlink(temporary)
+            _safe_unlink(journal_path)
 
+        restored = [
+            _checkpoint_plan_revision(metadata["segment"])
+            for _scene, metadata, _metadata_path in loaded
+        ]
         return web.json_response({
             "ok": True,
             "run_name": run_name,
@@ -30401,8 +29487,9 @@ async def _restore_checkpoint_revisions(request):
             # The revision chain is authoritative.  The latest plan.json can
             # legitimately describe newer 0.5 policies than an older revision
             # selected here, so return the selected checkpoint policy values.
-            "policy_inputs": policy_inputs,
-            **({"storage_pin": runtime.output_pin} if runtime else {}),
+            "policy_inputs": archive_policy_inputs({
+                "compatibility": compatibility,
+            }),
             "message": (
                 "Activated chapter scenes %d through %d."
                 if activate_only else
@@ -30417,17 +29504,8 @@ async def _restore_checkpoint_revisions(request):
             "code": "h3_project_read_only",
             "run_name": locals().get("run_name", ""),
         }, status=423)
-    except StateConflict as exc:
-        return web.json_response({"error": str(exc),
-                                  "code": "h3_checkpoint_restore_conflict"}, status=409)
     except FileNotFoundError as exc:
         return web.json_response({"error": str(exc)}, status=404)
-    except OSError as exc:
-        if runtime is not None:
-            return web.json_response({"error": str(exc),
-                "code": "h3_checkpoint_restore_storage_unavailable",
-                "retry_automatically": False}, status=503)
-        return web.json_response({"error": str(exc)}, status=400)
     except (OSError, TypeError, ValueError, json.JSONDecodeError, KeyError) as exc:
         return web.json_response({"error": str(exc)}, status=400)
 
@@ -30439,8 +29517,6 @@ async def _preview_checkpoint_revision_deletion(request):
         return web.json_response(
             {"error": "Checkpoint deletion preview requires JSON."},
             status=400)
-    if not isinstance(body, dict):
-        return web.json_response({"error": "Checkpoint deletion preview requires a JSON object."}, status=400)
     try:
         payload = CheckpointGraphManager(_output_root()).deletion_preview(
             body.get("run_name"), body.get("scene"), body.get("revision"))
@@ -30452,13 +29528,6 @@ async def _preview_checkpoint_revision_deletion(request):
 
 
 async def _attribute_checkpoint_revision(request):
-    if __package__:
-        from .storage_runtime import current_runtime
-        from .storage_state import StateConflict
-    else:
-        from storage_runtime import current_runtime
-        from storage_state import StateConflict
-    runtime = None
     try:
         body = await request.json()
     except (json.JSONDecodeError, TypeError):
@@ -30477,10 +29546,9 @@ async def _attribute_checkpoint_revision(request):
         if rejection is not None:
             return rejection
 
-        runtime = current_runtime(_output_root(), run_name)
         def attribute_owned():
-            with (nullcontext() if runtime is not None else checkpoint_run_lock(
-                    _output_root(), run_name)), project_write_guard(
+            with checkpoint_run_lock(
+                    _output_root(), run_name), project_write_guard(
                         _output_root(), run_name, ownership_proof,
                         "attribute a checkpoint candidate"):
                 return CheckpointGraphManager(_output_root()).attribute(
@@ -30490,22 +29558,13 @@ async def _attribute_checkpoint_revision(request):
 
         payload = await asyncio.to_thread(
             attribute_owned)
-        if runtime is not None:
-            payload["storage_pin"] = runtime.output_pin
     except ProjectOwnershipError as exc:
         return web.json_response({
             "error": str(exc), "code": "h3_project_read_only",
             "run_name": locals().get("run_name", ""),
         }, status=423)
-    except StateConflict as exc:
-        return web.json_response({"error": str(exc), "code": "h3_checkpoint_attribution_conflict"}, status=409)
     except FileNotFoundError as exc:
         return web.json_response({"error": str(exc)}, status=404)
-    except OSError as exc:
-        if runtime is not None:
-            return web.json_response({"error": str(exc), "code": "h3_checkpoint_attribution_storage_unavailable",
-                                      "retry_automatically": False}, status=503)
-        return web.json_response({"error": str(exc)}, status=400)
     except (OSError, TypeError, ValueError, json.JSONDecodeError, KeyError) as exc:
         return web.json_response({"error": str(exc)}, status=400)
     return web.json_response(payload)
@@ -30513,17 +29572,12 @@ async def _attribute_checkpoint_revision(request):
 
 async def _processing_checkpoint_deletion(request):
     from .processing_checkpoint_delete import ProcessingCheckpointManager
-    from .storage_runtime import current_runtime
-    from .storage_state import StateConflict
-    from contextlib import nullcontext
 
-    runtime = None
     try:
         body = await request.json()
         if not isinstance(body, dict):
             raise ValueError("Processing deletion requires a JSON object.")
         run_name = _strict_run_name(body.get("run_name", ""))
-        runtime = current_runtime(_output_root(), run_name)
         manager = ProcessingCheckpointManager(_output_root())
         if request.path.endswith("/delete-preview"):
             payload = await asyncio.to_thread(
@@ -30536,11 +29590,10 @@ async def _processing_checkpoint_deletion(request):
                 return rejection
 
             def delete_owned():
-                with (checkpoint_run_lock(_output_root(), run_name) if runtime is None else nullcontext()), project_write_guard(
+                with checkpoint_run_lock(_output_root(), run_name), project_write_guard(
                         _output_root(), run_name, ownership_proof,
                         "delete a processed checkpoint"):
-                    return manager.delete(run_name, body.get("metadata_path"), body.get("snapshot"),
-                        **({"ownership_proof": ownership_proof} if runtime is not None else {}))
+                    return manager.delete(run_name, body.get("metadata_path"), body.get("snapshot"))
 
             payload = await asyncio.to_thread(delete_owned)
     except ProjectOwnershipError as exc:
@@ -30548,30 +29601,21 @@ async def _processing_checkpoint_deletion(request):
                                   "run_name": locals().get("run_name", "")}, status=423)
     except CheckpointDeleteBlocked as exc:
         return web.json_response({"error": str(exc), "preview": exc.preview}, status=409)
-    except StateConflict as exc:
-        return web.json_response({"error": str(exc), "code": "h3_processing_retention_conflict"}, status=409)
     except FileNotFoundError as exc:
         return web.json_response({"error": str(exc)}, status=404)
-    except OSError as exc:
-        return web.json_response({"error": str(exc), "retry_automatically": False}, status=503 if runtime else 400)
-    except (TypeError, ValueError, KeyError) as exc:
+    except (OSError, TypeError, ValueError, KeyError) as exc:
         return web.json_response({"error": str(exc)}, status=400)
     return web.json_response(payload)
 
 
 async def _chapter_snapshot_retirement(request):
     from .chapter_snapshot_retirement import ChapterSnapshotManager
-    from .storage_runtime import current_runtime
-    from .storage_state import StateConflict
-    from contextlib import nullcontext
 
-    runtime = None
     try:
         body = await request.json()
         if not isinstance(body, dict):
             raise ValueError("Snapshot retirement requires a JSON object.")
         run_name = _strict_run_name(body.get("run_name", ""))
-        runtime = current_runtime(_output_root(), run_name)
         manager = ChapterSnapshotManager(_output_root())
         if request.path.endswith("/retire-preview"):
             payload = await asyncio.to_thread(
@@ -30584,11 +29628,10 @@ async def _chapter_snapshot_retirement(request):
                 return rejection
 
             def retire_owned():
-                with (checkpoint_run_lock(_output_root(), run_name) if runtime is None else nullcontext()), project_write_guard(
+                with checkpoint_run_lock(_output_root(), run_name), project_write_guard(
                         _output_root(), run_name, ownership_proof,
                         "retire a chapter recovery snapshot"):
-                    return manager.retire(run_name, body.get("path"), body.get("snapshot"),
-                        **({"ownership_proof": ownership_proof} if runtime is not None else {}))
+                    return manager.retire(run_name, body.get("path"), body.get("snapshot"))
 
             payload = await asyncio.to_thread(retire_owned)
     except ProjectOwnershipError as exc:
@@ -30596,25 +29639,14 @@ async def _chapter_snapshot_retirement(request):
                                   "run_name": locals().get("run_name", "")}, status=423)
     except CheckpointDeleteBlocked as exc:
         return web.json_response({"error": str(exc), "preview": exc.preview}, status=409)
-    except StateConflict as exc:
-        return web.json_response({"error": str(exc), "code": "h3_chapter_retirement_conflict"}, status=409)
     except FileNotFoundError as exc:
         return web.json_response({"error": str(exc)}, status=404)
-    except OSError as exc:
-        return web.json_response({"error": str(exc), "retry_automatically": False}, status=503 if runtime is not None else 400)
     except (OSError, TypeError, ValueError, KeyError) as exc:
         return web.json_response({"error": str(exc)}, status=400)
     return web.json_response(payload)
 
 
 async def _delete_checkpoint_revision(request):
-    if __package__:
-        from .storage_runtime import current_runtime
-        from .storage_state import StateConflict
-    else:
-        from storage_runtime import current_runtime
-        from storage_state import StateConflict
-    runtime = None
     try:
         body = await request.json()
     except (json.JSONDecodeError, TypeError):
@@ -30627,19 +29659,18 @@ async def _delete_checkpoint_revision(request):
         }, status=400)
     try:
         run_name = _strict_run_name(body.get("run_name", ""))
-        runtime = current_runtime(_output_root(), run_name)
         ownership_proof = _request_project_ownership(request)
         rejection = _project_write_rejection(
             request, run_name, "delete a checkpoint revision")
         if rejection is not None:
             return rejection
-        with (checkpoint_run_lock(_output_root(), run_name)
-              if runtime is None else nullcontext()), project_write_guard(
+        with checkpoint_run_lock(
+                _output_root(), run_name), project_write_guard(
                     _output_root(), run_name, ownership_proof,
                     "delete a checkpoint revision"):
             payload = CheckpointGraphManager(_output_root()).delete(
                 run_name, body.get("scene"), body.get("revision"),
-                body.get("snapshot"), **({"ownership_proof": ownership_proof} if runtime is not None else {}))
+                body.get("snapshot"))
     except ProjectOwnershipError as exc:
         return web.json_response({
             "error": str(exc), "code": "h3_project_read_only",
@@ -30648,55 +29679,9 @@ async def _delete_checkpoint_revision(request):
     except CheckpointDeleteBlocked as exc:
         return web.json_response(
             {"error": str(exc), "preview": exc.preview}, status=409)
-    except StateConflict as exc:
-        return web.json_response({"error": str(exc), "code": "h3_retention_conflict"}, status=409)
     except FileNotFoundError as exc:
         return web.json_response({"error": str(exc)}, status=404)
-    except OSError as exc:
-        return web.json_response({"error": str(exc), "retry_automatically": False},
-                                 status=503 if runtime is not None else 400)
     except (OSError, TypeError, ValueError, json.JSONDecodeError, KeyError) as exc:
-        return web.json_response({"error": str(exc)}, status=400)
-    return web.json_response(payload)
-
-
-async def _checkpoint_retention_undo(request):
-    if __package__:
-        from .storage_runtime import current_runtime
-        from .storage_state import StateConflict
-    else:
-        from storage_runtime import current_runtime
-        from storage_state import StateConflict
-    try:
-        body = await request.json()
-        if not isinstance(body, dict):
-            raise ValueError("Checkpoint undo requires a JSON object.")
-        run = _strict_run_name(body.get("run_name", ""))
-        runtime = current_runtime(_output_root(), run)
-        operation = body.get("operation_id")
-        if runtime is None:
-            from .storage_recovered_review import RecoveredReview
-            retention = RecoveredReview.for_operation(sys.modules[__name__], run, operation)
-        else:
-            retention = runtime.retention
-        if request.path.endswith("/undo-preview"):
-            payload = retention.preview_undo(operation)
-        else:
-            rejection = _project_write_rejection(request, run, "restore a quarantined checkpoint")
-            if rejection is not None:
-                return rejection
-            payload = retention.undo(operation, body.get("snapshot"), proof=_request_project_ownership(request))
-    except ProjectOwnershipError as exc:
-        return web.json_response({"error": str(exc), "code": "h3_project_read_only"}, status=423)
-    except CheckpointDeleteBlocked as exc:
-        return web.json_response({"error": str(exc), "preview": exc.preview}, status=409)
-    except StateConflict as exc:
-        return web.json_response({"error": str(exc), "code": "h3_retention_conflict"}, status=409)
-    except FileNotFoundError as exc:
-        return web.json_response({"error": str(exc)}, status=404)
-    except OSError as exc:
-        return web.json_response({"error": str(exc), "retry_automatically": False}, status=503)
-    except (ValueError, TypeError, KeyError) as exc:
         return web.json_response({"error": str(exc)}, status=400)
     return web.json_response(payload)
 
@@ -30731,36 +29716,13 @@ def _log_checkpoint_editorial_notices(run_name, notices):
 def _saved_checkpoint_listing(
         run_name: str, include_graph: bool = True) -> dict[str, Any]:
     """Read checkpoint metadata without blocking ComfyUI's event loop."""
-    if __package__:
-        from .storage_runtime import current_runtime
-    else:
-        from storage_runtime import current_runtime
-    runtime = current_runtime(_output_root(), run_name)
-    view = runtime.reader if runtime is not None else None
-    manager = CheckpointGraphManager(_output_root())
-    if view is None:
-        _recover_checkpoint_pointer_transactions(run_name)
-        project_dir = _project_run_dir({"run_name": run_name})
-        working_dir = _run_dir({"run_name": run_name})
-    else:
-        project_dir = str(runtime.project)
-        working_dir = view.working_directory(run_name)
-    read_document = view.read if view else _read_json
-    resolve_read = view.path if view else _absolute_output_path
-    def list_names(directory):
-        return view.names(directory) if view else (os.listdir(directory) if os.path.isdir(directory) else [])
-    def output_item(path):
-        return _video_output_item(str(path), **({"rehearsal_view": view} if view else {}))
-    def file_hash(path):
-        return _file_sha256(str(resolve_read(path)))
-    checkpoint_dir = os.path.join(project_dir, "checkpoints")
-    pointer_dir = os.path.join(working_dir, "checkpoints")
-    review_dir = os.path.join(working_dir, "reviews")
+    _recover_checkpoint_pointer_transactions(run_name)
+    checkpoint_dir = os.path.join(_project_run_dir({"run_name": run_name}), "checkpoints")
+    pointer_dir = os.path.join(_run_dir({"run_name": run_name}), "checkpoints")
+    review_dir = os.path.join(_run_dir({"run_name": run_name}), "reviews")
     try:
-        review_filenames = list_names(review_dir)
+        review_filenames = os.listdir(review_dir) if os.path.isdir(review_dir) else []
     except OSError:
-        if view is not None:
-            raise
         review_filenames = []
     checkpoints = []
     active_segments: dict[int, dict[str, Any]] = {}
@@ -30768,7 +29730,8 @@ def _saved_checkpoint_listing(
     # Reuse the metadata reads below to prove which editorial placeholders
     # have never been rendered. An active-only list alone is insufficient:
     # retained revisions and orphaned artifacts must remain protected too.
-    checkpoint_filenames = sorted(list_names(checkpoint_dir))
+    checkpoint_filenames = (sorted(os.listdir(checkpoint_dir))
+                            if os.path.isdir(checkpoint_dir) else [])
     checkpoint_scene_numbers = {
         int(match.group(1)) for filename in checkpoint_filenames
         if (match := re.match(r"clip_(\d{4})(?:\.|$)", filename))
@@ -30776,22 +29739,22 @@ def _saved_checkpoint_listing(
     for artifact_kind in ("segments", "blend_segments", "generated_audio"):
         artifact_dir = os.path.join(
             _output_root(), "h3_chains", run_name, artifact_kind)
-        if view or os.path.isdir(artifact_dir):
+        if os.path.isdir(artifact_dir):
             checkpoint_scene_numbers.update(
-                int(match.group(1)) for filename in list_names(artifact_dir)
+                int(match.group(1)) for filename in os.listdir(artifact_dir)
                 if (match := re.match(r"clip_(\d{4})(?:\.|$)", filename)))
     checkpoint_scene_ids: set[str] = set()
     inventory_complete = all(
         not re.match(r"clip_\d{4}.*\.json$", filename) or
         re.fullmatch(r"clip_\d{4}(?:\.[0-9a-f]{32})?\.json", filename)
         for filename in checkpoint_filenames)
-    if view or os.path.isdir(pointer_dir) or os.path.isdir(checkpoint_dir):
-        for filename in sorted(list_names(pointer_dir)):
+    if os.path.isdir(pointer_dir) or os.path.isdir(checkpoint_dir):
+        for filename in sorted(os.listdir(pointer_dir)) if os.path.isdir(pointer_dir) else []:
             match = re.fullmatch(r"clip_(\d{4})\.json", filename)
             if match is None:
                 continue
             try:
-                metadata = read_document(os.path.join(pointer_dir, filename))
+                metadata = _read_json(os.path.join(pointer_dir, filename))
                 segment = metadata.get("segment") if isinstance(metadata, dict) else None
                 if not isinstance(segment, dict):
                     inventory_complete = False
@@ -30804,8 +29767,8 @@ def _saved_checkpoint_listing(
                 if index != int(match.group(1)):
                     inventory_complete = False
                     continue
-                segment_path = resolve_read(segment["segment"])
-                checkpoint_path = resolve_read(segment["checkpoint"])
+                segment_path = _absolute_output_path(segment["segment"])
+                checkpoint_path = _absolute_output_path(segment["checkpoint"])
                 ready = (os.path.isfile(segment_path) and
                          os.path.isfile(checkpoint_path))
                 item = {
@@ -30818,31 +29781,27 @@ def _saved_checkpoint_listing(
                     "delivered_frames": int(segment.get("delivered_frames", 0)),
                     # This is the exact immutable identity used by the
                     # top-level handoff, not merely "a checkpoint exists".
-                    "metadata_sha256": file_hash(os.path.join(
+                    "metadata_sha256": _file_sha256(os.path.join(
                         pointer_dir, filename)),
                 }
                 if os.path.isfile(segment_path):
-                    item["video"] = output_item(segment_path)
-                    audio = _checkpoint_audio_sidecar(segment, **({"rehearsal_view": view} if view else {}))
+                    item["video"] = _video_output_item(segment_path)
+                    audio = _checkpoint_audio_sidecar(segment)
                     if audio is not None:
                         item["audio"] = audio
                     preview = _checkpoint_review_preview(
-                        index, segment, review_dir, review_filenames,
-                        **({"rehearsal_view": view} if view else {}))
+                        index, segment, review_dir, review_filenames)
                     if preview is not None:
-                        item["preview_video"] = output_item(preview)
+                        item["preview_video"] = _video_output_item(preview)
                 partial_path = os.path.join(
-                    working_dir, "final",
+                    _run_dir({"run_name": run_name}), "final",
                     "partial_through_clip_%04d.mp4" % index)
-                partial_path = resolve_read(partial_path)
                 if os.path.isfile(partial_path):
-                    item["partial_video"] = output_item(partial_path)
+                    item["partial_video"] = _video_output_item(partial_path)
                 checkpoints.append(item)
                 active_segments[index] = segment
             except (OSError, TypeError, ValueError, json.JSONDecodeError,
                     KeyError):
-                if view is not None:
-                    raise
                 inventory_complete = False
                 continue
         for filename in checkpoint_filenames:
@@ -30851,7 +29810,7 @@ def _saved_checkpoint_listing(
             if match is None:
                 continue
             try:
-                metadata = read_document(os.path.join(checkpoint_dir, filename))
+                metadata = _read_json(os.path.join(checkpoint_dir, filename))
                 segment = metadata.get("segment") if isinstance(metadata, dict) else None
                 scene = int(match.group(1))
                 revision = str(match.group(2))
@@ -30865,8 +29824,8 @@ def _saved_checkpoint_listing(
                         "editorial_alternate" or
                         checkpoint_revision_token(scene, segment) != revision):
                     continue
-                segment_path = resolve_read(segment["segment"])
-                checkpoint_path = resolve_read(segment["checkpoint"])
+                segment_path = _absolute_output_path(segment["segment"])
+                checkpoint_path = _absolute_output_path(segment["checkpoint"])
                 item = {
                     "scene": scene,
                     "scene_id": str(
@@ -30883,16 +29842,14 @@ def _saved_checkpoint_listing(
                     "media_mode": "picture_only",
                 }
                 if os.path.isfile(segment_path):
-                    item["video"] = output_item(segment_path)
+                    item["video"] = _video_output_item(segment_path)
                 alternates.setdefault(scene, []).append(item)
             except (OSError, TypeError, ValueError, json.JSONDecodeError,
                     KeyError):
-                if view is not None:
-                    raise
                 inventory_complete = False
                 continue
     active_segments, stale_pointers = CheckpointGraphManager.select_active_lineage(
-        active_segments, manager._read_chapter_starts(
+        active_segments, CheckpointGraphManager._chapter_starts(
             os.path.dirname(pointer_dir)))
     inactive_checkpoints = [
         {**item, "inactive_reason": stale_pointers[int(item["scene"])]}
@@ -30963,7 +29920,6 @@ def _saved_checkpoint_listing(
     payload: dict[str, Any] = {
         "run_name": run_name,
         "working_branch_id": current_branch(run_name),
-        **({"storage_pin": runtime.pin} if runtime else {}),
         "checkpoints": checkpoints,
         "inactive_checkpoints": inactive_checkpoints,
         "editorial": editorial,
@@ -30980,7 +29936,7 @@ def _saved_checkpoint_listing(
     if not include_graph:
         return payload
     try:
-        graph = manager.graph(run_name, **({"adopt_legacy": False} if view else {}))
+        graph = CheckpointGraphManager(_output_root()).graph(run_name)
     except FileNotFoundError:
         graph = {
             "graph_hash": "", "scenes": [], "branches": [],
@@ -30989,10 +29945,7 @@ def _saved_checkpoint_listing(
                 "branch_count": 0, "bytes": 0, "broken_count": 0,
             },
         }
-    if __package__:
-        from .checkpoint_final_cut import final_cut_contexts
-    else:
-        from checkpoint_final_cut import final_cut_contexts
+    from .checkpoint_final_cut import final_cut_contexts
     payload["final_cut_contexts"] = final_cut_contexts(sys.modules[__name__], run_name)
     payload.update({
         "revisions": graph["revisions"],
@@ -31001,10 +29954,7 @@ def _saved_checkpoint_listing(
         "graph_hash": graph["graph_hash"],
         "summary": graph["summary"],
     })
-    if __package__:
-        from .checkpoint_variants import saved_checkpoint_variants
-    else:
-        from checkpoint_variants import saved_checkpoint_variants
+    from .checkpoint_variants import saved_checkpoint_variants
     variants = saved_checkpoint_variants(_output_root(), run_name, graph["revisions"])
     payload["processing_variants"] = variants["variants"]
     payload["processing_branches"] = variants["branches"]
@@ -31331,36 +30281,31 @@ async def _update_prompt_history(request):
                 _owned_project_mutation, run_name, ownership_proof,
                 "change prompt history", store.save_draft,
                 run_name, body.get("scene_id"),
-                body.get("prompt", ""), body.get("parent_revision"),
-                operation_id=body.get("operation_id"), ownership_proof=ownership_proof)
+                body.get("prompt", ""), body.get("parent_revision"))
         elif action == "activate":
             payload = await asyncio.to_thread(
                 _owned_project_mutation, run_name, ownership_proof,
                 "change prompt history", store.activate,
                 run_name, body.get("scene_id"),
-                body.get("revision"), operation_id=body.get("operation_id"),
-                ownership_proof=ownership_proof)
+                body.get("revision"))
         elif action == "label":
             payload = await asyncio.to_thread(
                 _owned_project_mutation, run_name, ownership_proof,
                 "change prompt history", store.set_label,
                 run_name, body.get("scene_id"),
-                body.get("revision"), body.get("label", ""),
-                operation_id=body.get("operation_id"), ownership_proof=ownership_proof)
+                body.get("revision"), body.get("label", ""))
         elif action == "archive":
             payload = await asyncio.to_thread(
                 _owned_project_mutation, run_name, ownership_proof,
                 "change prompt history", store.set_archived,
                 run_name, body.get("scene_id"),
-                body.get("revision"), body.get("archived", True),
-                operation_id=body.get("operation_id"), ownership_proof=ownership_proof)
+                body.get("revision"), body.get("archived", True))
         elif action == "delete":
             payload = await asyncio.to_thread(
                 _owned_project_mutation, run_name, ownership_proof,
                 "change prompt history", store.delete_draft,
                 run_name, body.get("scene_id"),
-                body.get("revision"), operation_id=body.get("operation_id"),
-                ownership_proof=ownership_proof)
+                body.get("revision"))
         else:
             return web.json_response(
                 {"error": "Unknown prompt-history action."}, status=400)
@@ -31450,9 +30395,6 @@ async def _plan_studio_presentation(request):
 def _plan_studio_checkpoint_thumbnail_record(
         run_name: str, scene: Any, revision: Any) -> dict[str, Any]:
     run_name = _strict_run_name(run_name)
-    from .storage_runtime import current_runtime
-    runtime = current_runtime(_output_root(), run_name)
-    exists = (lambda value: runtime.reader.path(value).is_file()) if runtime is not None else os.path.isfile
     index = int(scene)
     token = str(revision or "").strip().lower()
     if index < 1 or index > MAX_SHOTS:
@@ -31464,11 +30406,11 @@ def _plan_studio_checkpoint_thumbnail_record(
     metadata_path = os.path.join(
         _output_root(), "h3_chains", run_name, "checkpoints",
         "clip_%04d.%s.json" % (index, token))
-    if not exists(metadata_path):
+    if not os.path.isfile(metadata_path):
         active_path = os.path.join(
             _run_dir({"run_name": run_name}), "checkpoints",
             "clip_%04d.json" % index)
-        if not exists(active_path):
+        if not os.path.isfile(active_path):
             raise FileNotFoundError(
                 "Scene %d revision %s is no longer available." %
                 (index, token[:8]))
@@ -32024,12 +30966,12 @@ def _project_asset_store() -> ProjectAssetStore:
 
 
 def _owned_project_mutation(
-        run_name: Any, guard_proof: Any, operation: str,
+        run_name: Any, ownership_proof: Any, operation: str,
         callback: Any, *args: Any, **kwargs: Any) -> Any:
     """Fence one short catalog/history mutation through its durable write."""
     run = _strict_run_name(run_name)
     with project_write_guard(
-            _output_root(), run, guard_proof, operation):
+            _output_root(), run, ownership_proof, operation):
         return callback(*args, **kwargs)
 
 
@@ -32063,38 +31005,6 @@ async def _project_asset_projects(request):
             request.query.get("q", ""))
         return web.json_response({"items": items})
     except (OSError, TypeError, ValueError) as exc:
-        return _project_asset_error_response(exc)
-
-
-async def _project_asset_input_repair(request):
-    """Explicit inspection only; GET never repairs or creates coordination files."""
-    try:
-        inspection = await asyncio.to_thread(
-            _project_asset_store().inspect_input_repair,
-            request.query.get("project", ""))
-        return web.json_response({"inspection": inspection})
-    except (OSError, TypeError, ValueError) as exc:
-        return _project_asset_error_response(exc)
-
-
-async def _project_asset_repair_inputs(request):
-    try:
-        body = await request.json()
-        if not isinstance(body, dict):
-            raise ValueError("Input repair request must be a JSON object.")
-        project = body.get("project", "")
-        ownership_proof = _request_project_ownership(request)
-        rejection = _project_write_rejection(request, project, "repair input project assets")
-        if rejection is not None:
-            return rejection
-        result = await asyncio.to_thread(
-            _owned_project_mutation, project, ownership_proof,
-            "repair input project assets", _project_asset_store().repair_inputs,
-            project, body.get("inspection"),
-            storage_operation_id=body.get("storage_operation_id"),
-            ownership_proof=ownership_proof)
-        return web.json_response(result)
-    except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
         return _project_asset_error_response(exc)
 
 
@@ -32136,18 +31046,14 @@ async def _project_asset_sources(request):
 async def _project_asset_upload(request):
     temporary = ""
     try:
-        prepared_upload = request.get('h3_storage_upload') if hasattr(request, 'get') else None
-        if prepared_upload is not None:
-            fields, upload = prepared_upload
-        else:
-            reader = await request.multipart()
-            fields = {}
-            upload = None
-            async for part in reader:
-                if part.name == "file":
-                    upload = part
-                    break
-                fields[part.name] = (await part.text()).strip()
+        reader = await request.multipart()
+        fields = {}
+        upload = None
+        async for part in reader:
+            if part.name == "file":
+                upload = part
+                break
+            fields[part.name] = (await part.text()).strip()
         if upload is None:
             raise ValueError("Upload request contains no file.")
         project = fields.get("project", "")
@@ -32158,7 +31064,7 @@ async def _project_asset_upload(request):
             return rejection
         filename = upload.filename or "asset"
         store = _project_asset_store()
-        temporary = store.upload_path(project, filename, ownership_proof=ownership_proof)
+        temporary = store.upload_path(project, filename)
         received = 0
         with open(temporary, "xb") as handle:
             while True:
@@ -32178,9 +31084,7 @@ async def _project_asset_upload(request):
             _owned_project_mutation, project, ownership_proof,
             "upload a project asset", importer, *positional,
             role=fields.get("role", ""), tag=fields.get("tag", ""),
-            original_name=filename, source_kind="upload",
-            storage_operation_id=fields.get("storage_operation_id"),
-            ownership_proof=ownership_proof)
+            original_name=filename, source_kind="upload")
         return web.json_response(result)
     except (OSError, TypeError, ValueError) as exc:
         return _project_asset_error_response(exc)
@@ -32209,22 +31113,9 @@ async def _project_asset_import(request):
                 _owned_project_mutation, project, ownership_proof,
                 "import a project asset", store.import_project_asset,
                 project, body.get("source_project", ""),
-                body.get("asset_id", ""), slot_id=body.get("slot_id", ""),
-                source_pin=body.get("source_pin"),
-                storage_operation_id=body.get("storage_operation_id"), ownership_proof=ownership_proof)
+                body.get("asset_id", ""), slot_id=body.get("slot_id", ""))
             return web.json_response(result)
         elif source == "chains":
-            if body.get("source_pin") is not None:
-                result = await asyncio.to_thread(
-                    _owned_project_mutation, project, ownership_proof,
-                    "import a project asset", store.import_backup_asset,
-                    project, body.get("run_name"), body.get("asset_id"),
-                    source_pin=body.get("source_pin"), slot_id=body.get("slot_id", ""),
-                    role=body.get("role", ""), tag=body.get("tag", ""),
-                    original_name=body.get("original_name", ""),
-                    options=body.get("options") if isinstance(body.get("options"), dict) else None,
-                    storage_operation_id=body.get("storage_operation_id"), ownership_proof=ownership_proof)
-                return web.json_response(result)
             _entry, path = store.backup_asset_path(
                 body.get("run_name"), body.get("asset_id"))
         else:
@@ -32244,8 +31135,7 @@ async def _project_asset_import(request):
             original_name=body.get("original_name", ""),
             source_kind=source,
             options=body.get("options") if isinstance(
-                body.get("options"), dict) else None,
-            storage_operation_id=body.get("storage_operation_id"), ownership_proof=ownership_proof)
+                body.get("options"), dict) else None)
         return web.json_response(result)
     except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
         return _project_asset_error_response(exc)
@@ -32266,8 +31156,7 @@ async def _project_asset_update(request):
             _owned_project_mutation, project, ownership_proof,
             "update a project asset", _project_asset_store().update,
             project, body.get("asset_id"),
-            body.get("changes"), storage_operation_id=body.get("storage_operation_id"),
-            ownership_proof=ownership_proof)
+            body.get("changes"))
         return web.json_response(result)
     except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
         return _project_asset_error_response(exc)
@@ -32290,8 +31179,7 @@ async def _project_asset_duplicate(request):
             project, body.get("asset_id"),
             tag=body.get("tag", ""),
             folder_id=(body.get("folder_id")
-                       if "folder_id" in body else None),
-            storage_operation_id=body.get("storage_operation_id"), ownership_proof=ownership_proof)
+                       if "folder_id" in body else None))
         return web.json_response(result)
     except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
         return _project_asset_error_response(exc)
@@ -32337,8 +31225,7 @@ async def _project_asset_derive(request):
             tag=body.get("tag", ""),
             folder_id=(body.get("folder_id")
                        if "folder_id" in body else None),
-            operation_id=body.get("operation_id", ""),
-            storage_operation_id=body.get("storage_operation_id"), ownership_proof=ownership_proof)
+            operation_id=body.get("operation_id", ""))
         return web.json_response(result)
     except (OSError, RuntimeError, TypeError, ValueError,
             json.JSONDecodeError) as exc:
@@ -32363,24 +31250,20 @@ async def _project_asset_folder(request):
             result = await asyncio.to_thread(
                 _owned_project_mutation, project, ownership_proof, operation,
                 store.create_folder, project, body.get("name"),
-                color=body.get("color", ""), storage_operation_id=body.get("storage_operation_id"),
-                ownership_proof=ownership_proof)
+                color=body.get("color", ""))
         elif action == "update":
             result = await asyncio.to_thread(
                 _owned_project_mutation, project, ownership_proof, operation,
                 store.update_folder, project, body.get("folder_id"),
-                body.get("changes"), storage_operation_id=body.get("storage_operation_id"),
-                ownership_proof=ownership_proof)
+                body.get("changes"))
         elif action == "delete":
             result = await asyncio.to_thread(
                 _owned_project_mutation, project, ownership_proof, operation,
-                store.delete_folder, project, body.get("folder_id"),
-                storage_operation_id=body.get("storage_operation_id"), ownership_proof=ownership_proof)
+                store.delete_folder, project, body.get("folder_id"))
         elif action == "reorder":
             result = await asyncio.to_thread(
                 _owned_project_mutation, project, ownership_proof, operation,
-                store.reorder_folders, project, body.get("folder_ids"),
-                storage_operation_id=body.get("storage_operation_id"), ownership_proof=ownership_proof)
+                store.reorder_folders, project, body.get("folder_ids"))
         else:
             raise ValueError(
                 "Asset folder action must be create, update, delete, or reorder.")
@@ -32403,8 +31286,7 @@ async def _project_asset_reorder(request):
         result = await asyncio.to_thread(
             _owned_project_mutation, project, ownership_proof,
             "reorder project assets", _project_asset_store().reorder,
-            project, body.get("asset_ids"), storage_operation_id=body.get("storage_operation_id"),
-            ownership_proof=ownership_proof)
+            project, body.get("asset_ids"))
         return web.json_response(result)
     except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
         return _project_asset_error_response(exc)
@@ -32424,8 +31306,7 @@ async def _project_asset_delete(request):
         result = await asyncio.to_thread(
             _owned_project_mutation, project, ownership_proof,
             "delete a project asset", _project_asset_store().delete,
-            project, body.get("asset_id"), storage_operation_id=body.get("storage_operation_id"),
-            ownership_proof=ownership_proof)
+            project, body.get("asset_id"))
         return web.json_response(result)
     except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
         return _project_asset_error_response(exc)
@@ -32504,13 +31385,11 @@ async def _project_ownership_command(request):
         action = str(body.get("action") or "status").strip().lower()
         owner_id = body.get("owner_id", "")
         if action == "status":
-            payload = await asyncio.to_thread(
-                ownership_status, _output_root(), run_name, owner_id)
+            payload = ownership_status(_output_root(), run_name, owner_id)
         elif action in ("claim", "force"):
-            before = await asyncio.to_thread(
-                ownership_status, _output_root(), run_name, owner_id)
-            payload = await asyncio.to_thread(
-                claim_project_ownership, _output_root(), run_name, owner_id,
+            before = ownership_status(_output_root(), run_name, owner_id)
+            payload = claim_project_ownership(
+                _output_root(), run_name, owner_id,
                 body.get("owner_label", "Workflow"),
                 force=action == "force")
             if (action == "force" and payload.get("owned_by_requester")
@@ -32519,12 +31398,12 @@ async def _project_ownership_command(request):
                             before.get("epoch", -1)))):
                 _fence_inflight_project_work(run_name)
         elif action == "heartbeat":
-            payload = await asyncio.to_thread(
-                heartbeat_project_ownership, _output_root(), run_name, owner_id, body.get("epoch"),
+            payload = heartbeat_project_ownership(
+                _output_root(), run_name, owner_id, body.get("epoch"),
                 body.get("owner_label", "Workflow"))
         elif action == "release":
-            payload = await asyncio.to_thread(
-                release_project_ownership, _output_root(), run_name, owner_id, body.get("epoch"))
+            payload = release_project_ownership(
+                _output_root(), run_name, owner_id, body.get("epoch"))
         else:
             raise ValueError(
                 "Project ownership action must be status, claim, heartbeat, "
@@ -32604,26 +31483,13 @@ def _capture_video_frame(video_path: str, time_seconds: float, output_path: str)
 def _project_asset_capture_frame_sync(
         project: Any, video_path: Any, subfolder: Any, source_type: Any,
         time_seconds: Any, tag: Any, role: Any,
-        folder_id: Any, ownership_proof: Any = None, *,
-        storage_operation_id=None) -> dict[str, Any]:
+        folder_id: Any, ownership_proof: Any = None) -> dict[str, Any]:
     project = _strict_run_name(project)
     operation = "capture a project asset frame"
     _require_project_write(project, ownership_proof, operation)
     offset = _capture_frame_time(time_seconds)
-    store = _project_asset_store()
-    from .storage_runtime import current_runtime
-    runtime = current_runtime(_output_root(), project)
-    if runtime is not None:
-        from .storage_asset_capture import capture
-        return capture(runtime, store, {
-            "input": _input_root(), "output": _output_root(),
-            "temp": folder_paths.get_temp_directory()},
-            {"filename": str(video_path or "").strip(), "subfolder": str(subfolder or "").strip(),
-             "type": str(source_type or "output").strip().lower(), "time_seconds": offset,
-             "tag": tag, "role": role or "", "folder_id": folder_id},
-            _capture_video_frame, operation_id=storage_operation_id,
-            proof=_project_ownership_proof(ownership_proof))
     source = _capture_frame_video_path(video_path, subfolder, source_type)
+    store = _project_asset_store()
     temporary = store.upload_path(project, "frame_capture.png")
     try:
         _capture_video_frame(source, offset, temporary)
@@ -32650,8 +31516,7 @@ async def _project_asset_capture_frame(request):
             body.get("time_seconds", 0.0), body.get("tag", ""),
             body.get("role", ""),
             body.get("folder_id") if "folder_id" in body else None,
-            _request_project_ownership(request),
-            storage_operation_id=body.get("storage_operation_id"))
+            _request_project_ownership(request))
         return web.json_response(result)
     except (OSError, RuntimeError, TypeError, ValueError,
             json.JSONDecodeError) as exc:
@@ -32710,24 +31575,7 @@ def _handoff_store() -> "_HandoffStore":
 
 
 def _handoff_scene_count(run_name: str) -> int | None:
-    """Count this record's branch Plan without mixing roots or legacy files."""
-    if __package__:
-        from .storage_runtime import current_runtime
-    else:
-        from storage_runtime import current_runtime
-    runtime = current_runtime(_output_root(), run_name)
-    if runtime is not None:
-        with runtime.reader.operation():
-            directory = runtime.reader.working_directory(run_name)
-            if "plan.json" not in runtime.reader.names(directory):
-                return None
-            # Missing accepted bytes or invalid immutable data must fail the
-            # request, not produce a plausible manual-resume range.
-            plan = runtime.reader.read(os.path.join(directory, "plan.json"))
-            if not isinstance(plan, dict):
-                raise ValueError("Saved handoff Plan must be a JSON object.")
-            shots = plan.get("shots")
-            return len(shots) if isinstance(shots, list) and shots else None
+    """Scene count of the run's saved Plan, or None when unreadable."""
     plan_path = os.path.join(_run_dir({"run_name": _safe_name(run_name, "")}), "plan.json")
     try:
         with open(plan_path, "r", encoding="utf-8") as handle:
@@ -32768,28 +31616,6 @@ def _handoff_record_view(record: dict[str, Any]) -> dict[str, Any]:
     return view
 
 
-def _handoff_error_response(exc: Exception):
-    if __package__:
-        from .storage_state import StateConflict
-    else:
-        from storage_state import StateConflict
-    if isinstance(exc, ProjectOwnershipError):
-        return _project_asset_error_response(exc)
-    if isinstance(exc, _HandoffNotFoundError):
-        status = 404
-    elif isinstance(exc, (StateConflict, _HandoffClaimError, _IllegalHandoffTransitionError)):
-        status = 409
-    elif isinstance(exc, OSError):
-        # Publication may have succeeded before acknowledgement failed. Never
-        # tell the coordinator it is safe to submit the generation job again.
-        return web.json_response({"error": str(exc),
-            "code": "h3_handoff_storage_unavailable",
-            "retry_automatically": False}, status=503)
-    else:
-        status = 400
-    return web.json_response({"error": str(exc)}, status=status)
-
-
 async def _list_handoffs(request):
     run_name = _safe_name(request.query.get("run_name", ""), "")
     if not run_name:
@@ -32799,16 +31625,14 @@ async def _list_handoffs(request):
         records = await asyncio.to_thread(
             _handoff_store().list, run_name)
         views = [_handoff_record_view(record) for record in records]
-    except (OSError, TypeError, ValueError) as exc:
-        return _handoff_error_response(exc)
+    except _HandoffError as exc:
+        return web.json_response({"error": str(exc)}, status=400)
     return web.json_response({"run_name": run_name, "handoffs": views})
 
 
 async def _claim_handoff(request):
     try:
         body = await request.json()
-        if not isinstance(body, dict):
-            raise TypeError("Handoff request must be a JSON object.")
     except (json.JSONDecodeError, TypeError):
         return web.json_response(
             {"error": "H3 handoff claim requires JSON."}, status=400)
@@ -32818,25 +31642,29 @@ async def _claim_handoff(request):
     if not run_name or not handoff_id:
         return web.json_response(
             {"error": "run_name and handoff_id are required."}, status=400)
+    ownership_proof = _request_project_ownership(request)
+    rejection = _project_write_rejection(request, run_name, "claim a scene handoff")
+    if rejection is not None:
+        return rejection
     try:
-        ownership_proof = _request_project_ownership(request)
-        rejection = _project_write_rejection(request, run_name, "claim a scene handoff")
-        if rejection is not None:
-            return rejection
         record = await asyncio.to_thread(
             _owned_project_mutation, run_name, ownership_proof,
             "claim a scene handoff", _handoff_store().claim, run_name, handoff_id,
             "top_level_requeue", source_prompt_id)
-        return web.json_response({"handoff": _handoff_record_view(record)})
-    except (OSError, TypeError, ValueError) as exc:
-        return _handoff_error_response(exc)
+    except ProjectOwnershipError as exc:
+        return _project_asset_error_response(exc)
+    except _HandoffNotFoundError as exc:
+        return web.json_response({"error": str(exc)}, status=404)
+    except _HandoffClaimError as exc:
+        return web.json_response({"error": str(exc)}, status=409)
+    except _HandoffError as exc:
+        return web.json_response({"error": str(exc)}, status=400)
+    return web.json_response({"handoff": _handoff_record_view(record)})
 
 
 async def _transition_handoff(request):
     try:
         body = await request.json()
-        if not isinstance(body, dict):
-            raise TypeError("Handoff request must be a JSON object.")
     except (json.JSONDecodeError, TypeError):
         return web.json_response(
             {"error": "H3 handoff transition requires JSON."}, status=400)
@@ -32852,25 +31680,29 @@ async def _transition_handoff(request):
     if not run_name or not handoff_id:
         return web.json_response(
             {"error": "run_name and handoff_id are required."}, status=400)
+    ownership_proof = _request_project_ownership(request)
+    rejection = _project_write_rejection(request, run_name, "transition a scene handoff")
+    if rejection is not None:
+        return rejection
     try:
-        ownership_proof = _request_project_ownership(request)
-        rejection = _project_write_rejection(request, run_name, "transition a scene handoff")
-        if rejection is not None:
-            return rejection
         record = await asyncio.to_thread(
             _owned_project_mutation, run_name, ownership_proof,
             "transition a scene handoff", _handoff_store().transition, run_name, handoff_id, status,
             accepted_prompt_id)
-        return web.json_response({"handoff": _handoff_record_view(record)})
-    except (OSError, TypeError, ValueError) as exc:
-        return _handoff_error_response(exc)
+    except ProjectOwnershipError as exc:
+        return _project_asset_error_response(exc)
+    except _HandoffNotFoundError as exc:
+        return web.json_response({"error": str(exc)}, status=404)
+    except _IllegalHandoffTransitionError as exc:
+        return web.json_response({"error": str(exc)}, status=409)
+    except _HandoffError as exc:
+        return web.json_response({"error": str(exc)}, status=400)
+    return web.json_response({"handoff": _handoff_record_view(record)})
 
 
 async def _release_handoff(request):
     try:
         body = await request.json()
-        if not isinstance(body, dict):
-            raise TypeError("Handoff request must be a JSON object.")
     except (json.JSONDecodeError, TypeError):
         return web.json_response(
             {"error": "H3 handoff release requires JSON."}, status=400)
@@ -32880,17 +31712,23 @@ async def _release_handoff(request):
     if not run_name or not handoff_id:
         return web.json_response(
             {"error": "run_name and handoff_id are required."}, status=400)
+    ownership_proof = _request_project_ownership(request)
+    rejection = _project_write_rejection(request, run_name, "release a scene handoff")
+    if rejection is not None:
+        return rejection
     try:
-        ownership_proof = _request_project_ownership(request)
-        rejection = _project_write_rejection(request, run_name, "release a scene handoff")
-        if rejection is not None:
-            return rejection
         record = await asyncio.to_thread(
             _owned_project_mutation, run_name, ownership_proof,
             "release a scene handoff", _handoff_store().release, run_name, handoff_id, reason)
-        return web.json_response({"handoff": _handoff_record_view(record)})
-    except (OSError, TypeError, ValueError) as exc:
-        return _handoff_error_response(exc)
+    except ProjectOwnershipError as exc:
+        return _project_asset_error_response(exc)
+    except _HandoffNotFoundError as exc:
+        return web.json_response({"error": str(exc)}, status=404)
+    except _IllegalHandoffTransitionError as exc:
+        return web.json_response({"error": str(exc)}, status=409)
+    except _HandoffError as exc:
+        return web.json_response({"error": str(exc)}, status=400)
+    return web.json_response({"handoff": _handoff_record_view(record)})
 
 
 async def _working_branch_command(request):
@@ -32911,7 +31749,7 @@ async def _working_branch_command(request):
         rejection = _project_write_rejection(request, run, "edit a working branch")
         if rejection is not None:
             return rejection
-        with project_write_guard(_output_root(), run,
+        with checkpoint_run_lock(_output_root(), run), project_write_guard(_output_root(), run,
                 _request_project_ownership(request), "edit a working branch"):
             if action == "save":
                 result = store.save(selected, body.get("authoring"), body.get("revision"),
@@ -32922,18 +31760,13 @@ async def _working_branch_command(request):
                                                through, body.get("operation_id", ""))
                 if recovered is not None:
                     return web.json_response(recovered)
-                with branch_scope(run, selected):
-                    manager = CheckpointGraphManager(_output_root())
-                    active, stale = manager.active_selection(run)
+                with checkpoint_run_lock(_output_root(), run), branch_scope(run, selected):
+                    active, stale = CheckpointGraphManager(_output_root()).active_selection(run)
                     if (type(through) is not int or through < 0 or through > MAX_SHOTS or
                             any(i not in active or i in stale for i in range(1, through + 1))):
                         raise ValueError("Fork requires a coherent saved prefix of the selected branch.")
                     for i in range(1, through + 1):
-                        if manager._rehearsal_view is not None:
-                            _load_checkpoint_revision(run, i, active[i],
-                                                      rehearsal_view=manager._rehearsal_view)
-                        else:
-                            _load_checkpoint_revision(run, i, active[i])
+                        _load_checkpoint_revision(run, i, active[i])
                     result = store.create(selected, body.get("name"), body.get("authoring"), through,
                                           body.get("operation_id", ""))
             elif action == "default":
@@ -32956,7 +31789,7 @@ async def _working_branch_command(request):
 for _branch_route_name in (
         "_list_saved_checkpoints", "_restore_checkpoint_revisions",
         "_attribute_checkpoint_revision", "_preview_checkpoint_revision_deletion",
-        "_delete_checkpoint_revision", "_checkpoint_retention_undo", "_update_run_editorial",
+        "_delete_checkpoint_revision", "_update_run_editorial",
         "_get_prompt_history", "_update_prompt_history",
         "_plan_studio_presentation", "_plan_studio_checkpoint_thumbnail",
         "_processing_checkpoint_deletion", "_chapter_snapshot_retirement",
@@ -32967,35 +31800,8 @@ _submit_review_decision = scoped_review(_submit_review_decision, _PENDING_REVIEW
 _submit_candidate_batch_command = scoped_review(_submit_candidate_batch_command, _ACTIVE_CANDIDATE_BATCHES)
 
 
-# Hosted migrated projects enter the same existing HTTP handlers used by V1.
-# Merely importing/registering these wrappers does not activate a project.
-from .storage_carriers import storage_request as _storage_request
-from .storage_host import storage_http as _storage_http
-for _storage_route_name in (
-        '_working_branch_command', '_project_ownership_command',
-        '_list_saved_checkpoints', '_restore_checkpoint_revisions',
-        '_attribute_checkpoint_revision', '_preview_checkpoint_revision_deletion',
-        '_delete_checkpoint_revision', '_checkpoint_retention_undo',
-        '_processing_checkpoint_deletion', '_chapter_snapshot_retirement',
-        '_load_saved_run', '_update_run_editorial', '_get_prompt_history',
-        '_save_run_assets',
-        '_update_prompt_history', '_list_handoffs', '_claim_handoff',
-        '_transition_handoff', '_release_handoff', '_project_asset_catalog',
-        '_project_asset_update', '_project_asset_duplicate', '_project_asset_folder', '_project_asset_upload',
-        '_project_asset_reorder', '_project_asset_import', '_project_asset_derive',
-        '_project_asset_capture_frame', '_project_asset_input_repair',
-        '_project_asset_repair_inputs', '_project_asset_delete', '_project_asset_media', '_project_asset_sources',
-        '_list_deferred_reviews', '_submit_deferred_review', '_submit_review_decision',
-        '_submit_candidate_batch_command',
-        '_plan_studio_presentation', '_plan_studio_checkpoint_thumbnail'):
-    globals()[_storage_route_name] = _storage_http(_storage_request(globals()[_storage_route_name]))
-
-
 if (PromptServer is not None and web is not None and
         getattr(PromptServer, "instance", None) is not None):
-    from .storage_host import storage_session as _storage_session
-    PromptServer.instance.routes.get(
-        "/minimax_h3_context_loop/storage-session")(_storage_session)
     PromptServer.instance.routes.get(
         "/minimax_h3_context_loop/working-branches")(_working_branch_command)
     PromptServer.instance.routes.post(
@@ -33042,12 +31848,6 @@ if (PromptServer is not None and web is not None and
     PromptServer.instance.routes.post(
         "/minimax_h3_context_loop/checkpoint-revisions/delete")(
             _delete_checkpoint_revision)
-    PromptServer.instance.routes.post(
-        "/minimax_h3_context_loop/checkpoint-revisions/undo-preview")(
-            _checkpoint_retention_undo)
-    PromptServer.instance.routes.post(
-        "/minimax_h3_context_loop/checkpoint-revisions/undo")(
-            _checkpoint_retention_undo)
     PromptServer.instance.routes.post(
         "/minimax_h3_context_loop/chapter-snapshots/retire-preview")(
             _chapter_snapshot_retirement)
@@ -33099,13 +31899,7 @@ if (PromptServer is not None and web is not None and
         "/minimax_h3_context_loop/project-assets")(_project_asset_catalog)
     PromptServer.instance.routes.get(
         "/minimax_h3_context_loop/project-assets/projects")(
-        _project_asset_projects)
-    PromptServer.instance.routes.get(
-        "/minimax_h3_context_loop/project-assets/input-repair")(
-        _project_asset_input_repair)
-    PromptServer.instance.routes.post(
-        "/minimax_h3_context_loop/project-assets/repair-inputs")(
-        _project_asset_repair_inputs)
+            _project_asset_projects)
     PromptServer.instance.routes.get(
         "/minimax_h3_context_loop/project-assets/sources")(
             _project_asset_sources)

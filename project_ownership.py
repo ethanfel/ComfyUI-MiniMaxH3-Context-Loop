@@ -135,15 +135,6 @@ def ownership_path(output_root: str, run_name: Any) -> str:
     root = os.path.realpath(os.path.join(
         chains_root, ".project_ownership"))
     run = _run_name(run_name)
-    if __package__:
-        from .storage_resolver import storage_state
-        from .storage_ownership import authority_directory
-    else:
-        from storage_resolver import storage_state
-        from storage_ownership import authority_directory
-    if authority_directory(output_root, run).exists():
-        raise ValueError('External ownership authority requires its copy-only runtime; no legacy fallback.')
-    storage_state(os.path.join(str(output_root), "h3_chains", run))
     path = os.path.realpath(os.path.join(root, run + ".json"))
     if os.path.commonpath((root, path)) != root:
         raise ValueError("H3 project ownership path escaped the output root.")
@@ -200,10 +191,6 @@ def _read(path: str, run_name: str) -> dict[str, Any] | None:
         return None
     with open(path, "r", encoding="utf-8") as handle:
         value = json.load(handle)
-    return _normalize_record(value, run_name)
-
-
-def _normalize_record(value, run_name):
     if (not isinstance(value, dict)
             or value.get("format") != PROJECT_OWNERSHIP_FORMAT
             or str(value.get("run_name") or "") != run_name):
@@ -216,29 +203,6 @@ def _normalize_record(value, run_name):
     record["owner_digest"] = str(record.get("owner_digest") or "")
     record["owner_label"] = str(record.get("owner_label") or "")[:120]
     return record
-
-
-class _LegacyOwnership:
-    def __init__(self, output, run):
-        self.path, self.run = ownership_path(output, run), run
-
-    def lock(self):
-        return _lock_for(self.path)
-
-    def read(self):
-        return _read(self.path, self.run)
-
-    def write(self, record):
-        return _atomic_json(self.path, record)
-
-
-def _ownership_store(output, run):
-    if __package__:
-        from .storage_runtime import current_runtime
-    else:
-        from storage_runtime import current_runtime
-    runtime = current_runtime(output, run)
-    return runtime.ownership if runtime is not None else _LegacyOwnership(output, run)
 
 
 def _public(record: dict[str, Any], owner_id: Any = "") -> dict[str, Any]:
@@ -268,9 +232,9 @@ def _public(record: dict[str, Any], owner_id: Any = "") -> dict[str, Any]:
 def ownership_status(output_root: str, run_name: Any,
                      owner_id: Any = "") -> dict[str, Any]:
     run = _run_name(run_name)
-    store = _ownership_store(output_root, run)
-    with store.lock():
-        record = store.read()
+    path = ownership_path(output_root, run)
+    with _lock_for(path):
+        record = _read(path, run)
         if record is None:
             return {
                 **_public(_empty_record(run), owner_id),
@@ -290,9 +254,9 @@ def claim_project_ownership(
     digest = _owner_digest(owner)
     label = str(owner_label or "Workflow")[:120]
     lease = max(30.0, min(600.0, float(lease_seconds)))
-    store = _ownership_store(output_root, run)
-    with store.lock():
-        record = store.read() or _empty_record(run)
+    path = ownership_path(output_root, run)
+    with _lock_for(path):
+        record = _read(path, run) or _empty_record(run)
         now = time.time()
         current = str(record.get("owner_digest") or "")
         if current == digest:
@@ -300,7 +264,7 @@ def claim_project_ownership(
             record["heartbeat_at"] = _timestamp()
             record["lease_expires_at"] = now + lease
             record["updated_at"] = _timestamp()
-            store.write(record)
+            _atomic_json(path, record)
             return _public(record, owner)
         # Expiry is only a liveness hint. An abandoned owner must still be
         # displaced explicitly with Force ownership so merely opening a stale
@@ -318,7 +282,7 @@ def claim_project_ownership(
             "lease_expires_at": now + lease,
             "updated_at": _timestamp(),
         })
-        store.write(record)
+        _atomic_json(path, record)
         return _public(record, owner)
 
 
@@ -333,9 +297,9 @@ def heartbeat_project_ownership(
     digest = _owner_digest(owner)
     label = str(owner_label or "Workflow")[:120]
     lease = max(30.0, min(600.0, float(lease_seconds)))
-    store = _ownership_store(output_root, run)
-    with store.lock():
-        record = store.read()
+    path = ownership_path(output_root, run)
+    with _lock_for(path):
+        record = _read(path, run)
         if record is None:
             return {
                 **_public(_empty_record(run), owner),
@@ -355,7 +319,7 @@ def heartbeat_project_ownership(
             "lease_expires_at": time.time() + lease,
             "updated_at": _timestamp(),
         })
-        store.write(record)
+        _atomic_json(path, record)
         return _public(record, owner)
 
 
@@ -364,9 +328,9 @@ def release_project_ownership(
 ) -> dict[str, Any]:
     run = _run_name(run_name)
     owner = _owner_id(owner_id)
-    store = _ownership_store(output_root, run)
-    with store.lock():
-        record = store.read()
+    path = ownership_path(output_root, run)
+    with _lock_for(path):
+        record = _read(path, run)
         if record is None:
             return ownership_status(output_root, run, owner)
         if (_owner_digest(owner) != str(record.get("owner_digest") or "")
@@ -382,7 +346,7 @@ def release_project_ownership(
             "lease_expires_at": 0.0,
             "updated_at": _timestamp(),
         })
-        store.write(record)
+        _atomic_json(path, record)
         return _public(record, owner)
 
 
@@ -432,20 +396,10 @@ def project_write_guard(
     around its final pointer/catalog mutation.
     """
     run = _run_name(run_name)
-    store = _ownership_store(output_root, run)
-    if not isinstance(store, _LegacyOwnership):
-        with store.lock():
-            yield _validate_project_ownership(run, store.read(), proof, operation)
-        return
-    if __package__:
-        from .checkpoint_manager import checkpoint_run_lock
-    else:
-        from checkpoint_manager import checkpoint_run_lock
-    # Keep lock ordering consistent with scene saves/deletion. This also
-    # fences UI-only commits that previously held only the ownership lock.
-    with checkpoint_run_lock(output_root, run), store.lock():
+    path = ownership_path(output_root, run)
+    with _lock_for(path):
         yield _validate_project_ownership(
-            run, store.read(), proof, operation)
+            run, _read(path, run), proof, operation)
 
 
 def require_project_ownership(

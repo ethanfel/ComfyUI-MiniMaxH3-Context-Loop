@@ -149,32 +149,13 @@ class RunAssetStore:
         if not isinstance(relative, str) or not relative:
             return None
         path = os.path.realpath(os.path.join(run_dir, relative))
-        if not _inside(run_dir, path):
-            return None
-        runtime = self._runtime(os.path.basename(run_dir))
-        if runtime is not None:
-            path = str(runtime.reader.path(path))
-        if not os.path.isfile(path):
+        if not _inside(run_dir, path) or not os.path.isfile(path):
             return None
         return path
-
-    def _runtime(self, run):
-        if __package__:
-            from .storage_runtime import current_runtime
-        else:
-            from storage_runtime import current_runtime
-        return current_runtime(self.output_root, run)
 
     def _copy_to_archive(self, source: str, run_dir: str,
                          role: str) -> dict[str, Any]:
         group = _role_group(role)
-        transaction = getattr(self, '_organized_archive', None)
-        if transaction is not None:
-            digest = _file_sha256(source)
-            relative = 'references/'+group+'/'+digest+os.path.splitext(source)[1][:12]
-            target, digest = transaction.media(source, relative)
-            return dict(relative_path=relative, sha256=digest, size=target.stat().st_size,
-                        saved_at=_utc_now(), original_basename=os.path.basename(source))
         destination_dir = os.path.join(run_dir, "references", group)
         os.makedirs(destination_dir, exist_ok=True)
         suffix = os.path.splitext(source)[1][:24]
@@ -242,12 +223,6 @@ class RunAssetStore:
 
     def load_manifest(self, run_name: Any) -> dict[str, Any] | None:
         path, _directory, _run = self._manifest_path(run_name)
-        transaction = getattr(self, '_organized_archive', None)
-        if transaction is not None and transaction.document is not None:
-            return transaction.document
-        runtime = self._runtime(_run)
-        if runtime is not None:
-            path = str(runtime.reader.path(path))
         if not os.path.isfile(path):
             return None
         document = _read_json(path)
@@ -262,19 +237,6 @@ class RunAssetStore:
         manifest = self.load_manifest(run_name)
         if manifest is None:
             return {"asset_count": 0, "asset_bytes": 0}
-        runtime = self._runtime(_run)
-        if runtime is not None:
-            if __package__:
-                from .storage_project import payload_catalog
-            else:
-                from storage_project import payload_catalog
-            files = {key:value for key,value in payload_catalog(runtime.accepted).items() if key.startswith('references/')}
-            transaction = getattr(self, '_organized_archive', None)
-            if transaction is not None:
-                files.update({key:value['record'] for key,value in transaction.staged.items()})
-            return dict(asset_count=len(manifest['bindings']),
-                archived_asset_count=sum(isinstance(row.get('archive'), dict) for row in manifest['bindings']),
-                asset_file_count=len(files), asset_bytes=sum(row['file']['size'] for row in files.values()))
         archived = 0
         for binding in manifest.get("bindings", []):
             archive = binding.get("archive") if isinstance(binding, dict) else None
@@ -306,13 +268,6 @@ class RunAssetStore:
     def save(self, run_name: Any, bindings: Any,
              policies: dict[str, Any] | None = None) -> dict[str, Any]:
         manifest_path, run_dir, run = self._manifest_path(run_name)
-        runtime = self._runtime(run)
-        if runtime is not None and getattr(self, '_organized_archive', None) is None:
-            if __package__:
-                from .storage_source_media import save_assets
-            else:
-                from storage_source_media import save_assets
-            return save_assets(runtime, self, run, bindings, policies)
         if not isinstance(bindings, list):
             raise ValueError("H3 asset bindings must be a JSON list.")
         if len(bindings) > MAX_ASSET_BINDINGS:
@@ -386,12 +341,7 @@ class RunAssetStore:
             "policies": enabled,
             "bindings": saved,
         }
-        transaction = getattr(self, '_organized_archive', None)
-        if transaction is not None:
-            transaction.document = document
-            transaction.control('references/manifest.json', document)
-        else:
-            _atomic_json(manifest_path, document)
+        _atomic_json(manifest_path, document)
         summary = self.summary(run)
         return {
             "run_name": run,
