@@ -1,17 +1,20 @@
 """Actual checkpoint graph reads against combined accepted controls and media."""
 import copy
+from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 import json
 import math
 from pathlib import Path
 import unittest
 from unittest.mock import patch
 import uuid
+from threading import Barrier
 
 import _storage_resolver_unit_test as fixture
 import storage_state as state
 import storage_project as project
 import storage_project_migration as migration
-from storage_project_reads import ProjectReadView
+from storage_project_reads import ProjectReadView, _read_index
 from checkpoint_manager import CheckpointGraphManager
 from branch_scope import branch_scope
 
@@ -97,6 +100,74 @@ class ReadTests(unittest.TestCase):
             self.assertTrue(row['ready'])
             self.assertTrue((self.output/row['video']['subfolder']/row['video']['filename']).exists())
             self.assertEqual(row['seed'], '18446744073709551613')
+
+    def test_repeated_direct_reads_never_build_payload_catalog_or_audit_other_files(self):
+        _read_index.cache_clear()
+        verified = []
+        original = state.Snapshot.verify
+        def verify(snapshot, addresses=None):
+            self.assertIsNotNone(addresses, 'Ordinary loading started a full-project audit')
+            verified.append(set(addresses))
+            return original(snapshot, addresses)
+        with patch.object(project, 'payload_catalog', side_effect=AssertionError('Full payload scan')), \
+                patch.object(state.Snapshot, 'verify', verify):
+            for _ in range(3):
+                view = ProjectReadView(self.store)
+                with view.operation():
+                    self.assertEqual(view.read(self.f.address('editorial.json')), self.docs['editorial.json'])
+                    path = view.path(self.f.address('segments/clip_0001.'+self.a+'.mp4'))
+                    self.assertTrue(path.is_file())
+            with ProjectReadView(self.store).operation():
+                pass  # storage handshake must not enumerate files
+        self.assertEqual(verified, [
+            {'editorial.json', project.payload_key('segments/clip_0001.'+self.a+'.mp4')}]*3+[set()])
+
+    def test_parallel_listings_share_one_index_but_new_root_gets_its_own(self):
+        _read_index.cache_clear()
+        barrier = Barrier(4)
+        def read():
+            barrier.wait(timeout=5)
+            view = ProjectReadView(self.store)
+            with view.operation():
+                return view.names(self.store.project/'checkpoints')
+        with patch.object(project, 'payload_catalog', wraps=project.payload_catalog) as build:
+            with ThreadPoolExecutor(max_workers=4) as workers:
+                futures = [workers.submit(copy_context().run, read) for _ in range(4)]
+                results = [future.result(timeout=10) for future in futures]
+            self.assertTrue(all(result == results[0] for result in results))
+            self.assertEqual(build.call_count, 1)
+            with ProjectReadView(self.store).operation():
+                pass
+            self.assertEqual(build.call_count, 1)
+        # Publication still audits; count only the subsequent read index builds.
+        self.store.commit(self.base, {'checkpoints/new.json':dict(data=b'{}',
+            scope='branch:A', category='takes', immutable=False)}, operation_id=uuid.uuid4().hex)
+        with patch.object(project, 'payload_catalog', wraps=project.payload_catalog) as build:
+            latest, historical = ProjectReadView(self.store), ProjectReadView(self.store, base=self.base)
+            with latest.operation():
+                self.assertIn('new.json', latest.names(self.store.project/'checkpoints'))
+            with historical.operation():
+                self.assertNotIn('new.json', historical.names(self.store.project/'checkpoints'))
+            self.assertEqual(build.call_count, 1)
+
+    def test_warm_index_does_not_mask_changed_payload_descriptor(self):
+        address = 'segments/clip_0001.'+self.a+'.mp4'
+        with self.view.operation():
+            self.view.names(self.store.project/'segments')
+        descriptor = self.base.state['documents'][project.payload_key(address)]
+        (self.store.project/descriptor['file']['path']).write_bytes(b'{}')
+        with self.assertRaisesRegex(ValueError, 'checksum'), self.view.operation():
+            try:
+                self.view.path(self.f.address(address))
+            except ValueError:
+                pass  # legacy callers cannot swallow a used file's corruption
+
+    def test_used_document_changed_after_read_is_rejected_at_operation_end(self):
+        address = 'editorial.json'
+        with self.assertRaisesRegex(ValueError, 'checksum'), self.view.operation():
+            self.view.read(self.f.address(address))
+            path = self.store.project/self.base.state['documents'][address]['file']['path']
+            path.write_bytes(b'{}')
 
     def test_nested_read_traces_collect_only_used_accepted_identities(self):
         metadata = 'checkpoints/clip_0001.'+self.a+'.json'

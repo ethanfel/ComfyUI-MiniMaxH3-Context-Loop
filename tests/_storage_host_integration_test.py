@@ -235,10 +235,10 @@ class HostTests(unittest.TestCase):
         checks = []
         verify = state.Snapshot.verify
         main_thread = threading.get_ident()
-        def verify_off_thread(snapshot):
+        def verify_off_thread(snapshot, addresses=None):
             checks.append(threading.get_ident())
             self.assertNotEqual(threading.get_ident(), main_thread)
-            return verify(snapshot)
+            return verify(snapshot, addresses)
         async def run():
             request_loop = asyncio.get_running_loop()
             async def ensure(record):
@@ -292,12 +292,12 @@ class HostTests(unittest.TestCase):
                 for method, route, options in requests:
                     entered, release = threading.Event(), threading.Event()
                     timed_out, threads = [], []
-                    def slow(snapshot):
+                    def slow(snapshot, addresses=None):
                         threads.append(threading.get_ident())
                         entered.set()
                         if not release.wait(2):
                             timed_out.append(True)
-                        return verify(snapshot)
+                        return verify(snapshot, addresses)
                     with patch.object(state.Snapshot, 'verify', slow):
                         pending = asyncio.create_task(client.request(method, route, **options))
                         try:

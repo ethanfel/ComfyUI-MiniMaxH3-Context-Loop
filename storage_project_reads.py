@@ -5,10 +5,12 @@ control versions: callers must never give them to a writer or deletion API.
 """
 from contextlib import contextmanager, asynccontextmanager
 from contextvars import ContextVar
+from functools import lru_cache
 import asyncio
 import json
 from pathlib import Path
 import re
+from threading import RLock
 
 if __package__:
     from . import storage_project as project, storage_state as state, storage_resolver as resolver
@@ -18,6 +20,46 @@ else:
     import storage_state as state
     import storage_resolver as resolver
     from branch_scope import branch_id, current_branch
+
+
+class _ReadIndex:
+    """Derived lookup data, shared only by readers of the exact immutable root.
+
+    Do not cache file contents or authority checks here. Direct logical reads
+    need no payload catalogue; directory/physical lookups build it once, with
+    concurrent requests sharing that work. No new files or format are needed.
+    """
+    def __init__(self, snapshot):
+        self.controls = {p: d for p, d in snapshot._validated_root()['documents'].items()
+                         if not p.startswith(('__storage__/', '__migration__/'))}
+        self.reverse_controls = {d['file']['path']: p for p, d in self.controls.items()}
+        self._full = None
+        self._lock = RLock()
+
+    def full(self, snapshot):
+        with self._lock:
+            if self._full is None:
+                payloads = project.payload_catalog(snapshot)
+                physical = {p: d['file']['path'] for p, d in self.controls.items()}
+                physical.update({p: d['file']['path'] for p, d in payloads.items()})
+                reverse = {p: address for address, p in physical.items()}
+                if len(reverse) != len(physical):
+                    raise ValueError('Ambiguous physical owner in pinned read view.')
+                children = {}
+                for address in physical:
+                    parts = address.split('/')
+                    for length in range(len(parts)):
+                        children.setdefault('/'.join(parts[:length]), set()).add(parts[length])
+                self._full = reverse, children
+            return self._full
+
+
+@lru_cache(maxsize=16)
+def _read_index(snapshot, root_signature):
+    return _ReadIndex(snapshot)
+
+
+_INDEX_LOCK = RLock()
 
 
 class ProjectReadView:
@@ -49,8 +91,9 @@ class ProjectReadView:
 
     def _track(self, address):
         session = self._session()
-        if address in session['physical']:
-            key = address if address in session['controls'] else project.payload_key(address)
+        key = address if address in session['controls'] else project.payload_key(address)
+        if key in session['snapshot']._validated_root()['documents']:
+            session['reads'].add(key)
             for trace in self._read_traces.get():
                 trace.add(key)
 
@@ -59,21 +102,27 @@ class ProjectReadView:
         snapshot = self.base or current
         if self.base is not None:
             self.store.validate_snapshot(snapshot, current=current)
-        documents = snapshot.state['documents']
-        controls = {p: d for p, d in documents.items() if not p.startswith(('__storage__/', '__migration__/'))}
-        payloads = project.payload_catalog(snapshot)
-        physical = {p: d['file']['path'] for p, d in controls.items()}
-        physical.update({p: d['file']['path'] for p, d in payloads.items()})
-        reverse = {p: address for address, p in physical.items()}
-        if len(reverse) != len(physical):
-            raise ValueError('Ambiguous physical owner in pinned read view.')
-        children = {}
-        for address in physical:
-            parts = address.split('/')
-            for length in range(len(parts)):
-                children.setdefault('/'.join(parts[:length]), set()).add(parts[length])
-        return {'snapshot': snapshot, 'controls': controls, 'physical': physical,
-                'reverse': reverse, 'children': children}
+        signature = resolver._signature(resolver.confined(self.project, snapshot.reference['path']))
+        with _INDEX_LOCK:
+            index = _read_index(snapshot, signature)
+        return {'snapshot': snapshot, 'controls': index.controls, 'index': index,
+                'reads': set(), 'error': None}
+
+    def _finish_operation(self, session):
+        if session['error'] is not None:
+            raise session['error']
+        # Legacy readers can swallow malformed JSON. Recheck used documents so
+        # corruption cannot silently hide a take, without auditing unrelated
+        # PNG descriptors, archives, and other branches on every UI request.
+        session['snapshot'].verify(tuple(session['reads']))
+
+    def _full_index(self):
+        session = self._session()
+        try:
+            return session['index'].full(session['snapshot'])
+        except (ValueError, OSError) as error:
+            session['error'] = error
+            raise
 
     @contextmanager
     def operation(self):
@@ -84,9 +133,7 @@ class ProjectReadView:
         token = self._operation.set(session)
         try:
             yield
-            # Core legacy readers tolerate malformed JSON. Broken immutable
-            # storage must instead fail the whole read, not silently hide takes.
-            session['snapshot'].verify()
+            self._finish_operation(session)
         finally:
             self._operation.reset(token)
 
@@ -104,7 +151,7 @@ class ProjectReadView:
         token = self._operation.set(session)
         try:
             yield
-            await asyncio.to_thread(session['snapshot'].verify)
+            await asyncio.to_thread(self._finish_operation, session)
         finally:
             self._operation.reset(token)
 
@@ -131,9 +178,13 @@ class ProjectReadView:
             return ''
         address = resolver.artifact_address(address)
         session = self._session()
-        if address in session['reverse']:
-            return session['reverse'][address]
+        index = session['index']
+        if address in index.reverse_controls:
+            return index.reverse_controls[address]
         if address.startswith(('project/', 'media/', 'exports/', '__storage__/', '__migration__/')):
+            reverse, _ = self._full_index()
+            if address in reverse:
+                return reverse[address]
             raise ValueError('Unaccepted storage-internal path is not a logical file.')
         return address
 
@@ -148,7 +199,11 @@ class ProjectReadView:
         session = self._session()
         if address not in session['controls']:
             raise FileNotFoundError('Missing accepted control document: '+address)
-        return session['snapshot'].read(address)
+        try:
+            return session['snapshot'].read(address)
+        except (ValueError, OSError) as error:
+            session['error'] = error
+            raise
 
     def read_workflow_archive(self, value, role):
         """Decode verified ComfyUI archives, not H3 authority/settings.
@@ -179,8 +234,17 @@ class ProjectReadView:
         self._track(address)
         session = self._session()
         if address in session['controls']:
-            session['snapshot'].read(address)  # verify before exposing a read path
-        physical = session['physical'].get(address)
+            self._control_bytes(address)  # verify before exposing a read path
+            physical = session['controls'][address]['file']['path']
+        else:
+            key = project.payload_key(address)
+            physical = None
+            if key in session['snapshot']._validated_root()['documents']:
+                try:
+                    physical = project._indexed_record(session['snapshot'], key)['file']['path']
+                except (ValueError, OSError) as error:
+                    session['error'] = error
+                    raise
         if physical is not None:
             return resolver.confined(self.project, physical)
         missing = resolver.confined(self.project, address)
@@ -189,7 +253,9 @@ class ProjectReadView:
         return missing
 
     def names(self, directory):
-        return sorted(self._session()['children'].get(self.address(directory), ()))
+        address = self.address(directory)
+        _, children = self._full_index()
+        return sorted(children.get(address, ()))
 
     def working_directory(self, run):
         if str(run) != self.project.name:

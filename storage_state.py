@@ -247,18 +247,21 @@ class Snapshot:
         return _reference(self.project, value['file'],
                           'project/'+value['category']+r'/[0-9a-f]{32}\.(?:json|txt)')
 
-    def verify(self):
+    def verify(self, addresses=None):
+        """Audit the whole snapshot, or recheck only a reader's dependencies."""
         root = self._validated_root()
         signatures = {}
-        for descriptor in root['documents'].values():
+        documents = root['documents']
+        selected = documents.values() if addresses is None else (documents[key] for key in addresses)
+        for descriptor in selected:
             path = resolver.confined(self.project, descriptor['file']['path'])
             signatures[path] = resolver._signature(path)
             _reference(self.project, descriptor['file'],
                        'project/'+descriptor['category']+r'/[0-9a-f]{32}\.(?:json|txt)')
         if any(resolver._signature(path) != signature for path, signature in signatures.items()):
             raise ValueError('Control files changed during snapshot verification.')
-        self._root()  # also recheck the immutable root after the document pass
-        return len(root['documents'])
+        self._validated_root()  # recheck without copying the entire file index
+        return len(signatures)
 
 
 @lru_cache(maxsize=16)
@@ -381,6 +384,9 @@ class ControlStore:
         current = current or self.snapshot()
         if not isinstance(current, Snapshot) or current.project != self.project:
             raise ValueError('Current snapshot belongs to a different project.')
+        if base.reference == current.reference:
+            base._validated_root()
+            return base
         original = base._root()
         cursor, node = current, current._root()
         while cursor.reference != base.reference:

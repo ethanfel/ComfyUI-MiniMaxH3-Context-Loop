@@ -280,16 +280,21 @@ class RuntimeTests(unittest.TestCase):
                 captured.run(bound.check)
         asyncio.run(check())
 
-    def test_async_http_binding_still_verifies_untouched_control_files(self):
+    def test_async_http_binding_checks_used_files_not_a_full_project_audit(self):
         from storage_runtime import _ACTIVE
         async def check():
-            with self.assertRaises(ValueError):
-                async with async_runtime_access(self.store) as bound:
-                    descriptor = next(iter(bound.base.state['documents'].values()))
-                    (self.store.project/descriptor['file']['path']).write_bytes(b'corrupt test fixture')
+            async with async_runtime_access(self.store) as bound:
+                address, descriptor = next(iter(bound.base.state['documents'].items()))
+                (self.store.project/descriptor['file']['path']).write_bytes(b'corrupt test fixture')
             self.assertTrue(bound.closed)
             self.assertIsNone(_ACTIVE.get())
             self.assertIsNone(bound.reader._operation.get())
+            with self.assertRaises(ValueError):
+                async with async_runtime_access(self.store) as bound:
+                    bound.reader.read(self.store.project/address)
+            # Explicit audits retain the original full verification behavior.
+            with self.assertRaises(ValueError):
+                self.store.snapshot().verify()
         asyncio.run(check())
 
     def test_export_successor_reads_only_acknowledged_root_and_returns_exact_commits(self):
