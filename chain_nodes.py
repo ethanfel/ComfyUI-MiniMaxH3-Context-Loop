@@ -17024,6 +17024,10 @@ def _preflight_bind_source(
             "source audio.",
             "Connect one H3 Source Timeline to Loop Start.",
             solutions=(
+                "Without a Carousel: Load Audio -> Source Timeline.source_audio; "
+                "connect that timeline to both Preflight and Loop Start. "
+                "For Tagged Audio source_timeline mode, also connect "
+                "Current Scene.state -> Tagged Ref2VA.state.",
                 "Use the legacy source_audio input instead.",
                 "Change each reported setting at its reported scope if "
                 "source audio was not intended."),

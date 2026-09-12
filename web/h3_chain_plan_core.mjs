@@ -1411,6 +1411,27 @@ function validateSeed(seed) {
     }
 }
 
+export function planDefaultSteps(plan, fallback = 20) {
+    return Number(plan?.defaults?.steps ?? plan?.steps ?? fallback);
+}
+
+// Only call for an explicit edit, never while loading/restoring a Plan. Stored
+// JSON defaults take precedence on the backend, so editing the visible default
+// must update that value too. Deliberate per-scene overrides remain untouched.
+export function setPlanDefaultSteps(plan, value) {
+    const steps = Number(value);
+    if (!Number.isInteger(steps) || steps < 1 || steps > 10000) {
+        throw new Error("Default steps must be between 1 and 10000.");
+    }
+    plan.defaults = {...plan.defaults, steps};
+    delete plan.steps;
+    return steps;
+}
+
+export function clearSceneStepOverrides(plan) {
+    for (const shot of plan.shots ?? []) delete shot.steps;
+}
+
 export function calculatePlanTiming(plan, settings = {}) {
     const errors = [];
     const rows = [];
@@ -1426,7 +1447,7 @@ export function calculatePlanTiming(plan, settings = {}) {
     const sourceAudioTarget = String(settings.sourceAudioTarget ?? "off");
     const nodeDefaultDuration = Number(settings.defaultDurationSeconds ?? 15);
     const planDefaultDuration = Number(plan?.defaults?.duration_seconds ?? nodeDefaultDuration);
-    const defaultSteps = Number(plan?.defaults?.steps ?? settings.defaultSteps ?? 20);
+    const defaultSteps = planDefaultSteps(plan, settings.defaultSteps ?? 20);
     const hasSharedPrompt = sharedPrompt(plan ?? {}).text.trim().length > 0;
 
     if (!H3_CONTEXT_LENGTHS.includes(contextLength)) {
@@ -1733,6 +1754,7 @@ export function calculatePlanTiming(plan, settings = {}) {
         }
 
         rows.push({
+            steps,
             index,
             id,
             rawFrames,

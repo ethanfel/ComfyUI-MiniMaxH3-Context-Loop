@@ -1,14 +1,14 @@
 {
-  "id": "158840d8-7fc5-5e78-8fd8-64c8b310f7cd",
+  "id": "f22228b4-5519-582b-85ae-46195107f4c5",
   "revision": 0,
-  "last_node_id": 31,
-  "last_link_id": 60,
+  "last_node_id": 36,
+  "last_link_id": 67,
   "nodes": [
     {
       "id": 1,
       "type": "UNETLoader",
       "pos": [
-        3820,
+        2420,
         180
       ],
       "size": [
@@ -24,7 +24,7 @@
           "name": "MODEL",
           "type": "MODEL",
           "links": [
-            44
+            47
           ]
         }
       ],
@@ -41,7 +41,7 @@
       "id": 2,
       "type": "CLIPLoader",
       "pos": [
-        3820,
+        2420,
         412
       ],
       "size": [
@@ -57,7 +57,7 @@
           "name": "CLIP",
           "type": "CLIP",
           "links": [
-            5
+            8
           ]
         }
       ],
@@ -75,7 +75,7 @@
       "id": 3,
       "type": "KSamplerSelect",
       "pos": [
-        3820,
+        2420,
         668
       ],
       "size": [
@@ -91,7 +91,7 @@
           "name": "SAMPLER",
           "type": "SAMPLER",
           "links": [
-            27
+            30
           ]
         }
       ],
@@ -107,7 +107,7 @@
       "id": 4,
       "type": "VAELoader",
       "pos": [
-        3820,
+        2420,
         876
       ],
       "size": [
@@ -123,9 +123,9 @@
           "name": "VAE",
           "type": "VAE",
           "links": [
-            6,
-            18,
-            31
+            9,
+            21,
+            34
           ]
         }
       ],
@@ -141,7 +141,7 @@
       "id": 5,
       "type": "VAELoader",
       "pos": [
-        3820,
+        2420,
         1084
       ],
       "size": [
@@ -157,8 +157,8 @@
           "name": "VAE",
           "type": "VAE",
           "links": [
-            7,
-            33
+            10,
+            36
           ]
         }
       ],
@@ -172,14 +172,14 @@
     },
     {
       "id": 6,
-      "type": "MiniMaxH3ChainLoopStart",
+      "type": "MiniMaxH3ChainScenePromptEditor",
       "pos": [
-        3820,
-        1292
+        1200,
+        180
       ],
       "size": [
-        360,
-        256
+        1000,
+        840
       ],
       "flags": {},
       "order": 5,
@@ -189,6 +189,43 @@
           "name": "plan",
           "type": "H3_CHAIN_PLAN",
           "link": 1
+        }
+      ],
+      "outputs": [
+        {
+          "name": "plan",
+          "type": "H3_CHAIN_PLAN",
+          "links": [
+            58,
+            62
+          ]
+        }
+      ],
+      "title": "Scene Prompts",
+      "properties": {
+        "Node name for S&R": "MiniMaxH3ChainScenePromptEditor"
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 7,
+      "type": "MiniMaxH3ChainLoopStart",
+      "pos": [
+        3480,
+        516
+      ],
+      "size": [
+        360,
+        256
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "plan",
+          "type": "H3_CHAIN_PLAN",
+          "link": 2
         },
         {
           "name": "source_audio",
@@ -203,12 +240,12 @@
         {
           "name": "source_timeline",
           "type": "H3_SOURCE_TIMELINE",
-          "link": null
+          "link": 3
         },
         {
           "name": "tagged_references",
           "type": "H3_TAGGED_REFERENCES",
-          "link": null
+          "link": 4
         },
         {
           "name": "reference_schedule",
@@ -221,14 +258,14 @@
           "name": "flow",
           "type": "H3_CHAIN_FLOW",
           "links": [
-            49
+            48
           ]
         },
         {
           "name": "state",
           "type": "H3_CHAIN_STATE",
           "links": [
-            2
+            5
           ]
         },
         {
@@ -248,24 +285,24 @@
       ]
     },
     {
-      "id": 7,
+      "id": 8,
       "type": "MiniMaxH3ChainCurrent",
       "pos": [
-        3820,
-        1648
+        3990,
+        180
       ],
       "size": [
         460,
         400
       ],
       "flags": {},
-      "order": 6,
+      "order": 7,
       "mode": 0,
       "inputs": [
         {
           "name": "state",
           "type": "H3_CHAIN_STATE",
-          "link": 2
+          "link": 5
         },
         {
           "name": "source_audio",
@@ -278,26 +315,26 @@
           "name": "state",
           "type": "H3_CHAIN_STATE",
           "links": [
-            15,
-            16,
-            37,
-            38,
-            46,
-            50
+            18,
+            19,
+            40,
+            41,
+            49,
+            55
           ]
         },
         {
           "name": "clip_index",
           "type": "INT",
           "links": [
-            9
+            12
           ]
         },
         {
           "name": "clip_count",
           "type": "INT",
           "links": [
-            10
+            13
           ]
         },
         {
@@ -309,42 +346,42 @@
           "name": "prompt",
           "type": "STRING",
           "links": [
-            11
+            14
           ]
         },
         {
           "name": "noise_seed",
           "type": "INT",
           "links": [
-            4
+            7
           ]
         },
         {
           "name": "length",
           "type": "INT",
           "links": [
-            14
+            17
           ]
         },
         {
           "name": "steps",
           "type": "INT",
           "links": [
-            24
+            27
           ]
         },
         {
           "name": "width",
           "type": "INT",
           "links": [
-            12
+            15
           ]
         },
         {
           "name": "height",
           "type": "INT",
           "links": [
-            13
+            16
           ]
         },
         {
@@ -382,24 +419,24 @@
       ]
     },
     {
-      "id": 8,
+      "id": 9,
       "type": "MiniMaxH3ChainAssemble",
       "pos": [
-        4390,
-        2436
+        2990,
+        3376
       ],
       "size": [
         440,
         360
       ],
       "flags": {},
-      "order": 7,
+      "order": 8,
       "mode": 2,
       "inputs": [
         {
           "name": "manifest",
           "type": "H3_CHAIN_MANIFEST",
-          "link": 3
+          "link": 6
         },
         {
           "name": "source_audio",
@@ -430,7 +467,7 @@
       },
       "widgets_values": [
         "plan",
-        "t2v_studio_recovered_%date:yyyy-MM-dd%",
+        "t2v_normal_recovered_%date:yyyy-MM-dd%",
         256,
         false,
         "",
@@ -440,24 +477,24 @@
       ]
     },
     {
-      "id": 9,
+      "id": 10,
       "type": "RandomNoise",
       "pos": [
-        4430,
-        180
+        3990,
+        680
       ],
       "size": [
         360,
         132
       ],
       "flags": {},
-      "order": 8,
+      "order": 9,
       "mode": 0,
       "inputs": [
         {
           "name": "noise_seed",
           "type": "INT",
-          "link": 4,
+          "link": 7,
           "widget": {
             "name": "noise_seed"
           }
@@ -468,7 +505,7 @@
           "name": "NOISE",
           "type": "NOISE",
           "links": [
-            25
+            28
           ]
         }
       ],
@@ -482,44 +519,44 @@
       ]
     },
     {
-      "id": 10,
+      "id": 11,
       "type": "MiniMaxH3TaggedReferenceToVideo",
       "pos": [
-        4430,
-        412
+        3990,
+        912
       ],
       "size": [
         520,
         752
       ],
       "flags": {},
-      "order": 9,
+      "order": 10,
       "mode": 0,
       "inputs": [
         {
           "name": "clip",
           "type": "CLIP",
-          "link": 5
+          "link": 8
         },
         {
           "name": "vae",
           "type": "VAE",
-          "link": 6
+          "link": 9
         },
         {
           "name": "audio_vae",
           "type": "VAE",
-          "link": 7
+          "link": 10
         },
         {
           "name": "references",
           "type": "H3_TAGGED_REFERENCES",
-          "link": 8
+          "link": 11
         },
         {
           "name": "clip_index",
           "type": "INT",
-          "link": 9,
+          "link": 12,
           "widget": {
             "name": "clip_index"
           }
@@ -527,7 +564,7 @@
         {
           "name": "clip_count",
           "type": "INT",
-          "link": 10,
+          "link": 13,
           "widget": {
             "name": "clip_count"
           }
@@ -535,7 +572,7 @@
         {
           "name": "prompt",
           "type": "STRING",
-          "link": 11,
+          "link": 14,
           "widget": {
             "name": "prompt"
           }
@@ -543,7 +580,7 @@
         {
           "name": "width",
           "type": "INT",
-          "link": 12,
+          "link": 15,
           "widget": {
             "name": "width"
           }
@@ -551,7 +588,7 @@
         {
           "name": "height",
           "type": "INT",
-          "link": 13,
+          "link": 16,
           "widget": {
             "name": "height"
           }
@@ -559,7 +596,7 @@
         {
           "name": "length",
           "type": "INT",
-          "link": 14,
+          "link": 17,
           "widget": {
             "name": "length"
           }
@@ -567,7 +604,7 @@
         {
           "name": "state",
           "type": "H3_CHAIN_STATE",
-          "link": 15
+          "link": 18
         }
       ],
       "outputs": [
@@ -575,14 +612,14 @@
           "name": "positive",
           "type": "CONDITIONING",
           "links": [
-            17
+            20
           ]
         },
         {
           "name": "latent",
           "type": "LATENT",
           "links": [
-            19
+            22
           ]
         },
         {
@@ -626,39 +663,39 @@
       ]
     },
     {
-      "id": 11,
+      "id": 12,
       "type": "MiniMaxH3ChainContext",
       "pos": [
-        4430,
-        1496
+        4660,
+        180
       ],
       "size": [
         420,
         292
       ],
       "flags": {},
-      "order": 10,
+      "order": 11,
       "mode": 0,
       "inputs": [
         {
           "name": "state",
           "type": "H3_CHAIN_STATE",
-          "link": 16
+          "link": 19
         },
         {
           "name": "conditioning",
           "type": "CONDITIONING",
-          "link": 17
+          "link": 20
         },
         {
           "name": "vae",
           "type": "VAE",
-          "link": 18
+          "link": 21
         },
         {
           "name": "latent",
           "type": "LATENT",
-          "link": 19
+          "link": 22
         },
         {
           "name": "audio_vae",
@@ -691,14 +728,14 @@
           "name": "conditioning",
           "type": "CONDITIONING",
           "links": [
-            22
+            25
           ]
         },
         {
           "name": "trim_frames",
           "type": "INT",
           "links": [
-            36
+            39
           ]
         },
         {
@@ -710,7 +747,7 @@
           "name": "latent",
           "type": "LATENT",
           "links": [
-            29
+            32
           ]
         },
         {
@@ -729,24 +766,24 @@
       ]
     },
     {
-      "id": 12,
+      "id": 13,
       "type": "MiniMaxH3SigmaShift",
       "pos": [
-        4430,
-        1264
+        2970,
+        180
       ],
       "size": [
         360,
         132
       ],
       "flags": {},
-      "order": 11,
+      "order": 12,
       "mode": 0,
       "inputs": [
         {
           "name": "model",
           "type": "MODEL",
-          "link": 20
+          "link": 23
         }
       ],
       "outputs": [
@@ -754,8 +791,8 @@
           "name": "MODEL",
           "type": "MODEL",
           "links": [
-            21,
-            23
+            24,
+            26
           ]
         }
       ],
@@ -769,29 +806,29 @@
       ]
     },
     {
-      "id": 13,
+      "id": 14,
       "type": "BasicGuider",
       "pos": [
-        5100,
-        180
+        4660,
+        572
       ],
       "size": [
         360,
         104
       ],
       "flags": {},
-      "order": 12,
+      "order": 13,
       "mode": 0,
       "inputs": [
         {
           "name": "model",
           "type": "MODEL",
-          "link": 21
+          "link": 24
         },
         {
           "name": "conditioning",
           "type": "CONDITIONING",
-          "link": 22
+          "link": 25
         }
       ],
       "outputs": [
@@ -799,7 +836,7 @@
           "name": "GUIDER",
           "type": "GUIDER",
           "links": [
-            26
+            29
           ]
         }
       ],
@@ -810,29 +847,29 @@
       "widgets_values": []
     },
     {
-      "id": 14,
+      "id": 15,
       "type": "BasicScheduler",
       "pos": [
-        4430,
-        1888
+        3990,
+        1764
       ],
       "size": [
         360,
         176
       ],
       "flags": {},
-      "order": 13,
+      "order": 14,
       "mode": 0,
       "inputs": [
         {
           "name": "model",
           "type": "MODEL",
-          "link": 23
+          "link": 26
         },
         {
           "name": "steps",
           "type": "INT",
-          "link": 24,
+          "link": 27,
           "widget": {
             "name": "steps"
           }
@@ -843,7 +880,7 @@
           "name": "SIGMAS",
           "type": "SIGMAS",
           "links": [
-            28
+            31
           ]
         }
       ],
@@ -858,44 +895,44 @@
       ]
     },
     {
-      "id": 15,
+      "id": 16,
       "type": "SamplerCustomAdvanced",
       "pos": [
-        5100,
-        384
+        5230,
+        180
       ],
       "size": [
         360,
         164
       ],
       "flags": {},
-      "order": 14,
+      "order": 15,
       "mode": 0,
       "inputs": [
         {
           "name": "noise",
           "type": "NOISE",
-          "link": 25
+          "link": 28
         },
         {
           "name": "guider",
           "type": "GUIDER",
-          "link": 26
+          "link": 29
         },
         {
           "name": "sampler",
           "type": "SAMPLER",
-          "link": 27
+          "link": 30
         },
         {
           "name": "sigmas",
           "type": "SIGMAS",
-          "link": 28
+          "link": 31
         },
         {
           "name": "latent_image",
           "type": "LATENT",
-          "link": 29
+          "link": 32
         }
       ],
       "outputs": [
@@ -903,10 +940,10 @@
           "name": "output",
           "type": "LATENT",
           "links": [
-            30,
-            32,
-            40,
-            52
+            33,
+            35,
+            43,
+            51
           ]
         },
         {
@@ -922,52 +959,11 @@
       "widgets_values": []
     },
     {
-      "id": 16,
+      "id": 17,
       "type": "VAEDecode",
       "pos": [
-        5610,
-        180
-      ],
-      "size": [
-        360,
-        104
-      ],
-      "flags": {},
-      "order": 15,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "samples",
-          "type": "LATENT",
-          "link": 30
-        },
-        {
-          "name": "vae",
-          "type": "VAE",
-          "link": 31
-        }
-      ],
-      "outputs": [
-        {
-          "name": "IMAGE",
-          "type": "IMAGE",
-          "links": [
-            34
-          ]
-        }
-      ],
-      "title": "VAEDecode",
-      "properties": {
-        "Node name for S&R": "VAEDecode"
-      },
-      "widgets_values": []
-    },
-    {
-      "id": 17,
-      "type": "VAEDecodeAudio",
-      "pos": [
-        5610,
-        384
+        5230,
+        444
       ],
       "size": [
         360,
@@ -980,12 +976,53 @@
         {
           "name": "samples",
           "type": "LATENT",
-          "link": 32
+          "link": 33
         },
         {
           "name": "vae",
           "type": "VAE",
-          "link": 33
+          "link": 34
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            37
+          ]
+        }
+      ],
+      "title": "VAEDecode",
+      "properties": {
+        "Node name for S&R": "VAEDecode"
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 18,
+      "type": "VAEDecodeAudio",
+      "pos": [
+        5230,
+        648
+      ],
+      "size": [
+        360,
+        104
+      ],
+      "flags": {},
+      "order": 17,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "samples",
+          "type": "LATENT",
+          "link": 35
+        },
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": 36
         }
       ],
       "outputs": [
@@ -993,7 +1030,7 @@
           "name": "AUDIO",
           "type": "AUDIO",
           "links": [
-            35
+            38
           ]
         }
       ],
@@ -1004,29 +1041,29 @@
       "widgets_values": []
     },
     {
-      "id": 18,
+      "id": 19,
       "type": "MiniMaxH3LoopTrim",
       "pos": [
-        5610,
-        588
+        5740,
+        180
       ],
       "size": [
         420,
         250
       ],
       "flags": {},
-      "order": 17,
+      "order": 18,
       "mode": 0,
       "inputs": [
         {
           "name": "images",
           "type": "IMAGE",
-          "link": 34
+          "link": 37
         },
         {
           "name": "trim_frames",
           "type": "INT",
-          "link": 36,
+          "link": 39,
           "widget": {
             "name": "trim_frames"
           }
@@ -1034,12 +1071,12 @@
         {
           "name": "audio",
           "type": "AUDIO",
-          "link": 35
+          "link": 38
         },
         {
           "name": "state",
           "type": "H3_CHAIN_STATE",
-          "link": 37
+          "link": 40
         }
       ],
       "outputs": [
@@ -1047,23 +1084,23 @@
           "name": "images",
           "type": "IMAGE",
           "links": [
-            39,
-            51
+            42,
+            50
           ]
         },
         {
           "name": "audio",
           "type": "AUDIO",
           "links": [
-            41,
-            48
+            44,
+            57
           ]
         },
         {
           "name": "images_with_overlap",
           "type": "IMAGE",
           "links": [
-            42
+            45
           ]
         },
         {
@@ -1080,48 +1117,48 @@
         0,
         24,
         true,
-        5
+        0
       ]
     },
     {
-      "id": 19,
+      "id": 20,
       "type": "MiniMaxH3ChainSegmentSave",
       "pos": [
-        6180,
-        180
+        5740,
+        530
       ],
       "size": [
         460,
         220
       ],
       "flags": {},
-      "order": 18,
+      "order": 19,
       "mode": 0,
       "inputs": [
         {
           "name": "state",
           "type": "H3_CHAIN_STATE",
-          "link": 38
+          "link": 41
         },
         {
           "name": "images",
           "type": "IMAGE",
-          "link": 39
+          "link": 42
         },
         {
           "name": "sampled_latent",
           "type": "LATENT",
-          "link": 40
+          "link": 43
         },
         {
           "name": "audio",
           "type": "AUDIO",
-          "link": 41
+          "link": 44
         },
         {
           "name": "images_with_overlap",
           "type": "IMAGE",
-          "link": 42
+          "link": 45
         },
         {
           "name": "denoised_latent",
@@ -1134,7 +1171,7 @@
           "name": "segment",
           "type": "H3_CHAIN_SEGMENT",
           "links": [
-            47
+            56
           ]
         },
         {
@@ -1150,24 +1187,24 @@
       "widgets_values": []
     },
     {
-      "id": 20,
+      "id": 21,
       "type": "MiniMaxH3ChainAssemble",
       "pos": [
-        7090,
-        500
+        7260,
+        180
       ],
       "size": [
         440,
         360
       ],
       "flags": {},
-      "order": 19,
+      "order": 20,
       "mode": 0,
       "inputs": [
         {
           "name": "manifest",
           "type": "H3_CHAIN_MANIFEST",
-          "link": 43
+          "link": 46
         },
         {
           "name": "source_audio",
@@ -1198,7 +1235,7 @@
       },
       "widgets_values": [
         "plan",
-        "t2v_studio_%date:yyyy-MM-dd%",
+        "t2v_normal_%date:yyyy-MM-dd%",
         256,
         false,
         "",
@@ -1208,24 +1245,24 @@
       ]
     },
     {
-      "id": 21,
+      "id": 22,
       "type": "ModelAttentionBackend",
       "pos": [
-        3820,
-        2148
+        2420,
+        2540
       ],
       "size": [
         360,
         108
       ],
       "flags": {},
-      "order": 20,
+      "order": 21,
       "mode": 0,
       "inputs": [
         {
           "name": "model",
           "type": "MODEL",
-          "link": 44
+          "link": 47
         }
       ],
       "outputs": [
@@ -1233,7 +1270,7 @@
           "name": "MODEL",
           "type": "MODEL",
           "links": [
-            20
+            23
           ]
         }
       ],
@@ -1246,175 +1283,44 @@
       ]
     },
     {
-      "id": 22,
-      "type": "MiniMaxH3ChainManifestLoad",
-      "pos": [
-        3820,
-        2436
-      ],
-      "size": [
-        440,
-        200
-      ],
-      "flags": {},
-      "order": 21,
-      "mode": 2,
-      "inputs": [
-        {
-          "name": "plan",
-          "type": "H3_CHAIN_PLAN",
-          "link": 45
-        },
-        {
-          "name": "source_audio",
-          "type": "AUDIO",
-          "link": null
-        },
-        {
-          "name": "external_context",
-          "type": "H3_CHAIN_EXTERNAL_CONTEXT",
-          "link": null
-        },
-        {
-          "name": "source_timeline",
-          "type": "H3_SOURCE_TIMELINE",
-          "link": null
-        }
-      ],
-      "outputs": [
-        {
-          "name": "manifest",
-          "type": "H3_CHAIN_MANIFEST",
-          "links": [
-            3
-          ]
-        },
-        {
-          "name": "manifest_json",
-          "type": "STRING",
-          "links": null
-        },
-        {
-          "name": "status",
-          "type": "STRING",
-          "links": null
-        }
-      ],
-      "title": "RECOVERY • Load Saved Clips",
-      "properties": {
-        "Node name for S&R": "MiniMaxH3ChainManifestLoad"
-      },
-      "widgets_values": []
-    },
-    {
       "id": 23,
-      "type": "MiniMaxH3ChainReview",
-      "pos": [
-        6180,
-        500
-      ],
-      "size": [
-        760,
-        880
-      ],
-      "flags": {},
-      "order": 22,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "state",
-          "type": "H3_CHAIN_STATE",
-          "link": 46
-        },
-        {
-          "name": "segment",
-          "type": "H3_CHAIN_SEGMENT",
-          "link": 47
-        },
-        {
-          "name": "audio",
-          "type": "AUDIO",
-          "link": 48
-        },
-        {
-          "name": "source_audio",
-          "type": "AUDIO",
-          "link": null
-        },
-        {
-          "name": "pending_review",
-          "type": "H3_REVIEW_DISPOSITION",
-          "link": null
-        }
-      ],
-      "outputs": [
-        {
-          "name": "segment",
-          "type": "H3_CHAIN_SEGMENT",
-          "links": [
-            53
-          ]
-        },
-        {
-          "name": "status",
-          "type": "STRING",
-          "links": null
-        }
-      ],
-      "title": "Review Candidates",
-      "properties": {
-        "Node name for S&R": "MiniMaxH3ChainReview"
-      },
-      "widgets_values": [
-        true,
-        false,
-        0,
-        false,
-        true,
-        "checkpointed",
-        1,
-        false
-      ]
-    },
-    {
-      "id": 24,
       "type": "MiniMaxH3ChainLoopEnd",
       "pos": [
-        7090,
-        180
+        6350,
+        1160
       ],
       "size": [
         420,
         220
       ],
       "flags": {},
-      "order": 23,
+      "order": 22,
       "mode": 0,
       "inputs": [
         {
           "name": "flow",
           "type": "H3_CHAIN_FLOW",
-          "link": 49
+          "link": 48
         },
         {
           "name": "state",
           "type": "H3_CHAIN_STATE",
-          "link": 50
+          "link": 49
         },
         {
           "name": "images",
           "type": "IMAGE",
-          "link": 51
+          "link": 50
         },
         {
           "name": "sampled_latent",
           "type": "LATENT",
-          "link": 52
+          "link": 51
         },
         {
           "name": "segment",
           "type": "H3_CHAIN_SEGMENT",
-          "link": 53
+          "link": 52
         }
       ],
       "outputs": [
@@ -1422,7 +1328,7 @@
           "name": "manifest",
           "type": "H3_CHAIN_MANIFEST",
           "links": [
-            43
+            46
           ]
         },
         {
@@ -1451,178 +1357,7 @@
       ]
     },
     {
-      "id": 25,
-      "type": "MiniMaxH3ChainPlanStudio",
-      "pos": [
-        1200,
-        180
-      ],
-      "size": [
-        1080,
-        972
-      ],
-      "flags": {},
-      "order": 24,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "plan",
-          "type": "H3_CHAIN_PLAN",
-          "link": 54
-        },
-        {
-          "name": "source_timeline",
-          "type": "H3_SOURCE_TIMELINE",
-          "link": null
-        },
-        {
-          "name": "source_audio",
-          "type": "AUDIO",
-          "link": null
-        },
-        {
-          "name": "tagged_references",
-          "type": "H3_TAGGED_REFERENCES",
-          "link": 55
-        },
-        {
-          "name": "reference_schedule",
-          "type": "H3_REFERENCE_SCHEDULE",
-          "link": null
-        },
-        {
-          "name": "chain_policy",
-          "type": "H3_CHAIN_POLICY",
-          "link": null
-        },
-        {
-          "name": "project_assets",
-          "type": "H3_PROJECT_ASSETS",
-          "link": 56
-        }
-      ],
-      "outputs": [
-        {
-          "name": "plan",
-          "type": "H3_CHAIN_PLAN",
-          "links": [
-            1,
-            45,
-            57,
-            60
-          ]
-        },
-        {
-          "name": "preflight",
-          "type": "H3_PREFLIGHT_REPORT",
-          "links": null
-        },
-        {
-          "name": "ready",
-          "type": "BOOLEAN",
-          "links": null
-        },
-        {
-          "name": "status",
-          "type": "STRING",
-          "links": null
-        },
-        {
-          "name": "report_json",
-          "type": "STRING",
-          "links": null
-        },
-        {
-          "name": "plan_summary",
-          "type": "STRING",
-          "links": null
-        },
-        {
-          "name": "clip_count",
-          "type": "INT",
-          "links": null
-        },
-        {
-          "name": "width",
-          "type": "INT",
-          "links": null
-        },
-        {
-          "name": "height",
-          "type": "INT",
-          "links": null
-        },
-        {
-          "name": "video_blend_frames",
-          "type": "INT",
-          "links": null
-        }
-      ],
-      "title": "Plan Studio",
-      "properties": {
-        "Node name for S&R": "MiniMaxH3ChainPlanStudio"
-      },
-      "widgets_values": [
-        1,
-        "",
-        true,
-        "{\n  \"shots\": [\n    {\n      \"id\": \"reference_delivery\",\n      \"prompt\": \"subject_definitions:\\n@courier_arrival defines <Subject 1>, the exact adult bicycle courier, including his face, mustard-yellow waterproof jacket, dark teal trousers, charcoal helmet, olive messenger bag, silver bicycle, kraft parcel, proportions, and photographic rendering.\\n@greenhouse_delivery defines the greenhouse delivery destination, including the glass structure, wooden potting table, dense plants, warm practical bulbs, wet floor reflections, and the same courier's end pose.\\n<Subject 1> is the single courier shown by both references. Preserve his identity, clothing, equipment, and scale while allowing the described movement.\\n\\nsummary:\\n[reference generation] One continuous delivery moves <Subject 1> from the wet greenhouse entrance in @courier_arrival toward the completed parcel placement in @greenhouse_delivery.\\n\\nretention_analysis:\\n<Subject 1> (appears in [Shot 1]): fully_preserved - retain the exact face, adult age, body proportions, mustard jacket, teal trousers, helmet, bag, bicycle, and parcel across the complete shot.\\n@courier_arrival: fully_preserved - use its courier identity, wardrobe, bicycle geometry, exterior doorway, wet paving, camera height, and cool daylight as the opening state.\\n@greenhouse_delivery: reference - use its potting table, plants, warm bulbs, interior reflections, and delivery pose as the destination; do not copy the final pose before the action reaches it.\\n\\ndetailed_description:\\n[Shot 1] Begin at the greenhouse entrance with exactly one courier and one bicycle. He walks the bicycle through the open glass door, glances down to confirm the parcel, then turns toward the wooden potting table. The camera tracks laterally at walking speed with restrained handheld movement. He stops the bicycle with his left hand and sets the parcel on the clear corner of the table with his right hand. Preserve face, hands, clothing, bicycle structure, parcel dimensions, plant layout, lighting direction, and coherent reflections. End immediately after the parcel makes contact; no cut, duplicate subject, added customer, text, logo, or early freeze.\\n\\noverall_soundscape:\\nLight rain on greenhouse glass, wet tire roll, a quiet freewheel tick, rubber soles, door hinge, jacket movement, muted ventilation, and soft cardboard contact on wood. Keep every sound synchronized and spatially plausible.\\n\\nnon_diegetic_music:\\nNo non-diegetic music.\",\n      \"length\": 243,\n      \"seed\": \"6101\"\n    },\n    {\n      \"id\": \"reference_confirmation\",\n      \"prompt\": \"subject_definitions:\\n@courier_arrival preserves the exact identity, clothing, bicycle, parcel, exterior weather, and entrance geography established before the boundary.\\n@greenhouse_delivery defines the same greenhouse interior, potting table, plants, warm bulbs, and final delivery area.\\n<Subject 1> is the same single adult courier carried by the incoming H3 Motion Context and both references.\\n\\nsummary:\\n[reference generation] The uninterrupted delivery continues inside the greenhouse after the carried overlap and ends with the courier calmly confirming the parcel placement.\\n\\nretention_analysis:\\n<Subject 1> (appears in [Shot 1]): fully_preserved - preserve the exact face, mustard jacket, teal trousers, helmet, bag, body proportions, bicycle, and motion phase inherited from context.\\n@courier_arrival: reference - retain its cool exterior light and entrance geometry only where still visible behind the courier.\\n@greenhouse_delivery: fully_preserved - retain the greenhouse table, plant arrangement, warm practical lights, reflections, parcel position, and photographic rendering.\\n\\ndetailed_description:\\n[Shot 1] Continue directly from the incoming H3 Motion Context. The carried opening overlap already contains the threshold crossing; begin new action only after it and never reset the stride. The courier rolls the same bicycle beside the potting table, steadies it with his left hand, and places the kraft parcel on the dry corner with his right hand. He checks the label area without showing readable text, then gives a small satisfied smile. Keep exactly one person and one bicycle, stable hands, coherent wheels, continuous camera direction, and consistent light. No cut, duplicate, wardrobe change, or early freeze.\\n\\noverall_soundscape:\\nContinue rain-muted greenhouse ambience, footsteps, tire roll, freewheel ticks, clothing movement, ventilation, and the soft parcel contact without restarting any sound at the scene boundary.\\n\\nnon_diegetic_music:\\nNo non-diegetic music.\",\n      \"length\": 243,\n      \"seed\": \"6102\"\n    }\n  ]\n}",
-        "ref2v_studio_minimax_h3_0_6_json",
-        "",
-        896,
-        672,
-        22,
-        "video",
-        "head",
-        "disabled",
-        "generated_audio",
-        22,
-        10,
-        20,
-        0,
-        20,
-        5,
-        "guide",
-        "",
-        "main"
-      ]
-    },
-    {
-      "id": 26,
-      "type": "MiniMaxH3ChainRichScenePromptEditor",
-      "pos": [
-        2400,
-        180
-      ],
-      "size": [
-        1200,
-        940
-      ],
-      "flags": {},
-      "order": 25,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "plan",
-          "type": "H3_CHAIN_PLAN",
-          "link": 57
-        }
-      ],
-      "outputs": [
-        {
-          "name": "plan",
-          "type": "H3_CHAIN_PLAN",
-          "links": null
-        }
-      ],
-      "title": "Scene Prompts + References",
-      "properties": {
-        "Node name for S&R": "MiniMaxH3ChainRichScenePromptEditor"
-      },
-      "widgets_values": []
-    },
-    {
-      "id": 27,
+      "id": 24,
       "type": "MiniMaxH3ChainPlanModern",
       "pos": [
         80,
@@ -1633,13 +1368,21 @@
         900
       ],
       "flags": {},
-      "order": 26,
+      "order": 23,
       "mode": 0,
       "inputs": [
         {
           "name": "chain_policy",
           "type": "H3_CHAIN_POLICY",
-          "link": 58
+          "link": 53
+        },
+        {
+          "name": "generation_fingerprint",
+          "type": "STRING",
+          "link": 54,
+          "widget": {
+            "name": "generation_fingerprint"
+          }
         },
         {
           "name": "plan_json_input",
@@ -1649,7 +1392,7 @@
         {
           "name": "project_assets",
           "type": "H3_PROJECT_ASSETS",
-          "link": 59
+          "link": null
         }
       ],
       "outputs": [
@@ -1657,7 +1400,7 @@
           "name": "plan",
           "type": "H3_CHAIN_PLAN",
           "links": [
-            54
+            1
           ]
         },
         {
@@ -1692,8 +1435,8 @@
       },
       "widgets_values": [
         "{\n  \"shots\": [\n    {\n      \"id\": \"reference_delivery\",\n      \"prompt\": \"subject_definitions:\\n@courier_arrival defines <Subject 1>, the exact adult bicycle courier, including his face, mustard-yellow waterproof jacket, dark teal trousers, charcoal helmet, olive messenger bag, silver bicycle, kraft parcel, proportions, and photographic rendering.\\n@greenhouse_delivery defines the greenhouse delivery destination, including the glass structure, wooden potting table, dense plants, warm practical bulbs, wet floor reflections, and the same courier's end pose.\\n<Subject 1> is the single courier shown by both references. Preserve his identity, clothing, equipment, and scale while allowing the described movement.\\n\\nsummary:\\n[reference generation] One continuous delivery moves <Subject 1> from the wet greenhouse entrance in @courier_arrival toward the completed parcel placement in @greenhouse_delivery.\\n\\nretention_analysis:\\n<Subject 1> (appears in [Shot 1]): fully_preserved - retain the exact face, adult age, body proportions, mustard jacket, teal trousers, helmet, bag, bicycle, and parcel across the complete shot.\\n@courier_arrival: fully_preserved - use its courier identity, wardrobe, bicycle geometry, exterior doorway, wet paving, camera height, and cool daylight as the opening state.\\n@greenhouse_delivery: reference - use its potting table, plants, warm bulbs, interior reflections, and delivery pose as the destination; do not copy the final pose before the action reaches it.\\n\\ndetailed_description:\\n[Shot 1] Begin at the greenhouse entrance with exactly one courier and one bicycle. He walks the bicycle through the open glass door, glances down to confirm the parcel, then turns toward the wooden potting table. The camera tracks laterally at walking speed with restrained handheld movement. He stops the bicycle with his left hand and sets the parcel on the clear corner of the table with his right hand. Preserve face, hands, clothing, bicycle structure, parcel dimensions, plant layout, lighting direction, and coherent reflections. End immediately after the parcel makes contact; no cut, duplicate subject, added customer, text, logo, or early freeze.\\n\\noverall_soundscape:\\nLight rain on greenhouse glass, wet tire roll, a quiet freewheel tick, rubber soles, door hinge, jacket movement, muted ventilation, and soft cardboard contact on wood. Keep every sound synchronized and spatially plausible.\\n\\nnon_diegetic_music:\\nNo non-diegetic music.\",\n      \"length\": 243,\n      \"seed\": \"6101\"\n    },\n    {\n      \"id\": \"reference_confirmation\",\n      \"prompt\": \"subject_definitions:\\n@courier_arrival preserves the exact identity, clothing, bicycle, parcel, exterior weather, and entrance geography established before the boundary.\\n@greenhouse_delivery defines the same greenhouse interior, potting table, plants, warm bulbs, and final delivery area.\\n<Subject 1> is the same single adult courier carried by the incoming H3 Motion Context and both references.\\n\\nsummary:\\n[reference generation] The uninterrupted delivery continues inside the greenhouse after the carried overlap and ends with the courier calmly confirming the parcel placement.\\n\\nretention_analysis:\\n<Subject 1> (appears in [Shot 1]): fully_preserved - preserve the exact face, mustard jacket, teal trousers, helmet, bag, body proportions, bicycle, and motion phase inherited from context.\\n@courier_arrival: reference - retain its cool exterior light and entrance geometry only where still visible behind the courier.\\n@greenhouse_delivery: fully_preserved - retain the greenhouse table, plant arrangement, warm practical lights, reflections, parcel position, and photographic rendering.\\n\\ndetailed_description:\\n[Shot 1] Continue directly from the incoming H3 Motion Context. The carried opening overlap already contains the threshold crossing; begin new action only after it and never reset the stride. The courier rolls the same bicycle beside the potting table, steadies it with his left hand, and places the kraft parcel on the dry corner with his right hand. He checks the label area without showing readable text, then gives a small satisfied smile. Keep exactly one person and one bicycle, stable hands, coherent wheels, continuous camera direction, and consistent light. No cut, duplicate, wardrobe change, or early freeze.\\n\\noverall_soundscape:\\nContinue rain-muted greenhouse ambience, footsteps, tire roll, freewheel ticks, clothing movement, ventilation, and the soft parcel contact without restarting any sound at the scene boundary.\\n\\nnon_diegetic_music:\\nNo non-diegetic music.\",\n      \"length\": 243,\n      \"seed\": \"6102\"\n    }\n  ]\n}",
-        "ref2v_studio_minimax_h3_0_6_json",
-        "",
+        "ref2v_tagged_source_audio",
+        "h3-v06-release-example",
         896,
         672,
         "video",
@@ -1702,11 +1445,402 @@
         20,
         0,
         20,
-        5
+        0
+      ]
+    },
+    {
+      "id": 25,
+      "type": "MiniMaxH3ChainReview",
+      "pos": [
+        6350,
+        180
+      ],
+      "size": [
+        760,
+        880
+      ],
+      "flags": {},
+      "order": 24,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "state",
+          "type": "H3_CHAIN_STATE",
+          "link": 55
+        },
+        {
+          "name": "segment",
+          "type": "H3_CHAIN_SEGMENT",
+          "link": 56
+        },
+        {
+          "name": "audio",
+          "type": "AUDIO",
+          "link": 57
+        },
+        {
+          "name": "source_audio",
+          "type": "AUDIO",
+          "link": null
+        },
+        {
+          "name": "pending_review",
+          "type": "H3_REVIEW_DISPOSITION",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "segment",
+          "type": "H3_CHAIN_SEGMENT",
+          "links": [
+            52
+          ]
+        },
+        {
+          "name": "status",
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "title": "Review Candidates",
+      "properties": {
+        "Node name for S&R": "MiniMaxH3ChainReview"
+      },
+      "widgets_values": [
+        true,
+        false,
+        0,
+        false,
+        true,
+        "checkpointed",
+        1,
+        false
+      ]
+    },
+    {
+      "id": 26,
+      "type": "MiniMaxH3ChainManifestLoad",
+      "pos": [
+        2420,
+        3376
+      ],
+      "size": [
+        440,
+        200
+      ],
+      "flags": {},
+      "order": 25,
+      "mode": 2,
+      "inputs": [
+        {
+          "name": "plan",
+          "type": "H3_CHAIN_PLAN",
+          "link": 58
+        },
+        {
+          "name": "source_audio",
+          "type": "AUDIO",
+          "link": null
+        },
+        {
+          "name": "external_context",
+          "type": "H3_CHAIN_EXTERNAL_CONTEXT",
+          "link": null
+        },
+        {
+          "name": "source_timeline",
+          "type": "H3_SOURCE_TIMELINE",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "manifest",
+          "type": "H3_CHAIN_MANIFEST",
+          "links": [
+            6
+          ]
+        },
+        {
+          "name": "manifest_json",
+          "type": "STRING",
+          "links": null
+        },
+        {
+          "name": "status",
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "title": "RECOVERY • Load Saved Clips",
+      "properties": {
+        "Node name for S&R": "MiniMaxH3ChainManifestLoad"
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 27,
+      "type": "LoadImage",
+      "pos": [
+        2420,
+        1292
+      ],
+      "size": [
+        400,
+        420
+      ],
+      "flags": {},
+      "order": 26,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            59
+          ]
+        },
+        {
+          "name": "MASK",
+          "type": "MASK",
+          "links": null
+        }
+      ],
+      "title": "Reference Image",
+      "properties": {
+        "Node name for S&R": "LoadImage"
+      },
+      "widgets_values": [
+        "h3_v06_courier_greenhouse_arrival.png"
       ]
     },
     {
       "id": 28,
+      "type": "LoadImage",
+      "pos": [
+        2420,
+        1812
+      ],
+      "size": [
+        400,
+        420
+      ],
+      "flags": {},
+      "order": 27,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            60
+          ]
+        },
+        {
+          "name": "MASK",
+          "type": "MASK",
+          "links": null
+        }
+      ],
+      "title": "Reference Image",
+      "properties": {
+        "Node name for S&R": "LoadImage"
+      },
+      "widgets_values": [
+        "h3_v06_courier_greenhouse_delivery.png"
+      ]
+    },
+    {
+      "id": 29,
+      "type": "MiniMaxH3TaggedPictureReference",
+      "pos": [
+        2420,
+        2748
+      ],
+      "size": [
+        360,
+        148
+      ],
+      "flags": {},
+      "order": 28,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 59
+        },
+        {
+          "name": "previous",
+          "type": "H3_TAGGED_REFERENCES",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "references",
+          "type": "H3_TAGGED_REFERENCES",
+          "links": [
+            61
+          ]
+        },
+        {
+          "name": "reference_fingerprint",
+          "type": "STRING",
+          "links": null
+        },
+        {
+          "name": "status",
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "title": "Tagged Picture Reference",
+      "properties": {
+        "Node name for S&R": "MiniMaxH3TaggedPictureReference"
+      },
+      "widgets_values": [
+        "courier_arrival"
+      ]
+    },
+    {
+      "id": 30,
+      "type": "MiniMaxH3TaggedPictureReference",
+      "pos": [
+        2970,
+        412
+      ],
+      "size": [
+        360,
+        148
+      ],
+      "flags": {},
+      "order": 29,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 60
+        },
+        {
+          "name": "previous",
+          "type": "H3_TAGGED_REFERENCES",
+          "link": 61
+        }
+      ],
+      "outputs": [
+        {
+          "name": "references",
+          "type": "H3_TAGGED_REFERENCES",
+          "links": [
+            67
+          ]
+        },
+        {
+          "name": "reference_fingerprint",
+          "type": "STRING",
+          "links": null
+        },
+        {
+          "name": "status",
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "title": "Tagged Picture Reference",
+      "properties": {
+        "Node name for S&R": "MiniMaxH3TaggedPictureReference"
+      },
+      "widgets_values": [
+        "greenhouse_delivery"
+      ]
+    },
+    {
+      "id": 31,
+      "type": "MiniMaxH3ChainPreflight",
+      "pos": [
+        3480,
+        180
+      ],
+      "size": [
+        360,
+        236
+      ],
+      "flags": {},
+      "order": 30,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "plan",
+          "type": "H3_CHAIN_PLAN",
+          "link": 62
+        },
+        {
+          "name": "source_timeline",
+          "type": "H3_SOURCE_TIMELINE",
+          "link": 64
+        },
+        {
+          "name": "source_audio",
+          "type": "AUDIO",
+          "link": null
+        },
+        {
+          "name": "tagged_references",
+          "type": "H3_TAGGED_REFERENCES",
+          "link": 63
+        },
+        {
+          "name": "reference_schedule",
+          "type": "H3_REFERENCE_SCHEDULE",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "plan",
+          "type": "H3_CHAIN_PLAN",
+          "links": [
+            2
+          ]
+        },
+        {
+          "name": "preflight",
+          "type": "H3_PREFLIGHT_REPORT",
+          "links": null
+        },
+        {
+          "name": "ready",
+          "type": "BOOLEAN",
+          "links": null
+        },
+        {
+          "name": "status",
+          "type": "STRING",
+          "links": null
+        },
+        {
+          "name": "report_json",
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "title": "Chain Preflight",
+      "properties": {
+        "Node name for S&R": "MiniMaxH3ChainPreflight"
+      },
+      "widgets_values": [
+        1,
+        "",
+        true
+      ]
+    },
+    {
+      "id": 32,
       "type": "MiniMaxH3GenerationProfile",
       "pos": [
         80,
@@ -1717,7 +1851,7 @@
         152
       ],
       "flags": {},
-      "order": 27,
+      "order": 31,
       "mode": 0,
       "inputs": [
         {
@@ -1731,7 +1865,7 @@
           "name": "chain_policy",
           "type": "H3_CHAIN_POLICY",
           "links": [
-            58
+            53
           ]
         },
         {
@@ -1745,62 +1879,77 @@
         "Node name for S&R": "MiniMaxH3GenerationProfile"
       },
       "widgets_values": [
-        "Hard picture + protected audio",
-        "Generate audio"
+        "Visual continuity",
+        "Lip-sync to source audio"
       ]
     },
     {
-      "id": 29,
-      "type": "MiniMaxH3ProjectAssetManager",
+      "id": 33,
+      "type": "LoadAudio",
       "pos": [
-        1200,
-        1252
+        2420,
+        2332
       ],
       "size": [
-        1080,
-        880
+        360,
+        108
       ],
       "flags": {},
-      "order": 28,
+      "order": 32,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "AUDIO",
+          "type": "AUDIO",
+          "links": [
+            65,
+            66
+          ]
+        }
+      ],
+      "title": "Load Audio",
+      "properties": {
+        "Node name for S&R": "LoadAudio"
+      },
+      "widgets_values": [
+        ""
+      ]
+    },
+    {
+      "id": 34,
+      "type": "MiniMaxH3SourceTimeline",
+      "pos": [
+        2420,
+        2996
+      ],
+      "size": [
+        360,
+        200
+      ],
+      "flags": {},
+      "order": 33,
       "mode": 0,
       "inputs": [
         {
-          "name": "tagged_references",
-          "type": "H3_TAGGED_REFERENCES",
+          "name": "source_video",
+          "type": "VIDEO",
           "link": null
         },
         {
-          "name": "upscale_model",
-          "type": "UPSCALE_MODEL",
-          "link": null
+          "name": "source_audio",
+          "type": "AUDIO",
+          "link": 65
         }
       ],
       "outputs": [
         {
-          "name": "project_assets",
-          "type": "H3_PROJECT_ASSETS",
-          "links": [
-            56,
-            59
-          ]
-        },
-        {
-          "name": "references",
-          "type": "H3_TAGGED_REFERENCES",
-          "links": [
-            8,
-            55
-          ]
-        },
-        {
-          "name": "reference_fingerprint",
-          "type": "STRING",
-          "links": null
-        },
-        {
           "name": "source_timeline",
           "type": "H3_SOURCE_TIMELINE",
-          "links": null
+          "links": [
+            3,
+            64
+          ]
         },
         {
           "name": "status",
@@ -1808,57 +1957,78 @@
           "links": null
         }
       ],
-      "title": "Project Asset Carousel",
+      "title": "Source Timeline",
       "properties": {
-        "Node name for S&R": "MiniMaxH3ProjectAssetManager"
+        "Node name for S&R": "MiniMaxH3SourceTimeline"
       },
       "widgets_values": [
-        "ref2v_studio_minimax_h3_0_6_json",
         "",
-        "512",
-        "timestamped_video",
         "",
-        ""
+        "ignore",
+        0
       ]
     },
     {
-      "id": 30,
-      "type": "MiniMaxH3ChainCheckpointManager",
+      "id": 35,
+      "type": "MiniMaxH3TaggedAudioReference",
       "pos": [
-        2400,
-        1220
+        2970,
+        660
       ],
       "size": [
-        1200,
-        900
+        360,
+        196
       ],
       "flags": {},
-      "order": 29,
+      "order": 34,
       "mode": 0,
       "inputs": [
         {
-          "name": "plan",
-          "type": "H3_CHAIN_PLAN",
-          "link": 60
+          "name": "audio",
+          "type": "AUDIO",
+          "link": 66
+        },
+        {
+          "name": "previous",
+          "type": "H3_TAGGED_REFERENCES",
+          "link": 67
         }
       ],
       "outputs": [
         {
-          "name": "selected_manifest",
-          "type": "H3_CHAIN_MANIFEST",
+          "name": "references",
+          "type": "H3_TAGGED_REFERENCES",
+          "links": [
+            4,
+            11,
+            63
+          ]
+        },
+        {
+          "name": "reference_fingerprint",
+          "type": "STRING",
+          "links": [
+            54
+          ]
+        },
+        {
+          "name": "status",
+          "type": "STRING",
           "links": null
         }
       ],
-      "title": "Checkpoint Manager",
+      "title": "Tagged Audio Reference",
       "properties": {
-        "Node name for S&R": "MiniMaxH3ChainCheckpointManager"
+        "Node name for S&R": "MiniMaxH3TaggedAudioReference"
       },
       "widgets_values": [
-        ""
+        "soundtrack",
+        "source_timeline",
+        false
       ]
     },
     {
-      "id": 31,
+      "id": 36,
       "type": "Note",
       "pos": [
         80,
@@ -1869,7 +2039,7 @@
         330
       ],
       "flags": {},
-      "order": 30,
+      "order": 35,
       "mode": 0,
       "inputs": [],
       "outputs": [],
@@ -1878,14 +2048,14 @@
         "Node name for S&R": "Note"
       },
       "widgets_values": [
-        "NIGHTLY • 0.6 BASELINE • Ref2V Studio\n\n1. Install models and extra packs listed in example_workflows/README.md.\n2. Copy the supplied assets to ComfyUI/input; select source media where requested.\n3. Set a unique project run name, then edit scenes and the Generation Profile.\n4. Follow the numbered columns left → right and inspect the saved results.\n\nRecovery is disabled by default. Enable it only to assemble saved clips without sampling.\nWorkflow-specific setup and detailed wiring notes:\nexample_workflows/guides/Ref2V Studio - MiniMax H3 0.6.md"
+        "NIGHTLY • 0.6 BASELINE • Ref2V Tagged Source Audio\n\n1. Copy the supplied courier/greenhouse images into ComfyUI/input or replace both Load Image selections.\n2. REQUIRED: upload/select your full soundtrack in Load Audio. No Project Asset Carousel is used.\n3. Set the Production Plan run name and scene lengths to fit your track. Lip-sync to source audio is already selected.\n4. Preflight checks the audio before sampling. Keep Current Scene.state wired to Tagged Ref2VA.state.\n\nRecovery is disabled by default. Enable it only to assemble saved clips without sampling.\nWorkflow-specific setup and detailed wiring notes:\nexample_workflows/guides/Ref2V Tagged Source Audio - MiniMax H3 0.6.md"
       ]
     }
   ],
   "links": [
     [
       1,
-      25,
+      24,
       0,
       6,
       0,
@@ -1893,475 +2063,531 @@
     ],
     [
       2,
-      6,
-      1,
+      31,
+      0,
       7,
+      0,
+      "H3_CHAIN_PLAN"
+    ],
+    [
+      3,
+      34,
+      0,
+      7,
+      3,
+      "H3_SOURCE_TIMELINE"
+    ],
+    [
+      4,
+      35,
+      0,
+      7,
+      4,
+      "H3_TAGGED_REFERENCES"
+    ],
+    [
+      5,
+      7,
+      1,
+      8,
       0,
       "H3_CHAIN_STATE"
     ],
     [
-      3,
-      22,
+      6,
+      26,
       0,
-      8,
+      9,
       0,
       "H3_CHAIN_MANIFEST"
     ],
     [
-      4,
       7,
+      8,
       5,
-      9,
+      10,
       0,
       "INT"
     ],
     [
-      5,
+      8,
       2,
       0,
-      10,
+      11,
       0,
       "CLIP"
     ],
     [
-      6,
+      9,
       4,
       0,
-      10,
+      11,
       1,
       "VAE"
     ],
     [
-      7,
+      10,
       5,
       0,
-      10,
+      11,
       2,
       "VAE"
     ],
     [
-      8,
-      29,
-      1,
-      10,
+      11,
+      35,
+      0,
+      11,
       3,
       "H3_TAGGED_REFERENCES"
     ],
     [
-      9,
-      7,
+      12,
+      8,
       1,
-      10,
+      11,
       4,
       "INT"
     ],
     [
-      10,
-      7,
+      13,
+      8,
       2,
-      10,
+      11,
       5,
       "INT"
     ],
     [
-      11,
-      7,
+      14,
+      8,
       4,
-      10,
+      11,
       6,
       "STRING"
     ],
     [
-      12,
-      7,
-      8,
-      10,
-      7,
-      "INT"
-    ],
-    [
-      13,
-      7,
-      9,
-      10,
-      8,
-      "INT"
-    ],
-    [
-      14,
-      7,
-      6,
-      10,
-      9,
-      "INT"
-    ],
-    [
       15,
+      8,
+      8,
+      11,
       7,
-      0,
-      10,
-      10,
-      "H3_CHAIN_STATE"
+      "INT"
     ],
     [
       16,
-      7,
+      8,
+      9,
+      11,
+      8,
+      "INT"
+    ],
+    [
+      17,
+      8,
+      6,
+      11,
+      9,
+      "INT"
+    ],
+    [
+      18,
+      8,
       0,
       11,
+      10,
+      "H3_CHAIN_STATE"
+    ],
+    [
+      19,
+      8,
+      0,
+      12,
       0,
       "H3_CHAIN_STATE"
     ],
     [
-      17,
-      10,
-      0,
+      20,
       11,
+      0,
+      12,
       1,
       "CONDITIONING"
     ],
     [
-      18,
+      21,
       4,
       0,
-      11,
+      12,
       2,
       "VAE"
     ],
     [
-      19,
-      10,
-      1,
+      22,
       11,
+      1,
+      12,
       3,
       "LATENT"
     ],
     [
-      20,
-      21,
-      0,
-      12,
-      0,
-      "MODEL"
-    ],
-    [
-      21,
-      12,
-      0,
-      13,
-      0,
-      "MODEL"
-    ],
-    [
-      22,
-      11,
-      0,
-      13,
-      1,
-      "CONDITIONING"
-    ],
-    [
       23,
-      12,
+      22,
       0,
-      14,
+      13,
       0,
       "MODEL"
     ],
     [
       24,
-      7,
-      7,
+      13,
+      0,
       14,
+      0,
+      "MODEL"
+    ],
+    [
+      25,
+      12,
+      0,
+      14,
+      1,
+      "CONDITIONING"
+    ],
+    [
+      26,
+      13,
+      0,
+      15,
+      0,
+      "MODEL"
+    ],
+    [
+      27,
+      8,
+      7,
+      15,
       1,
       "INT"
     ],
     [
-      25,
-      9,
+      28,
+      10,
       0,
-      15,
+      16,
       0,
       "NOISE"
     ],
     [
-      26,
-      13,
+      29,
+      14,
       0,
-      15,
+      16,
       1,
       "GUIDER"
     ],
     [
-      27,
+      30,
       3,
       0,
-      15,
+      16,
       2,
       "SAMPLER"
     ],
     [
-      28,
-      14,
-      0,
+      31,
       15,
+      0,
+      16,
       3,
       "SIGMAS"
     ],
     [
-      29,
-      11,
-      3,
-      15,
-      4,
-      "LATENT"
-    ],
-    [
-      30,
-      15,
-      0,
-      16,
-      0,
-      "LATENT"
-    ],
-    [
-      31,
-      4,
-      0,
-      16,
-      1,
-      "VAE"
-    ],
-    [
       32,
-      15,
-      0,
-      17,
-      0,
+      12,
+      3,
+      16,
+      4,
       "LATENT"
     ],
     [
       33,
-      5,
+      16,
+      0,
+      17,
+      0,
+      "LATENT"
+    ],
+    [
+      34,
+      4,
       0,
       17,
       1,
       "VAE"
     ],
     [
-      34,
+      35,
       16,
       0,
       18,
       0,
+      "LATENT"
+    ],
+    [
+      36,
+      5,
+      0,
+      18,
+      1,
+      "VAE"
+    ],
+    [
+      37,
+      17,
+      0,
+      19,
+      0,
       "IMAGE"
     ],
     [
-      35,
-      17,
-      0,
+      38,
       18,
+      0,
+      19,
       2,
       "AUDIO"
     ],
     [
-      36,
-      11,
+      39,
+      12,
       1,
-      18,
+      19,
       1,
       "INT"
     ],
     [
-      37,
-      7,
+      40,
+      8,
       0,
-      18,
+      19,
       3,
       "H3_CHAIN_STATE"
-    ],
-    [
-      38,
-      7,
-      0,
-      19,
-      0,
-      "H3_CHAIN_STATE"
-    ],
-    [
-      39,
-      18,
-      0,
-      19,
-      1,
-      "IMAGE"
-    ],
-    [
-      40,
-      15,
-      0,
-      19,
-      2,
-      "LATENT"
     ],
     [
       41,
-      18,
-      1,
-      19,
-      3,
-      "AUDIO"
+      8,
+      0,
+      20,
+      0,
+      "H3_CHAIN_STATE"
     ],
     [
       42,
-      18,
-      2,
       19,
-      4,
+      0,
+      20,
+      1,
       "IMAGE"
     ],
     [
       43,
-      24,
+      16,
       0,
       20,
+      2,
+      "LATENT"
+    ],
+    [
+      44,
+      19,
+      1,
+      20,
+      3,
+      "AUDIO"
+    ],
+    [
+      45,
+      19,
+      2,
+      20,
+      4,
+      "IMAGE"
+    ],
+    [
+      46,
+      23,
+      0,
+      21,
       0,
       "H3_CHAIN_MANIFEST"
     ],
     [
-      44,
+      47,
       1,
       0,
-      21,
+      22,
       0,
       "MODEL"
     ],
     [
-      45,
-      25,
-      0,
-      22,
-      0,
-      "H3_CHAIN_PLAN"
-    ],
-    [
-      46,
+      48,
       7,
       0,
       23,
-      0,
-      "H3_CHAIN_STATE"
-    ],
-    [
-      47,
-      19,
-      0,
-      23,
-      1,
-      "H3_CHAIN_SEGMENT"
-    ],
-    [
-      48,
-      18,
-      1,
-      23,
-      2,
-      "AUDIO"
-    ],
-    [
-      49,
-      6,
-      0,
-      24,
       0,
       "H3_CHAIN_FLOW"
     ],
     [
-      50,
-      7,
+      49,
+      8,
       0,
-      24,
+      23,
       1,
       "H3_CHAIN_STATE"
     ],
     [
-      51,
-      18,
+      50,
+      19,
       0,
-      24,
+      23,
       2,
       "IMAGE"
     ],
     [
-      52,
-      15,
+      51,
+      16,
       0,
-      24,
+      23,
       3,
       "LATENT"
     ],
     [
-      53,
-      23,
+      52,
+      25,
       0,
-      24,
+      23,
       4,
       "H3_CHAIN_SEGMENT"
     ],
     [
+      53,
+      32,
+      0,
+      24,
+      0,
+      "H3_CHAIN_POLICY"
+    ],
+    [
       54,
-      27,
-      0,
-      25,
-      0,
-      "H3_CHAIN_PLAN"
+      35,
+      1,
+      24,
+      1,
+      "STRING"
     ],
     [
       55,
-      29,
-      1,
+      8,
+      0,
       25,
-      3,
-      "H3_TAGGED_REFERENCES"
+      0,
+      "H3_CHAIN_STATE"
     ],
     [
       56,
-      29,
+      20,
       0,
       25,
-      6,
-      "H3_PROJECT_ASSETS"
+      1,
+      "H3_CHAIN_SEGMENT"
     ],
     [
       57,
+      19,
+      1,
       25,
+      2,
+      "AUDIO"
+    ],
+    [
+      58,
+      6,
       0,
       26,
       0,
       "H3_CHAIN_PLAN"
     ],
     [
-      58,
-      28,
-      0,
+      59,
       27,
       0,
-      "H3_CHAIN_POLICY"
-    ],
-    [
-      59,
       29,
       0,
-      27,
-      2,
-      "H3_PROJECT_ASSETS"
+      "IMAGE"
     ],
     [
       60,
-      25,
+      28,
       0,
       30,
       0,
+      "IMAGE"
+    ],
+    [
+      61,
+      29,
+      0,
+      30,
+      1,
+      "H3_TAGGED_REFERENCES"
+    ],
+    [
+      62,
+      6,
+      0,
+      31,
+      0,
       "H3_CHAIN_PLAN"
+    ],
+    [
+      63,
+      35,
+      0,
+      31,
+      3,
+      "H3_TAGGED_REFERENCES"
+    ],
+    [
+      64,
+      34,
+      0,
+      31,
+      1,
+      "H3_SOURCE_TIMELINE"
+    ],
+    [
+      65,
+      33,
+      0,
+      34,
+      1,
+      "AUDIO"
+    ],
+    [
+      66,
+      33,
+      0,
+      35,
+      0,
+      "AUDIO"
+    ],
+    [
+      67,
+      30,
+      0,
+      35,
+      1,
+      "H3_TAGGED_REFERENCES"
     ]
   ],
   "groups": [
@@ -2370,8 +2596,8 @@
       "bounding": [
         40,
         90,
-        3600,
-        2082
+        2200,
+        1712
       ],
       "color": "#315566",
       "font_size": 24,
@@ -2380,10 +2606,10 @@
     {
       "title": "02 • MODELS & INPUTS",
       "bounding": [
-        3780,
+        2380,
         90,
-        540,
-        2206
+        480,
+        3146
       ],
       "color": "#393f58",
       "font_size": 24,
@@ -2392,22 +2618,22 @@
     {
       "title": "03 • PREPARE SCENE",
       "bounding": [
-        4390,
+        2930,
         90,
-        600,
-        2014
+        440,
+        806
       ],
       "color": "#394c49",
       "font_size": 24,
       "flags": {}
     },
     {
-      "title": "04 • SAMPLE & DECODE",
+      "title": "04 • PREPARE SCENE",
       "bounding": [
-        5060,
+        3440,
         90,
         440,
-        498
+        722
       ],
       "color": "#393f58",
       "font_size": 24,
@@ -2416,44 +2642,80 @@
     {
       "title": "05 • PREPARE SCENE",
       "bounding": [
-        5570,
+        3950,
         90,
-        500,
-        788
+        600,
+        1890
       ],
       "color": "#394c49",
       "font_size": 24,
       "flags": {}
     },
     {
-      "title": "06 • REVIEW & CONTINUE",
+      "title": "06 • PREPARE SCENE",
       "bounding": [
-        6140,
+        4620,
         90,
-        840,
-        1330
+        500,
+        626
       ],
       "color": "#393f58",
       "font_size": 24,
       "flags": {}
     },
     {
-      "title": "07 • DELIVER",
+      "title": "07 • SAMPLE & DECODE",
       "bounding": [
-        7050,
+        5190,
         90,
-        520,
-        810
+        440,
+        702
       ],
       "color": "#394c49",
       "font_size": 24,
       "flags": {}
     },
     {
+      "title": "08 • SAVE & REVIEW",
+      "bounding": [
+        5700,
+        90,
+        540,
+        700
+      ],
+      "color": "#393f58",
+      "font_size": 24,
+      "flags": {}
+    },
+    {
+      "title": "09 • REVIEW & CONTINUE",
+      "bounding": [
+        6310,
+        90,
+        840,
+        1330
+      ],
+      "color": "#394c49",
+      "font_size": 24,
+      "flags": {}
+    },
+    {
+      "title": "10 • DELIVER",
+      "bounding": [
+        7220,
+        90,
+        520,
+        490
+      ],
+      "color": "#393f58",
+      "font_size": 24,
+      "flags": {}
+    },
+    {
       "title": "RECOVERY • DISABLED / NO SAMPLING",
       "bounding": [
-        3780,
-        2346,
+        2380,
+        3286,
         1090,
         490
       ],
@@ -2472,7 +2734,7 @@
       ]
     },
     "comfyui_mcp": {
-      "workflow_uuid": "158840d8-7fc5-5e78-8fd8-64c8b310f7cd"
+      "workflow_uuid": "f22228b4-5519-582b-85ae-46195107f4c5"
     }
   },
   "version": 0.4

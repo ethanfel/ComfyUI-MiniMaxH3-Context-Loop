@@ -11,6 +11,17 @@ to switch branches. This checkout's examples are intended for **nightly**.
 For installation and first-run setup, see
 [Getting started](../docs/GETTING_STARTED.md).
 
+Need separate image/audio loaders without the Carousel? Use
+[Ref2V Tagged Source Audio](<Ref2V Tagged Source Audio - MiniMax H3 0.6.json>).
+Select your full soundtrack in **Load Audio**; Source Timeline and per-scene
+state are already wired. See its [wiring guide](<guides/Ref2V Tagged Source Audio - MiniMax H3 0.6.md>).
+
+**Sampler steps:** the Plan settings control the default; a scene's **Steps
+override** takes precedence. Clear a scene override to inherit the default.
+The displayed inherited value includes defaults saved inside older Plan JSON.
+Changing the default in Production Plan or Plan Studio updates that saved
+default too; it does not overwrite deliberate scene overrides.
+
 Each workflow has a compact **START HERE** note. The longer setup and wiring
 instructions are in its matching Markdown file under [`guides/`](guides/),
 so they no longer take up large empty canvas panels. Titles and preview sizes

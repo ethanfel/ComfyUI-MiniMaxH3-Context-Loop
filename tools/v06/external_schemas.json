@@ -12,6 +12,10 @@
     "note": "External-only offline contracts; H3 Context Loop contracts are imported from this checkout, never from a server."
   },
   "nodes": {
+    "LoadAudio": {
+      "input": {"required": {"audio": ["COMBO", {"audio_upload": true}]}},
+      "output": ["AUDIO"], "output_name": ["AUDIO"], "output_is_list": [false]
+    },
     "MMH3TemporalSplitParamsV10": {
       "input": {"required": {
         "chunk_frames": ["INT", {"default": 73, "min": 5, "max": 100000, "step": 1}],

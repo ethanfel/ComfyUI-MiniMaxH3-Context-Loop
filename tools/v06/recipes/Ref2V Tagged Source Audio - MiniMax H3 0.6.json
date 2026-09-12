@@ -90,6 +90,14 @@
         "plan": [
           "n42",
           "plan"
+        ],
+        "source_timeline": [
+          "source_timeline",
+          "source_timeline"
+        ],
+        "tagged_references": [
+          "source_audio_reference",
+          "references"
         ]
       },
       "label": "MiniMax H3 Context Loop Start — LOOP START / RESUME"
@@ -176,7 +184,7 @@
           "VAE"
         ],
         "references": [
-          "n41",
+          "source_audio_reference",
           "references"
         ],
         "clip_index": [
@@ -484,7 +492,7 @@
       "type": "MiniMaxH3ChainPlanModern",
       "settings": {
         "plan_json": "{\n  \"shots\": [\n    {\n      \"id\": \"reference_delivery\",\n      \"prompt\": \"subject_definitions:\\n@courier_arrival defines <Subject 1>, the exact adult bicycle courier, including his face, mustard-yellow waterproof jacket, dark teal trousers, charcoal helmet, olive messenger bag, silver bicycle, kraft parcel, proportions, and photographic rendering.\\n@greenhouse_delivery defines the greenhouse delivery destination, including the glass structure, wooden potting table, dense plants, warm practical bulbs, wet floor reflections, and the same courier's end pose.\\n<Subject 1> is the single courier shown by both references. Preserve his identity, clothing, equipment, and scale while allowing the described movement.\\n\\nsummary:\\n[reference generation] One continuous delivery moves <Subject 1> from the wet greenhouse entrance in @courier_arrival toward the completed parcel placement in @greenhouse_delivery.\\n\\nretention_analysis:\\n<Subject 1> (appears in [Shot 1]): fully_preserved - retain the exact face, adult age, body proportions, mustard jacket, teal trousers, helmet, bag, bicycle, and parcel across the complete shot.\\n@courier_arrival: fully_preserved - use its courier identity, wardrobe, bicycle geometry, exterior doorway, wet paving, camera height, and cool daylight as the opening state.\\n@greenhouse_delivery: reference - use its potting table, plants, warm bulbs, interior reflections, and delivery pose as the destination; do not copy the final pose before the action reaches it.\\n\\ndetailed_description:\\n[Shot 1] Begin at the greenhouse entrance with exactly one courier and one bicycle. He walks the bicycle through the open glass door, glances down to confirm the parcel, then turns toward the wooden potting table. The camera tracks laterally at walking speed with restrained handheld movement. He stops the bicycle with his left hand and sets the parcel on the clear corner of the table with his right hand. Preserve face, hands, clothing, bicycle structure, parcel dimensions, plant layout, lighting direction, and coherent reflections. End immediately after the parcel makes contact; no cut, duplicate subject, added customer, text, logo, or early freeze.\\n\\noverall_soundscape:\\nLight rain on greenhouse glass, wet tire roll, a quiet freewheel tick, rubber soles, door hinge, jacket movement, muted ventilation, and soft cardboard contact on wood. Keep every sound synchronized and spatially plausible.\\n\\nnon_diegetic_music:\\nNo non-diegetic music.\",\n      \"length\": 243,\n      \"seed\": \"6101\"\n    },\n    {\n      \"id\": \"reference_confirmation\",\n      \"prompt\": \"subject_definitions:\\n@courier_arrival preserves the exact identity, clothing, bicycle, parcel, exterior weather, and entrance geography established before the boundary.\\n@greenhouse_delivery defines the same greenhouse interior, potting table, plants, warm bulbs, and final delivery area.\\n<Subject 1> is the same single adult courier carried by the incoming H3 Motion Context and both references.\\n\\nsummary:\\n[reference generation] The uninterrupted delivery continues inside the greenhouse after the carried overlap and ends with the courier calmly confirming the parcel placement.\\n\\nretention_analysis:\\n<Subject 1> (appears in [Shot 1]): fully_preserved - preserve the exact face, mustard jacket, teal trousers, helmet, bag, body proportions, bicycle, and motion phase inherited from context.\\n@courier_arrival: reference - retain its cool exterior light and entrance geometry only where still visible behind the courier.\\n@greenhouse_delivery: fully_preserved - retain the greenhouse table, plant arrangement, warm practical lights, reflections, parcel position, and photographic rendering.\\n\\ndetailed_description:\\n[Shot 1] Continue directly from the incoming H3 Motion Context. The carried opening overlap already contains the threshold crossing; begin new action only after it and never reset the stride. The courier rolls the same bicycle beside the potting table, steadies it with his left hand, and places the kraft parcel on the dry corner with his right hand. He checks the label area without showing readable text, then gives a small satisfied smile. Keep exactly one person and one bicycle, stable hands, coherent wheels, continuous camera direction, and consistent light. No cut, duplicate, wardrobe change, or early freeze.\\n\\noverall_soundscape:\\nContinue rain-muted greenhouse ambience, footsteps, tire roll, freewheel ticks, clothing movement, ventilation, and the soft parcel contact without restarting any sound at the scene boundary.\\n\\nnon_diegetic_music:\\nNo non-diegetic music.\",\n      \"length\": 243,\n      \"seed\": \"6102\"\n    }\n  ]\n}",
-        "run_name": "ref2v_tagged_minimax_h3_0_6_json",
+        "run_name": "ref2v_tagged_source_audio",
         "generation_fingerprint": "h3-v06-release-example",
         "width": 896,
         "height": 672,
@@ -502,7 +510,7 @@
           "chain_policy"
         ],
         "generation_fingerprint": [
-          "n41",
+          "source_audio_reference",
           "reference_fingerprint"
         ]
       },
@@ -623,8 +631,12 @@
           "plan"
         ],
         "tagged_references": [
-          "n41",
+          "source_audio_reference",
           "references"
+        ],
+        "source_timeline": [
+          "source_timeline",
+          "source_timeline"
         ]
       },
       "label": "MiniMax H3 Chain Preflight — 0.6 PREFLIGHT — BLOCKS BEFORE MODELS"
@@ -634,11 +646,63 @@
       "type": "MiniMaxH3GenerationProfile",
       "settings": {
         "scene_continuity": "Visual continuity",
-        "audio_profile": "Generate audio"
+        "audio_profile": "Lip-sync to source audio"
       },
       "inputs": {},
       "label": "MiniMax H3 Generation Profile — RELEASE DEFAULTS"
+    },
+    {
+      "key": "source_audio_loader",
+      "type": "LoadAudio",
+      "settings": {
+        "audio": ""
+      },
+      "inputs": {}
+    },
+    {
+      "key": "source_timeline",
+      "type": "MiniMaxH3SourceTimeline",
+      "settings": {
+        "video_path": "",
+        "audio_path": "",
+        "embedded_audio": "ignore",
+        "skip_first_frames": 0
+      },
+      "inputs": {
+        "source_audio": [
+          "source_audio_loader",
+          "AUDIO"
+        ]
+      }
+    },
+    {
+      "key": "source_audio_reference",
+      "type": "MiniMaxH3TaggedAudioReference",
+      "settings": {
+        "tag": "soundtrack",
+        "timeline_mode": "source_timeline",
+        "align_audio_reference": false
+      },
+      "inputs": {
+        "audio": [
+          "source_audio_loader",
+          "AUDIO"
+        ],
+        "previous": [
+          "n41",
+          "references"
+        ]
+      }
+    },
+    {
+      "key": "source_audio_help",
+      "type": "Note",
+      "settings": {
+        "text": "INDEPENDENT SOURCE AUDIO — NO CAROUSEL\n\nUpload/select your complete soundtrack in Load Audio. Copy the two supplied courier/greenhouse pictures into ComfyUI/input, or replace the Load Image selections and matching prompt tags. The soundtrack must cover the complete planned timeline; adjust scene lengths to your track.\n\nLoad Audio feeds Source Timeline and Tagged Audio Ref with the same FULL track. Source Timeline feeds both Preflight and Loop Start. Current Scene.state feeds Tagged Ref2VA.state, so source_timeline references resolve the correct window on every scene. Never feed Current Scene.source_audio_slice into Tagged Audio Ref: its fingerprint connection back to the Plan would create a cycle. Leave the legacy source_audio sockets disconnected.\n\nLip-sync to source audio locks the scene's exact source audio and uses the source track in final assembly. The preset alone does not load audio. @soundtrack is available as an optional prompt reference; the supplied picture prompts do not use it. For a voice reference only (not a timed soundtrack), use Tagged Audio Ref timeline_mode=standalone with a generated-audio profile; Source Timeline is not required.\n\nFor an existing Ref2V Tagged workflow, add the same source connections and connect Current Scene.state to Tagged Ref2VA.state."
+      },
+      "inputs": {}
     }
   ],
-  "compatibility_note": "Adapted for **nightly** from the released **0.6 workflow catalog**. H3 settings and sockets are validated against nightly."
+  "compatibility_note": "Adapted for **nightly** from the released **0.6 workflow catalog**. H3 settings and sockets are validated against nightly.",
+  "setup_steps": "1. Copy the supplied courier/greenhouse images into ComfyUI/input or replace both Load Image selections.\n2. REQUIRED: upload/select your full soundtrack in Load Audio. No Project Asset Carousel is used.\n3. Set the Production Plan run name and scene lengths to fit your track. Lip-sync to source audio is already selected.\n4. Preflight checks the audio before sampling. Keep Current Scene.state wired to Tagged Ref2VA.state."
 }

@@ -33,6 +33,7 @@ WORKFLOWS = {
     "Ref2V Studio - MiniMax H3 0.6.json",
     "Ref2V Studio Source Audio - MiniMax H3 0.6.json",
     "Ref2V Tagged - MiniMax H3 0.6.json",
+    "Ref2V Tagged Source Audio - MiniMax H3 0.6.json",
     "T2V Normal - MiniMax H3 0.6.json",
     "T2V Studio - MiniMax H3 0.6.json",
 }
@@ -228,7 +229,18 @@ def validate_modern_authoring(workflow: dict, path: Path) -> None:
     assert plan["widgets_values"][8] == 20
     document = json.loads(plan["widgets_values"][0])
     assert document["shots"]
-    assert all(shot.get("steps") == 20 for shot in document["shots"])
+    inherited_examples = {
+        "Ref2V Basic - MiniMax H3 0.6.json",
+        "Ref2V Tagged - MiniMax H3 0.6.json",
+        "Ref2V Studio - MiniMax H3 0.6.json",
+        "Ref2V Studio Source Audio - MiniMax H3 0.6.json",
+        "Ref2V Tagged Source Audio - MiniMax H3 0.6.json",
+    }
+    if path.name in inherited_examples:
+        assert "steps" not in document.get("defaults", {})
+        assert all("steps" not in shot for shot in document["shots"])
+    else:
+        assert all(shot.get("steps") == 20 for shot in document["shots"])
     assert all(str(shot.get("seed", "")) for shot in document["shots"])
 
     if path.name.startswith(("T2V", "I2V", "FL2V")):
@@ -345,6 +357,45 @@ def validate_assets() -> None:
         assert hashlib.sha256(path.read_bytes()).hexdigest() == digest
 
 
+def validate_independent_source_audio() -> None:
+    workflow = load(EXAMPLES / "Ref2V Tagged Source Audio - MiniMax H3 0.6.json")
+    assert not nodes(workflow, "MiniMaxH3ProjectAssetManager")
+    audio = one(workflow, "LoadAudio")
+    timeline = one(workflow, "MiniMaxH3SourceTimeline")
+    reference = one(workflow, "MiniMaxH3TaggedAudioReference")
+    current = one(workflow, "MiniMaxH3ChainCurrent")
+    conditioner = one(workflow, "MiniMaxH3TaggedReferenceToVideo")
+    plan = one(workflow, "MiniMaxH3ChainPlanModern")
+    assert origin(workflow, timeline, "source_audio") == audio
+    assert origin(workflow, reference, "audio") == audio
+    assert reference["widgets_values"][1] == "source_timeline"
+    assert origin(workflow, conditioner, "state") == current
+    assert origin(workflow, conditioner, "references") == reference
+    assert origin(workflow, plan, "generation_fingerprint") == reference
+    for kind in ("MiniMaxH3ChainPreflight", "MiniMaxH3ChainLoopStart"):
+        target = one(workflow, kind)
+        assert origin(workflow, target, "source_timeline") == timeline
+        assert input_socket(target, "source_audio")["link"] is None
+        assert origin(workflow, target, "tagged_references") == reference
+    assert one(workflow, "MiniMaxH3GenerationProfile")["widgets_values"][1] == "Lip-sync to source audio"
+    assert origin(workflow, one(workflow, "BasicScheduler"), "steps") == current
+    # Check the complete graph, including authoring/fingerprint edges, for a
+    # source_audio_slice -> registry -> Plan -> Current Scene cycle.
+    incoming = {n["id"]: set() for n in workflow["nodes"]}
+    for _, source, _, target, _, _ in workflow["links"]:
+        incoming[target].add(source)
+    resolved = set()
+    while len(resolved) < len(incoming):
+        ready = {key for key, parents in incoming.items()
+                 if key not in resolved and parents <= resolved}
+        assert ready, "Independent source-audio graph has a dependency cycle"
+        resolved.update(ready)
+    for name in ("Ref2V Tagged", "Ref2V Studio"):
+        base = load(EXAMPLES / (name + " - MiniMax H3 0.6.json"))
+        assert origin(base, one(base, "MiniMaxH3TaggedReferenceToVideo"),
+                      "state") == one(base, "MiniMaxH3ChainCurrent")
+
+
 def main() -> None:
     paths = sorted(EXAMPLES.glob("*.json"))
     assert {path.name for path in paths} == WORKFLOWS
@@ -408,6 +459,7 @@ def main() -> None:
                and "@courier_motion_audio" in shot["prompt"]
                for shot in sequential_plan["shots"])
     validate_assets()
+    validate_independent_source_audio()
     print(f"H3 nightly 0.6 baseline: {len(paths)} clean UI documents, current Plan/Profile "
           "authoring, Studio Carousel + Checkpoint Manager, fresh prompts and "
           "references, valid links, collision-free layouts, and legacy archive pass")

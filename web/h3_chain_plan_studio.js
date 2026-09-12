@@ -22,6 +22,9 @@ import {
     normalizeChapterResolution,
     nearestNativeContextWindowStart,
     parsePlanJson,
+    planDefaultSteps,
+    setPlanDefaultSteps,
+    clearSceneStepOverrides,
     planToJson,
     orderedChapters,
     promptTextToLines,
@@ -52,7 +55,7 @@ import {
     visualContextDefaultPartition,
     visualContextMaximumBlocks,
     visualContextPartitionFromBoundaries,
-} from "./h3_chain_plan_core.mjs?v=0.7.8";
+} from "./h3_chain_plan_core.mjs?v=0.7.9";
 import {
     promptRevisionHelp,
     promptRevisionLabel,
@@ -1037,6 +1040,10 @@ function mount(node) {
     }
 
     function writePlanSetting(name, value, rerender = true) {
+        if (name === "default_steps") {
+            setPlanDefaultSteps(state.plan, value);
+            writePlan();
+        }
         const targets = state.planNode ? [state.planNode, node] : [node];
         for (const target of targets) {
             const targetWidget = widget(target, name);
@@ -3346,8 +3353,9 @@ function mount(node) {
         refreshLength();
         const lengthControl = element("span", "h3studio-length h3studio-duration"); lengthControl.append(mode, length);
         const steps = element("input"); steps.type = "number"; steps.min = "1"; steps.max = "10000";
-        steps.placeholder = String(settings().defaultSteps); steps.value = shot.steps ?? "";
-        steps.addEventListener("change", () => { if (steps.value) shot.steps = Number(steps.value); else delete shot.steps; writePlan(); });
+        steps.placeholder = String(planDefaultSteps(state.plan, settings().defaultSteps)); steps.value = shot.steps ?? "";
+        steps.title = "An entered value overrides the default for this scene. Clear it to inherit the displayed Plan default.";
+        steps.addEventListener("change", () => { if (steps.value) shot.steps = Number(steps.value); else delete shot.steps; writePlan(); renderShell(); });
         const promptSeedMode = element("select");
         for (const [value, label] of [
             ["inherit", "Stable derived"],
@@ -3635,7 +3643,7 @@ function mount(node) {
         const form = element("div", "h3studio-form");
         form.append(
             field("Scene ID", id), field("Length", lengthControl),
-            field("Steps", steps),
+            field("Steps override (blank = Plan default)", steps),
             field("Prompt alternatives", promptSeedWrap),
             field("Seed", seedWrap),
             field("LoRA route", loraRoute),
@@ -4076,7 +4084,9 @@ function mount(node) {
         const transition = resolveTransitionPolicy(owner);
         const audioPolicy = resolveAudioPolicy(owner);
         const projectAssetsManaged = inputConnected(owner, "project_assets");
-        const value = (name, fallback = "") => widget(owner, name)?.value ?? fallback;
+        const value = (name, fallback = "") => name === "default_steps"
+            ? planDefaultSteps(state.plan, widget(owner, name)?.value ?? fallback)
+            : widget(owner, name)?.value ?? fallback;
         const section = (title) => element(
             "div", "h3studio-plan-settings-section", title,
         );
@@ -4170,6 +4180,14 @@ function mount(node) {
             field("Context fit", selectControl("crop", [
                 ["disabled", "Resize directly"], ["center", "Preserve aspect + center crop"],
             ], "disabled")),
+        );
+        const overrides = state.plan.shots.filter((shot) => shot.steps != null).length;
+        if (overrides) grid.append(
+            element("div", "h3studio-plan-defaults-help",
+                `${overrides} scene(s) override the default steps.`),
+            button("Use default steps for all scenes",
+                "Clear only per-scene step overrides. Prompts, seeds, and all other settings stay unchanged.",
+                () => { clearSceneStepOverrides(state.plan); writePlan(); renderShell(); }),
         );
         if (modernPlan) {
             grid.append(
