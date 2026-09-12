@@ -130,6 +130,12 @@ function sha256Fallback(bytes) {
     return digest;
 }
 
+export async function sha256Bytes(bytes, cryptoSource = globalThis.crypto) {
+    return typeof cryptoSource?.subtle?.digest === "function"
+        ? new Uint8Array(await cryptoSource.subtle.digest("SHA-256", bytes))
+        : sha256Fallback(bytes);
+}
+
 export async function derivedSceneSeed(
     baseSeed, index, shotId, cryptoSource = globalThis.crypto,
 ) {
@@ -140,9 +146,7 @@ export async function derivedSceneSeed(
     }
     const payload = `${seedBase}:${ordinal}:${String(shotId)}`;
     const encoded = new TextEncoder().encode(payload);
-    const digest = typeof cryptoSource?.subtle?.digest === "function"
-        ? new Uint8Array(await cryptoSource.subtle.digest("SHA-256", encoded))
-        : sha256Fallback(encoded);
+    const digest = await sha256Bytes(encoded, cryptoSource);
     const bytes = digest.subarray(0, 8);
     let result = 0n;
     for (const byte of bytes) result = (result << 8n) | BigInt(byte);

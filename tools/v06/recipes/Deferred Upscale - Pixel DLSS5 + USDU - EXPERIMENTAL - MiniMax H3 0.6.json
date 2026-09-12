@@ -19,7 +19,8 @@
         "start_clip": 1,
         "end_clip": 0,
         "save_latent": false,
-        "segment_crf": 18
+        "segment_crf": 18,
+        "start_mode": "resume"
       },
       "inputs": {
         "source_manifest": [
@@ -141,7 +142,9 @@
         "override_ref_image_size": "inherit",
         "override_reference_policy": "strict",
         "conditioning_width": 0,
-        "conditioning_height": 0
+        "conditioning_height": 0,
+        "override_semantic_anchor_size": "inherit",
+        "override_semantic_anchor_mode": "inherit"
       },
       "inputs": {
         "state": [

@@ -29,7 +29,9 @@ class MiniMaxH3ChainLMSGuide:
                                "caption is encoded; no visual refs/cache are used."}),
                 "video_vae": ("VAE", {
                     "tooltip": "H3 video VAE for encoding the enlarged guide."}),
-                "prompt": ("STRING", {"default": LMS_PROMPT, "multiline": True}),
+                "prompt": ("STRING", {"default": LMS_PROMPT, "multiline": True,
+                    "tooltip": "Enhancement caption for the enlarged video guide. "
+                               "Encoded as text only; does not replace the saved scene prompt."}),
             },
             "optional": {
                 "images": ("IMAGE", {

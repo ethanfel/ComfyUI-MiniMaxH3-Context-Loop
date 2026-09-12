@@ -10,8 +10,12 @@ import re
 
 if __package__:
     from .artifact_paths import artifact_address
+    from .storage_legacy import LegacyStoragePaths
+    from .storage_resolver import resolve_output, logical_output
 else:  # Standalone catalogue diagnostics.
     from artifact_paths import artifact_address
+    from storage_legacy import LegacyStoragePaths
+    from storage_resolver import resolve_output, logical_output
 
 STAGES = ("derope", "latent_upscale", "pixel_upscale", "other")
 
@@ -57,7 +61,29 @@ def processing_stage(config):
         config.get("backend"), "other")
 
 
-def saved_checkpoint_variants(output_root, run_name, originals):
+def saved_checkpoint_variants(output_root, run_name, originals, *, rehearsal_view=None):
+    if rehearsal_view is None:
+        if __package__:
+            from .storage_runtime import current_runtime
+        else:
+            from storage_runtime import current_runtime
+        runtime = current_runtime(output_root, run_name)
+        if runtime is not None:
+            rehearsal_view = runtime.reader
+    if rehearsal_view is not None:
+        if __package__:
+            from .storage_project_reads import ProjectReadView
+        else:
+            from storage_project_reads import ProjectReadView
+        if not isinstance(rehearsal_view, ProjectReadView) or Path(output_root).resolve() != rehearsal_view.output:
+            raise ValueError('Processing catalogue requires this output\'s explicit combined-store reader.')
+        with rehearsal_view.operation():
+            rehearsal_view.validate_run(run_name)
+            return _saved_checkpoint_variants(output_root, run_name, originals, rehearsal_view)
+    return _saved_checkpoint_variants(output_root, run_name, originals)
+
+
+def _saved_checkpoint_variants(output_root, run_name, originals, view=None):
     root = Path(output_root).resolve()
     run = (root / "h3_chains" / run_name).resolve()
     if run.parent != root / "h3_chains":
@@ -66,7 +92,7 @@ def saved_checkpoint_variants(output_root, run_name, originals):
         from .branch_scope import working_directory
     else:
         from branch_scope import working_directory
-    run = Path(working_directory(run, run_name))
+    run = Path(view.working_directory(run_name) if view else working_directory(run, run_name))
     records, warnings, seen, branches = [], [], set(), []
     legacy_profiles = set()
 
@@ -77,11 +103,23 @@ def saved_checkpoint_variants(output_root, run_name, originals):
         return resolved
 
     def read(path):
-        with path.open(encoding="utf-8") as handle:
-            value = json.load(handle)
+        if view:
+            value = view.read(path)
+        else:
+            with path.open(encoding="utf-8") as handle:
+                value = json.load(handle)
         if not isinstance(value, dict):
             raise ValueError("Saved processing metadata is not an object.")
         return value
+
+    def is_dir(path):
+        return bool(view.names(path)) if view else path.is_dir()
+
+    def is_file(path):
+        return view.path(path).is_file() if view else path.is_file()
+
+    def children(path):
+        return [path/name for name in view.names(path)] if view else path.iterdir()
 
     def media(path):
         rel = path.relative_to(root)
@@ -94,11 +132,12 @@ def saved_checkpoint_variants(output_root, run_name, originals):
             return
         legacy_profiles.add(profile)
         manifests = [profile / "upscale_manifest.json"]
-        partial = inside(profile / "partial", profile)
-        if partial.is_dir():
-            manifests.extend(partial.glob("through_clip_*.manifest.json"))
+        partial = inside(Path(LegacyStoragePaths.processing_directories(profile)["partial"]), profile)
+        if is_dir(partial):
+            manifests.extend(path for path in children(partial)
+                             if re.fullmatch(r'through_clip_.*\.manifest\.json', path.name))
         for path in manifests:
-            if not path.is_file():
+            if not is_file(path):
                 continue
             try:
                 path = inside(path, profile)
@@ -114,26 +153,27 @@ def saved_checkpoint_variants(output_root, run_name, originals):
             except (OSError, ValueError, TypeError, KeyError) as exc:
                 warnings.append("%s: %s" % (path.name, exc))
 
-    parents = [run / "upscaled"]
+    parents = [Path(LegacyStoragePaths.processing_container(run))]
     chapters = run / "chapters"
-    if chapters.is_dir():
-        parents.extend(path / "upscaled" for path in chapters.iterdir() if path.is_dir())
+    if is_dir(chapters):
+        parents.extend(Path(LegacyStoragePaths.processing_container(path))
+                       for path in children(chapters) if is_dir(path))
     for parent in parents:
         try:
             inside(parent, run)
-            if not parent.is_dir():
+            if not is_dir(parent):
                 continue
-            profiles = sorted(parent.iterdir())
+            profiles = sorted(children(parent))
         except (OSError, ValueError) as exc:
             warnings.append(str(exc))
             continue
         for profile in profiles:
             try:
                 profile = inside(profile, run)
-                folder = inside(profile / "checkpoints", profile)
-                if not folder.is_dir():
+                folder = inside(Path(LegacyStoragePaths.processing_directories(profile)["checkpoints"]), profile)
+                if not is_dir(folder):
                     continue
-                files = sorted(folder.iterdir())
+                files = sorted(children(folder))
             except (OSError, ValueError) as exc:
                 warnings.append(str(exc))
                 continue
@@ -173,7 +213,12 @@ def saved_checkpoint_variants(output_root, run_name, originals):
                         if not isinstance(address, str) or not address:
                             missing.append(field)
                             continue
-                        artifact = inside(root / artifact_address(address), profile)
+                        # Ownership belongs to the original logical profile;
+                        # physical media may live in an organized take folder.
+                        requested = root / artifact_address(address)
+                        logical = root / (view.logical_output(requested) if view else logical_output(root, requested))
+                        inside(logical, profile)
+                        artifact = view.path(logical) if view else resolve_output(root, logical)
                         if not artifact.is_file():
                             missing.append(field)
                             continue
@@ -267,6 +312,9 @@ def saved_checkpoint_variants(output_root, run_name, originals):
     # Presentation retains the exact history, including deleted/missing takes.
     # It must not reuse the execution-ready subset below or fill its holes
     # with unrelated newer versions of the same scene.
+    # Directory iteration order differs between V1, migrated indexes and filesystems.
+    # A catalogue refresh must not reorder histories simply because files moved.
+    branches.sort(key=lambda item: (item['profile_path'], item['path'], item['kind']))
     display_branches = branches
     # Independent pixel cleanup can leave a hole in an immutable historical
     # lineage. Keep every surviving take visible, but don't offer that history

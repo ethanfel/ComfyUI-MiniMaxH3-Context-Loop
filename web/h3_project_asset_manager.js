@@ -13,7 +13,8 @@ import {
     publishProjectAssetCatalogChanged,
     serializedProjectAssetCatalog,
     serializedProjectAssetIdentity,
-} from "./h3_project_asset_sync_core.mjs?v=0.7.2";
+    projectAssetEditAttempts,
+} from "./h3_project_asset_sync_core.mjs?v=0.7.7";
 import {
     projectMutationOptions,
     registerProjectOwnership,
@@ -455,6 +456,8 @@ function mount(node) {
             "Create a project asset from the selected source: ComfyUI input, another Run, or an H3 backup. A selected Unassigned slot is bound instead."),
         button("Duplicate project…", () => duplicateAssetProject(),
             "Create a new Run containing this asset catalog, folders, lyrics, and project-owned media. Generated clips, checkpoints, and assembled renders are not copied. This Carousel stays on the current Run."),
+        button("Repair input…", () => repairProjectInputs(),
+            "For a hosted migrated project: inspect missing or damaged input assets against its verified backup. Nothing is restored until you confirm; different readable catalogs are not overwritten."),
         button("Refresh", () => refresh()), fileInput,
     );
     const status = el("div", "h3pa-status", "Loading project assets…");
@@ -570,6 +573,7 @@ function mount(node) {
         error.staleProject = true;
         throw error;
     }
+    const editAttempts = projectAssetEditAttempts();
     async function mutationRequest(route, options = {}, operation = captureProjectOperation()) {
         requireCurrentProjectOperation(operation);
         if (state.catalog?.project && state.catalog.project !== operation.run) {
@@ -581,9 +585,12 @@ function mount(node) {
         }
         options = await projectMutationOptions(node, operation.run, options);
         requireCurrentProjectOperation(operation);
+        const attempt = await editAttempts.prepare(route, options);
+        requireCurrentProjectOperation(operation);
         let result;
         try {
-            result = await jsonRequest(route, options);
+            result = await jsonRequest(route, attempt.options);
+            attempt.accept();
         } catch (error) {
             requireCurrentProjectOperation(operation);
             throw error;
@@ -951,6 +958,75 @@ function mount(node) {
             setStatus(`Duplicated ${promptTag(asset)} as ${promptTag(result.asset)} without copying media bytes.`);
         } catch (error) { if (!error.staleProject) setStatus(error.message, true); }
     }
+    // Keep the exact inspection after a failed write: re-inspection of a
+    // partially repaired tree would create a different operation. Durable
+    // browser-reload/job restoration is handled by the production host later.
+    const inputRepairAttempts = new Map();
+    let inputRepairBusy = false;
+    async function repairProjectInputs() {
+        const operation = captureProjectOperation();
+        if (!operation.run) {
+            setStatus("Enter a Run name before inspecting input repair.", true);
+            return;
+        }
+        if (inputRepairBusy) return;
+        inputRepairBusy = true;
+        try {
+            const resuming = inputRepairAttempts.has(operation.run);
+            let inspection = inputRepairAttempts.get(operation.run);
+            if (!inspection) {
+                setStatus(`Inspecting ${operation.run} input files; no changes are being made…`);
+                const result = await jsonRequest(
+                    `/minimax_h3_context_loop/project-assets/input-repair?project=${encodeURIComponent(operation.run)}`,
+                );
+                requireCurrentProjectOperation(operation);
+                inspection = result.inspection;
+                if (inspection?.format !== "h3_input_asset_repair_v1"
+                        || inspection.project !== operation.run || !Array.isArray(inspection.files)) {
+                    throw new Error("The server did not return a valid input repair inspection.");
+                }
+            }
+            if (inspection.repairable !== true) {
+                setStatus("Input repair stopped: a different readable catalog exists. Review or back up that catalog before choosing which version to keep; it was not overwritten.", true);
+                return;
+            }
+            const changes = inspection.files.filter(item => item.action !== "keep");
+            if (!changes.length) {
+                setStatus("Input catalog and media already match the verified backup; nothing to repair.");
+                return;
+            }
+            const damaged = changes.filter(item => item.action === "preserve_restore").length;
+            if (!window.confirm(
+                `${resuming ? "Resume" : "Apply"} input repair for ${operation.run}?\n\n` +
+                `${changes.length} file(s) to restore, including ${damaged} damaged file(s). ` +
+                "Damaged bytes will be preserved in project recovery storage before replacement. " +
+                "Uncatalogued files, saved prompts, seeds and video takes are not changed.\n\n" +
+                (resuming ? "This resumes the same inspected operation, not a new repair." : "Only files from this verified backup will be restored."),
+            )) return;
+            requireCurrentProjectOperation(operation);
+            inputRepairAttempts.set(operation.run, inspection);
+            setStatus(`Repairing ${operation.run} input files…`);
+            const result = await mutationRequest(
+                "/minimax_h3_context_loop/project-assets/repair-inputs", {
+                    method: "POST", headers: {"Content-Type": "application/json"},
+                    body: JSON.stringify({project: operation.run, inspection}),
+                }, operation,
+            );
+            requireCurrentProjectOperation(operation);
+            inputRepairAttempts.delete(operation.run);
+            await refresh();
+            requireCurrentProjectOperation(operation);
+            setStatus(`Input repair complete: ${result.repaired_files.length} restored; ${result.preserved_files.length} damaged file(s) preserved for recovery. Saved catalog and generation settings unchanged.`);
+        } catch (error) {
+            try { requireCurrentProjectOperation(operation); }
+            catch (_stale) { return; }
+            if (!error.staleProject) setStatus(error.message +
+                (inputRepairAttempts.has(operation.run) ? " Use Repair input again to retry this exact operation." : ""), true);
+        } finally {
+            inputRepairBusy = false;
+        }
+    }
+
     async function duplicateAssetProject() {
         const sourceProject = project();
         if (!sourceProject) {
@@ -2198,9 +2274,9 @@ function mount(node) {
                 );
                 list.replaceChildren();
                 const items = source === "chains"
-                    ? payload.items.flatMap((run) => run.assets.map((asset) => ({...asset, run_name: run.run_name})))
+                    ? payload.items.flatMap((run) => run.assets.map((asset) => ({...asset, run_name: run.run_name, source_pin: run.source_pin})))
                     : (source === "project"
-                        ? payload.items.flatMap((run) => run.assets.map((asset) => ({...asset, source_project: run.project})))
+                        ? payload.items.flatMap((run) => run.assets.map((asset) => ({...asset, source_project: run.project, source_pin: run.source_pin})))
                         : payload.items);
                 if (!items.length) {
                     list.append(el("div", "h3pa-empty", source === "project"
@@ -2220,11 +2296,11 @@ function mount(node) {
                             requireCurrentProjectOperation(operation);
                             if (source === "chains") await importAsset({
                                 source, run_name: item.run_name, asset_id: item.id,
-                                slot_id: slot?.id ?? "",
+                                slot_id: slot?.id ?? "", source_pin: item.source_pin,
                             });
                             else if (source === "project") await importAsset({
                                 source, source_project: item.source_project,
-                                asset_id: item.id, slot_id: slot?.id ?? "",
+                                asset_id: item.id, slot_id: slot?.id ?? "", source_pin: item.source_pin,
                             });
                             else await importAsset({
                                 source, path: item.path, slot_id: slot?.id ?? "",

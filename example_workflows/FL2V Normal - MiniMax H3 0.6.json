@@ -306,7 +306,7 @@
       "type": "MiniMaxH3ChainAssemble",
       "pos": [
         2990,
-        3272
+        3312
       ],
       "size": [
         440,
@@ -1186,7 +1186,8 @@
         "Node name for S&R": "MiniMaxH3ChainLoopEnd"
       },
       "widgets_values": [
-        "off"
+        "off",
+        "recursive"
       ]
     },
     {
@@ -1278,7 +1279,7 @@
       "type": "MiniMaxH3ChainManifestLoad",
       "pos": [
         2420,
-        3272
+        3312
       ],
       "size": [
         440,
@@ -1380,7 +1381,7 @@
       ],
       "size": [
         360,
-        216
+        256
       ],
       "flags": {},
       "order": 24,
@@ -1404,6 +1405,16 @@
         {
           "name": "source_timeline",
           "type": "H3_SOURCE_TIMELINE",
+          "link": null
+        },
+        {
+          "name": "tagged_references",
+          "type": "H3_TAGGED_REFERENCES",
+          "link": null
+        },
+        {
+          "name": "reference_schedule",
+          "type": "H3_REFERENCE_SCHEDULE",
           "link": null
         }
       ],
@@ -2379,7 +2390,7 @@
         2380,
         90,
         480,
-        3042
+        3082
       ],
       "color": "#393f58",
       "font_size": 24,
@@ -2473,7 +2484,7 @@
       "title": "RECOVERY • DISABLED / NO SAMPLING",
       "bounding": [
         2380,
-        3182,
+        3222,
         1090,
         490
       ],

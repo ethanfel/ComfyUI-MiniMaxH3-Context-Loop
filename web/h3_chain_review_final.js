@@ -3,6 +3,7 @@ import {api} from "/scripts/api.js";
 import {
     canCaptureFrame, captureCarousels, captureTargetProject, carouselProject,
 } from "./h3_review_capture_core.mjs?v=0.7.0";
+import {projectAssetEditAttempts} from "./h3_project_asset_sync_core.mjs?v=0.7.6";
 import {
     parsePlanJson,
     planToJson,
@@ -930,6 +931,7 @@ function mount(node) {
     });
 
     const captureRow = document.createElement("div");
+    const captureAttempts = projectAssetEditAttempts();
     captureRow.className = "h3r-capture-row";
     const captureButton = document.createElement("button");
     captureButton.type = "button";
@@ -1149,10 +1151,12 @@ function mount(node) {
                 if (node.graph !== sourceGraph) {
                     throw new Error("The Review Gate changed workflows. Reopen frame capture.");
                 }
-                const response = await api.fetchApi(
-                    "/minimax_h3_context_loop/project-assets/capture-frame", requestOptions);
+                const route = "/minimax_h3_context_loop/project-assets/capture-frame";
+                const attempt = captureAttempts.prepare(route, requestOptions);
+                const response = await api.fetchApi(route, attempt.options);
                 const body = await response.json();
                 if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
+                attempt.accept();
                 const savedProject = body.catalog?.project ?? targetProject;
                 captureStatus.textContent =
                     `Saved @${body.asset?.tag ?? tag} to the ${savedProject} Asset Carousel.`;
@@ -1538,6 +1542,7 @@ function mount(node) {
 
     function showCandidate(candidate, announce = false) {
         if (!candidate) return;
+        if (current?.finalization && candidate.revision !== current.finalization.candidate_revision) return;
         const sameCandidate = activeCandidateRevision === candidate.revision;
         activeCandidateRevision = candidate.revision;
         if (candidate.video) {
@@ -1550,8 +1555,9 @@ function mount(node) {
         const candidates = Array.isArray(current?.candidates)
             ? current.candidates : [];
         const selectedIndex = Math.max(0, candidates.indexOf(candidate));
-        candidatePrevious.disabled = selectedIndex <= 0;
-        candidateNext.disabled = selectedIndex >= candidates.length - 1;
+        candidatePrevious.disabled = Boolean(current?.finalization) || selectedIndex <= 0;
+        candidateNext.disabled = Boolean(current?.finalization) || selectedIndex >= candidates.length - 1;
+        candidateKeep.disabled = Boolean(current?.finalization);
         badge.textContent = `clip ${current.clip_index}/${current.clip_count} · ` +
             `candidate ${candidate.number}/${current.candidate_count} · ${current.shot_id}`;
         renderCandidateDots();
@@ -1570,6 +1576,7 @@ function mount(node) {
         for (const candidate of candidates) {
             const dot = document.createElement("button");
             dot.type = "button";
+            dot.disabled = Boolean(current?.finalization);
             dot.className = "h3r-candidate-dot";
             if (candidate.revision === activeCandidateRevision) {
                 dot.classList.add("h3r-selected");
@@ -1610,7 +1617,9 @@ function mount(node) {
         nextCandidateButton.title = running
             ? "Let the current in-flight take finish, then pause before another candidate starts."
             : "Keep any marked takes, resume the workflow, and generate the next candidate for this scene.";
-        approveButton.textContent = current?.deferred_review
+        approveButton.textContent = current?.finalization
+            ? "Finish accepted review cleanup"
+            : current?.deferred_review
             ? "Use this take & prepare resume"
             : batch
             ? running ? "Use this take & stop batch"
@@ -1653,6 +1662,7 @@ function mount(node) {
         moveCandidate(event.key === "ArrowLeft" ? -1 : 1);
     });
     candidateKeep.addEventListener("change", () => {
+        if (current?.finalization) return;
         const candidate = selectedCandidate();
         if (!candidate) return;
         if (candidateKeep.checked) keptCandidateRevisions.add(candidate.revision);
@@ -1690,7 +1700,8 @@ function mount(node) {
             const count = Array.isArray(review.candidates)
                 ? review.candidates.length : Number(review.candidate_count) || 0;
             option.textContent = `Scene ${review.clip_index} · ${review.shot_id} · ` +
-                `${count} candidate${count === 1 ? "" : "s"}`;
+                (review.finalization ? "Accepted · cleanup pending"
+                    : `${count} candidate${count === 1 ? "" : "s"}`);
             deferredSelect.append(option);
         }
         if (deferredReviews.some((review) => review.token === selectedToken)) {
@@ -2064,6 +2075,8 @@ function mount(node) {
         const batchCommand = current.candidate_batch_command_pending;
         const message = current.actionable === false
             ? (current.recovery_instructions || "Recovered review inventory is read-only; resume manually from the saved checkpoint.")
+            : current.finalization
+            ? "Your take and keep list are already accepted. Finish cleanup to prepare resume; this will not reactivate the branch or change your choice."
             : current.deferred_review
             ? "This complete candidate batch is stored on disk. Choose the active continuation, mark alternatives to keep, then prepare the next scene."
             : batchCommand
@@ -2122,28 +2135,30 @@ function mount(node) {
         if (!prepareResponse.ok) {
             throw new Error(prepared.error || `HTTP ${prepareResponse.status}`);
         }
-        const restoreResponse = await api.fetchApi(
-            "/minimax_h3_context_loop/checkpoint-revisions/restore",
-            await projectMutationOptions(node, prepared.run_name, {
-                method: "POST",
-                headers: {"Content-Type": "application/json"},
-                body: JSON.stringify({
-                    run_name: prepared.run_name,
-                    branch_id: submittedReview._branch_id ?? "main",
-                    resume_scene: prepared.resume_scene,
-                    scope_start_scene: 1,
-                    // Changing the selected scene invalidates every later
-                    // mutable pointer, including scenes outside the original
-                    // bounded render range. Immutable revisions stay intact.
-                    scope_end_scene: prepared.clip_count,
-                    activate_only: true,
-                    revisions: prepared.resume_revisions,
+        if (prepared.activation_required !== false) {
+            const restoreResponse = await api.fetchApi(
+                "/minimax_h3_context_loop/checkpoint-revisions/restore",
+                await projectMutationOptions(node, prepared.run_name, {
+                    method: "POST",
+                    headers: {"Content-Type": "application/json"},
+                    body: JSON.stringify({
+                        run_name: prepared.run_name,
+                        branch_id: submittedReview._branch_id ?? "main",
+                        resume_scene: prepared.resume_scene,
+                        scope_start_scene: 1,
+                        // Changing the selected scene invalidates every later
+                        // mutable pointer, including scenes outside the original
+                        // bounded render range. Immutable revisions stay intact.
+                        scope_end_scene: prepared.clip_count,
+                        activate_only: true,
+                        revisions: prepared.resume_revisions,
+                    }),
                 }),
-            }),
-        );
-        const restored = await restoreResponse.json();
-        if (!restoreResponse.ok) {
-            throw new Error(restored.error || `HTTP ${restoreResponse.status}`);
+            );
+            const restored = await restoreResponse.json();
+            if (!restoreResponse.ok) {
+                throw new Error(restored.error || `HTTP ${restoreResponse.status}`);
+            }
         }
         const finalizeResponse = await api.fetchApi(
             "/minimax_h3_context_loop/deferred-review",
@@ -2177,7 +2192,9 @@ function mount(node) {
             ? ` Cleanup warning: ${finalized.cleanup_warnings.join(" ")}` : "";
         status.textContent = `Candidate ${prepared.candidate_number}/${prepared.candidate_count} is active. ` +
             `${prepared.kept_candidate_count} take${prepared.kept_candidate_count === 1 ? "" : "s"} kept; ` +
-            `${finalized.deleted_candidate_count} removed.` +
+            (Number.isInteger(finalized.quarantined_candidate_count)
+                ? `${finalized.quarantined_candidate_count} quarantined (undo available; files retained).`
+                : `${finalized.deleted_candidate_count} removed.`) +
             (saved ? " The Plan seed was updated." : "") +
             (armed ? ` Loop Start is armed for scene ${prepared.resume_scene}; queue when ready.`
                 : hasNextScene
@@ -2364,7 +2381,9 @@ function mount(node) {
             ? [...keptCandidateRevisions] : [];
         const previousRevision = Number(current?.preview_revision ?? 0);
         const incomingRevision = Number(data?.preview_revision ?? 0);
-        if (sameToken && incomingRevision <= previousRevision) return;
+        const finalizationChanged = data?.finalization &&
+            JSON.stringify(current?.finalization) !== JSON.stringify(data.finalization);
+        if (sameToken && incomingRevision <= previousRevision && !finalizationChanged) return;
         const localDeadline = sameToken ? current.local_deadline :
             reviewLocalDeadline(data?.deadline, data?.server_now);
         current = sameToken ? {
@@ -2408,6 +2427,10 @@ function mount(node) {
             // in history without requiring the user to press Refresh.
             setTimeout(() => void refreshResumeOptions({automatic: true}), 0);
             if (deferredReview) setTimeout(refreshDeferredReviews, 0);
+        }
+        if (current.finalization) {
+            activeCandidateRevision = current.finalization.candidate_revision;
+            keptCandidateRevisions = new Set(current.finalization.kept_candidate_revisions);
         }
         if (!sameToken) {
             prompt.value = data.scene_prompt ?? "";

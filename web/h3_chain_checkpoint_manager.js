@@ -1,6 +1,6 @@
 import {app} from "/scripts/app.js";
 import {api} from "/scripts/api.js";
-import {mountStorageInspector} from "./h3_storage_inspector.mjs?v=0.1.0";
+import {mountStorageInspector} from "./h3_storage_inspector.mjs?v=0.7.0";
 import {branchRequestPath, branchSelectionJson} from "./h3_working_branches.mjs?v=0.7.18";
 import {checkpointForkGraph, checkpointGraphKey, checkpointSaveOrder, checkpointGraphOutput, mountCheckpointGraphEdges} from "./h3_checkpoint_graph.mjs?v=0.7.20";
 import {

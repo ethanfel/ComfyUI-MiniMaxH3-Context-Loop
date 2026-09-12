@@ -16,9 +16,11 @@ import uuid
 if __package__:
     from . import processing_persistence as persistence
     from .reference_cache_store import FORMAT, ReferenceTensorStore, objects_digest, tensor_digest
+    from .storage_resolver import resolve_output, logical_output
 else:  # Standalone maintenance CLI, without importing ComfyUI or loading models.
     import processing_persistence as persistence
     from reference_cache_store import FORMAT, ReferenceTensorStore, objects_digest, tensor_digest
+    from storage_resolver import resolve_output, logical_output
 
 
 LEGACY_FORMATS = ("h3_reference_cache_v1", "h3_reference_cache_v2")
@@ -70,15 +72,10 @@ class ReferenceCacheMigrator:
         self.root = Path(output_root).resolve()
 
     def absolute(self, path):
-        value = Path(path)
-        value = value if value.is_absolute() else self.root / value
-        resolved = value.resolve()
-        if not resolved.is_relative_to(self.root):
-            raise ValueError("Reference-cache path escapes the output directory.")
-        return resolved
+        return resolve_output(self.root, path)
 
     def relative(self, path):
-        return str(self.absolute(path).relative_to(self.root))
+        return logical_output(self.root, self.absolute(path))
 
     def read(self, path):
         with open(self.absolute(path), encoding="utf-8") as handle:
@@ -102,7 +99,7 @@ class ReferenceCacheMigrator:
 
     @contextmanager
     def lock(self, metadata_path, blocking=True):
-        path = self.absolute(metadata_path).with_suffix(".conversion.lock")
+        path = self.absolute(self.absolute(metadata_path).with_suffix(".conversion.lock"))
         with open(path, "a+b") as handle:
             if os.name == "nt":
                 import msvcrt

@@ -18,6 +18,27 @@ recovery = importlib.import_module(package.__name__ + ".reference_cache_recovery
 
 
 class RecoveryTests(unittest.TestCase):
+    def test_normal_rebuild_from_migrated_reference_media_without_legacy_folders(self):
+        from comfy_execution.utils import CurrentNodeContext
+        migration = importlib.import_module(package.__name__ + '.storage_migrate')
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        workspace = Path(temp.name)/'job'
+        migration.prepare(self.run, workspace)
+        migration.copy_project(workspace)
+        migration.verify(workspace)
+        migration.activate(workspace)
+        folder_paths.output_directory = str(workspace/'output')
+        with CurrentNodeContext('organized-reference-test', 'conditioning'):
+            first = self.condition()
+            second = self.condition()
+        self.assertIn('rebuilt references from verified saved media', first[-1])
+        self.assertIn('reused references rebuilt from saved media', second[-1])
+        target = workspace/'output/h3_chains/demo'
+        self.assertFalse((target/'project_assets').exists())
+        self.assertFalse((target/'reference_cache').exists())
+        self.assertTrue((workspace/'output/h3_reference_cache').is_dir())
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

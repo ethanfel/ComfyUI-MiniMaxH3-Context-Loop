@@ -32,19 +32,28 @@ Design (HARD SCOPE: no Plan JSON involvement):
 Lightweight-value guarantee: the same rejection rules as
 ``handoff_state._assert_lightweight_value`` apply — no tensors, models,
 conditioning, or live object references may enter a snapshot.
+
+Explicit combined-storage rehearsals keep pending snapshots and decision
+receipts immutable under project/jobs. The decided state is a verified
+projection, also readable after recovery to an ordinary tree. Imported archives
+are not rewritten. Inventory alone never authorizes execution or deletion.
 """
 
 from __future__ import annotations
 
 import json
+import hashlib
 import os
+from pathlib import Path
 import re
 import tempfile
+from contextlib import contextmanager
 from typing import Any
 
 REVIEW_SNAPSHOT_FORMAT_VERSION = "h3_review_snapshot_v1"
 BATCH_FORMAT_VERSION = "h3_candidate_batch_v1"
 HANDOFF_FORMAT_VERSION = "h3_top_level_handoff_v1"
+DECISION_FORMAT_VERSION = "h3_review_decision_v1"
 
 _SNAPSHOT_RE = re.compile(r"^review_[A-Za-z0-9._-]{1,128}\.json$")
 
@@ -100,6 +109,86 @@ def _snapshot_path(run_dir: str, token: str) -> str:
     return os.path.join(_orchestration_dir(run_dir), name)
 
 
+@contextmanager
+def _inventory_io(run_dir: str, *, write: bool = False):
+    """Use the explicitly bound root; never recreate a migrated old directory."""
+    if __package__:
+        from .storage_runtime import current_runtime
+        from .storage_resolver import storage_state
+    else:
+        from storage_runtime import current_runtime
+        from storage_resolver import storage_state
+    directory = Path(os.path.abspath(run_dir))
+    project = (directory.parent.parent if directory.parent.name == 'branches'
+               else directory)
+    port = None
+    if project.parent.name == 'h3_chains':
+        runtime = current_runtime(project.parent.parent, project.name)
+        if runtime is not None:
+            port = runtime.reviews
+        else:
+            # Unsupported/combined/incomplete storage must not fall through to
+            # direct writes or masquerade as an empty review inventory.
+            if storage_state(project) is not None:
+                raise ValueError('Review inventory requires its combined runtime port for relocated storage.')
+    if port is None:
+        yield None
+    else:
+        with port.operation(directory, write=write):
+            yield port
+
+
+def _read_record(path, port):
+    if port is not None:
+        return port.read(path)
+    with open(path, 'r', encoding='utf-8') as handle:
+        return json.load(handle)
+
+
+def _names(directory, port):
+    if port is not None:
+        return port.names(directory)
+    return sorted(os.listdir(directory)) if os.path.isdir(directory) else []
+
+
+def _decision_path(run_dir, token):
+    # Token can be 128 characters. Keep the new nested path bounded and portable.
+    name = hashlib.sha256(str(token).encode('utf-8')).hexdigest()+'.json'
+    return os.path.join(_orchestration_dir(run_dir), 'review_decisions', name)
+
+
+def _snapshot_digest(snapshot):
+    raw = json.dumps(snapshot, ensure_ascii=False, sort_keys=True,
+                     separators=(',', ':'), allow_nan=False).encode('utf-8')
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _snapshot_branch(run_dir, snapshot):
+    directory = Path(os.path.abspath(run_dir))
+    branch = directory.name if directory.parent.name == 'branches' else 'main'
+    if snapshot.get('_branch_id', branch) != branch:
+        raise ValueError('Review snapshot belongs to a different branch.')
+    return branch
+
+
+def _project_decision(run_dir, snapshot, port):
+    """The overlay also works in the independently recovered legacy tree."""
+    try:
+        decision = _read_record(_decision_path(run_dir, snapshot['token']), port)
+    except FileNotFoundError:
+        return snapshot
+    if (not isinstance(decision, dict) or decision.get('format') != DECISION_FORMAT_VERSION
+            or decision.get('token') != snapshot['token']
+            or decision.get('run_name') != snapshot.get('run_name')
+            or decision.get('_branch_id', 'main') != _snapshot_branch(run_dir, snapshot)
+            or decision.get('snapshot_sha256') != _snapshot_digest(snapshot)
+            or not isinstance(decision.get('decision_action'), str)
+            or not isinstance(decision.get('decided_at'), (float, int))):
+        raise ValueError('Review decision does not match its saved snapshot.')
+    return dict(snapshot, status='decided', decision_action=decision['decision_action'],
+                decided_at=decision['decided_at'])
+
+
 def write_review_snapshot(
         run_dir: str, token: str, run_name: str, scene: int,
         candidates: list[dict[str, Any]], deadline: float | None,
@@ -133,7 +222,13 @@ def write_review_snapshot(
     for key, value in snapshot.items():
         _assert_lightweight(key, value)
     path = _snapshot_path(run_dir, token)
-    _atomic_json(path, snapshot)
+    with _inventory_io(run_dir, write=True) as port:
+        if port is None:
+            _atomic_json(path, snapshot)
+        else:
+            branch, _prefix = port.working_root(Path(os.path.abspath(run_dir)))
+            snapshot['_branch_id'] = branch
+            port.create(path, snapshot)
     return path
 
 
@@ -141,45 +236,57 @@ def mark_review_snapshot_decided(run_dir: str, token: str,
                                  action: str, server_now: float) -> bool:
     """Mark a pending snapshot decided (idempotent; False if absent)."""
     path = _snapshot_path(run_dir, token)
-    try:
-        with open(path, "r", encoding="utf-8") as handle:
-            snapshot = json.load(handle)
-    except (OSError, json.JSONDecodeError):
-        return False
-    if not isinstance(snapshot, dict) or \
-            snapshot.get("format") != REVIEW_SNAPSHOT_FORMAT_VERSION:
-        return False
-    if snapshot.get("status") != "pending":
-        return False
-    snapshot["status"] = "decided"
-    snapshot["decision_action"] = str(action)
-    snapshot["decided_at"] = float(server_now)
-    _atomic_json(path, snapshot)
-    return True
+    with _inventory_io(run_dir, write=True) as port:
+        try:
+            snapshot = _read_record(path, port)
+        except FileNotFoundError:
+            return False
+        except (OSError, json.JSONDecodeError):
+            if port is not None:
+                raise
+            return False
+        if not isinstance(snapshot, dict) or \
+                snapshot.get("format") != REVIEW_SNAPSHOT_FORMAT_VERSION:
+            return False
+        projected = _project_decision(run_dir, snapshot, port)
+        if projected.get("status") != "pending":
+            return False
+        if port is None:
+            snapshot.update(status='decided', decision_action=str(action), decided_at=float(server_now))
+            _atomic_json(path, snapshot)
+        else:
+            # An imported snapshot may be an immutable archive. Never reassign
+            # its storage contract just to mark it decided.
+            branch, _prefix = port.working_root(Path(os.path.abspath(run_dir)))
+            decision = dict(format=DECISION_FORMAT_VERSION, token=str(token),
+                run_name=snapshot.get('run_name'), _branch_id=branch,
+                snapshot_sha256=_snapshot_digest(snapshot),
+                decision_action=str(action), decided_at=float(server_now))
+            port.create(_decision_path(run_dir, token), decision)
+        return True
 
 
 def load_review_snapshots(run_dir: str) -> list[dict[str, Any]]:
     """All valid review snapshots for a run (corrupt files are skipped)."""
     directory = _orchestration_dir(run_dir)
-    if not os.path.isdir(directory):
-        return []
     results = []
-    for name in sorted(os.listdir(directory)):
-        if not name.startswith("review_") or not name.endswith(".json"):
-            continue
-        try:
-            with open(os.path.join(directory, name), "r",
-                      encoding="utf-8") as handle:
-                snapshot = json.load(handle)
-        except (OSError, json.JSONDecodeError):
-            continue
-        if not isinstance(snapshot, dict):
-            continue
-        if snapshot.get("format") != REVIEW_SNAPSHOT_FORMAT_VERSION:
-            continue
-        if not isinstance(snapshot.get("token"), str):
-            continue
-        results.append(snapshot)
+    with _inventory_io(run_dir) as port:
+        for name in _names(directory, port):
+            if not _SNAPSHOT_RE.fullmatch(name):
+                continue
+            try:
+                snapshot = _read_record(os.path.join(directory, name), port)
+            except (OSError, json.JSONDecodeError):
+                if port is not None:
+                    raise
+                continue
+            if not isinstance(snapshot, dict):
+                continue
+            if snapshot.get("format") != REVIEW_SNAPSHOT_FORMAT_VERSION:
+                continue
+            if not isinstance(snapshot.get("token"), str):
+                continue
+            results.append(_project_decision(run_dir, snapshot, port))
     return results
 
 
@@ -192,22 +299,21 @@ def load_batch_inventory(run_dir: str) -> list[dict[str, Any]]:
     """
     inventories: list[dict[str, Any]] = []
     directory = _orchestration_dir(run_dir)
-    if not os.path.isdir(directory):
-        return inventories
-    for name in sorted(os.listdir(directory)):
-        if not name.endswith(".json"):
-            continue
-        try:
-            with open(os.path.join(directory, name), "r",
-                      encoding="utf-8") as handle:
-                data = json.load(handle)
-        except (OSError, json.JSONDecodeError):
-            continue
-        if not isinstance(data, dict):
-            continue
-        if data.get("format") == BATCH_FORMAT_VERSION:
-            inventories.append(data)
-        elif data.get("format") == HANDOFF_FORMAT_VERSION and \
-                data.get("action") in ("next_candidate", "await_review"):
-            inventories.append(data)
+    with _inventory_io(run_dir) as port:
+        for name in _names(directory, port):
+            if not name.endswith(".json"):
+                continue
+            try:
+                data = _read_record(os.path.join(directory, name), port)
+            except (OSError, json.JSONDecodeError):
+                if port is not None:
+                    raise
+                continue
+            if not isinstance(data, dict):
+                continue
+            if data.get("format") == BATCH_FORMAT_VERSION:
+                inventories.append(data)
+            elif data.get("format") == HANDOFF_FORMAT_VERSION and \
+                    data.get("action") in ("next_candidate", "await_review"):
+                inventories.append(data)
     return inventories

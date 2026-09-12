@@ -463,7 +463,8 @@
         "segment_crf": 18,
         "video_blend_frames": 0,
         "continuation_mode": "guide",
-        "alternate_take_json": ""
+        "alternate_take_json": "",
+        "working_branch_id": "main"
       },
       "inputs": {
         "plan": [
@@ -507,7 +508,8 @@
       "key": "n36",
       "type": "MiniMaxH3ChainLoopEnd",
       "settings": {
-        "between_scene_cleanup": "off"
+        "between_scene_cleanup": "off",
+        "execution_mode": "recursive"
       },
       "inputs": {
         "flow": [

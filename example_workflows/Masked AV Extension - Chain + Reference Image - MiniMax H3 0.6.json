@@ -180,7 +180,7 @@
       ],
       "size": [
         360,
-        216
+        256
       ],
       "flags": {},
       "order": 5,
@@ -204,6 +204,16 @@
         {
           "name": "source_timeline",
           "type": "H3_SOURCE_TIMELINE",
+          "link": null
+        },
+        {
+          "name": "tagged_references",
+          "type": "H3_TAGGED_REFERENCES",
+          "link": null
+        },
+        {
+          "name": "reference_schedule",
+          "type": "H3_REFERENCE_SCHEDULE",
           "link": null
         }
       ],
@@ -243,7 +253,7 @@
       "type": "MiniMaxH3ChainCurrent",
       "pos": [
         4370,
-        728
+        768
       ],
       "size": [
         460,
@@ -723,7 +733,7 @@
       "type": "MiniMaxH3SigmaShift",
       "pos": [
         4370,
-        496
+        536
       ],
       "size": [
         360,
@@ -1436,7 +1446,8 @@
         "Node name for S&R": "MiniMaxH3ChainLoopEnd"
       },
       "widgets_values": [
-        "off"
+        "off",
+        "recursive"
       ]
     },
     {
@@ -1448,7 +1459,7 @@
       ],
       "size": [
         1080,
-        948
+        972
       ],
       "flags": {},
       "order": 24,
@@ -1573,7 +1584,8 @@
         20,
         39,
         "guide",
-        ""
+        "",
+        "main"
       ]
     },
     {
@@ -1834,7 +1846,7 @@
       "type": "MiniMaxH3ProjectAssetManager",
       "pos": [
         1200,
-        1228
+        1252
       ],
       "size": [
         1080,
@@ -2475,7 +2487,7 @@
         40,
         90,
         3600,
-        2070
+        2082
       ],
       "color": "#315566",
       "font_size": 24,
@@ -2499,7 +2511,7 @@
         4330,
         90,
         540,
-        1078
+        1118
       ],
       "color": "#394c49",
       "font_size": 24,

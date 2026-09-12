@@ -54,10 +54,11 @@ import {
     visualContextPartitionFromBoundaries,
 } from "./h3_chain_plan_core.mjs?v=0.7.8";
 import {
+    promptHistoryOperationId,
     promptRevisionHelp,
     promptRevisionLabel,
     promptRevisionNavigation,
-} from "./h3_prompt_history_core.mjs?v=0.7.0";
+} from "./h3_prompt_history_core.mjs?v=0.7.1";
 import {
     availableReferenceRecords,
     convertTaggedPictureReference,
@@ -1655,6 +1656,8 @@ function mount(node) {
     }
 
     async function historyRequest(query = {}, body = null) {
+        if (body != null) body = {...body,
+            operation_id:body.operation_id ?? promptHistoryOperationId()};
         const suffix = new URLSearchParams(query).toString();
         const response = await api.fetchApi(
             scopedPath(`/minimax_h3_context_loop/prompt-history${suffix ? `?${suffix}` : ""}`, body?.branch_id ?? currentBranch()),

@@ -397,13 +397,18 @@ class RunArchiveManager:
         self.chains_root = os.path.join(self.output_root, "h3_chains")
         self.assets = RunAssetStore(self.output_root, input_root)
 
+    def _runtime(self, run):
+        return self.assets._runtime(run)
+
     def _run_dir(self, run_name: Any) -> tuple[str, str]:
         run = _strict_run_name(run_name)
         path = os.path.realpath(os.path.join(self.chains_root, run))
         root = os.path.realpath(self.output_root)
         if os.path.commonpath([root, path]) != root:
             raise ValueError("H3 run path escapes the output directory.")
-        return working_directory(path, run), run
+        runtime = self._runtime(run)
+        return (runtime.reader.working_directory(run) if runtime is not None
+                else working_directory(path, run)), run
 
     def _active_archive_paths(
             self, directory: str, run: str) -> dict[str, str] | None:
@@ -485,6 +490,13 @@ class RunArchiveManager:
     def _archive_paths(
             self, directory: str, run: str
     ) -> tuple[dict[str, str], bool]:
+        runtime = self._runtime(run)
+        if runtime is not None:
+            # These logical mirrors are published in one accepted transaction,
+            # unlike the independently replaced legacy filesystem mirrors.
+            return ({key: str(path) for key, filename in ARCHIVE_FILENAMES.items()
+                     if (path := runtime.reader.path(os.path.join(directory, filename))).is_file()},
+                    True)
         with checkpoint_run_lock(self.output_root, run):
             active = self._active_archive_paths(directory, run)
         if active is not None:
@@ -504,6 +516,15 @@ class RunArchiveManager:
                 continue
             run_name = _safe_name(entry.name)
             if not run_name or run_name != entry.name:
+                continue
+            try:
+                organized = self._organized_summary(run_name)
+            except (OSError, TypeError, ValueError) as exc:
+                runs.append(dict(run_name=run_name, modified_at=_iso_mtime(entry.path),
+                                 restorable=False, recovery_error=str(exc)))
+                continue
+            if organized is not None:
+                runs.append(organized)
                 continue
             directory = entry.path
             recovery_error = None
@@ -558,10 +579,38 @@ class RunArchiveManager:
         runs.sort(key=lambda item: item["modified_at"], reverse=True)
         return runs
 
+    def _organized_summary(self, run):
+        if __package__:
+            from .storage_host import activated_project
+            from .storage_state import control_rehearsal_access
+            from .storage_project import ProjectStore
+            from .storage_runtime import runtime_access
+        else:
+            from storage_host import activated_project
+            from storage_state import control_rehearsal_access
+            from storage_project import ProjectStore
+            from storage_runtime import runtime_access
+        project = activated_project(self.output_root, run)
+        if project is None:
+            return None
+        with control_rehearsal_access(project), runtime_access(ProjectStore(project)) as runtime:
+            archives, immutable = self._archive_paths(str(project), run)
+            paths = list(archives.values())
+            summary = self.assets.summary(run)
+            newest = max([str(project), *paths], key=os.path.getmtime)
+            return dict(run_name=run, modified_at=_iso_mtime(newest),
+                scene_count=_scene_count_from_plan(archives.get('plan', '')),
+                checkpoint_count=sum(bool(re.fullmatch(r'clip_\d{4}\.json', name))
+                    for name in runtime.reader.names(project/'checkpoints')),
+                restorable=bool(paths), archive_bytes=sum(os.path.getsize(path) for path in paths)
+                    + int(summary.get('asset_bytes') or 0), **summary,
+                sources={key:bool(archives.get(key)) for key in ARCHIVE_FILENAMES},
+                immutable_recovery=immutable)
+
     def load_plan(self, run_name: Any) -> dict[str, Any]:
         """Load the complete saved Plan without restoring archived assets."""
         directory, run = self._run_dir(run_name)
-        if not os.path.isdir(directory):
+        if self._runtime(run) is None and not os.path.isdir(directory):
             raise ValueError("H3 run %r does not exist." % run)
 
         restored: dict[str, Any] = {}

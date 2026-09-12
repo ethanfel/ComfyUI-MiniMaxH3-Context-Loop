@@ -11,8 +11,32 @@ def editorial_source_manifest(manifest, chain):
     """Freeze the selected final-cut pictures without promoting generation takes."""
     if manifest.get("presentation_source") or manifest.get("processing_source"):
         return manifest  # Already resolved, including a DeRoPE-derived source.
+    from .storage_runtime import current_runtime
+    runtime = current_runtime(chain._output_root(), manifest["run_name"])
+    read_options = {"rehearsal_view": runtime.reader} if runtime else {}
     editorial = chain._manifest_editorial(manifest)
     bases = manifest.get("segments") or []
+    # Loop End's ALT manifest already contains the candidate in its segment
+    # list. That is a picture selection, not a new original AV checkpoint.
+    # Restore its immutable base before resolving presentation; otherwise the
+    # stale-cut guard mistakes the candidate for a regenerated base and the
+    # upscale reader consumes ALT audio. Never follow today's active pointer.
+    for position, candidate in enumerate(bases):
+        if candidate.get("take_kind") != "editorial_alternate":
+            continue
+        scene = int(candidate["index"])
+        base_metadata, _ = chain._load_checkpoint_revision(
+            manifest["run_name"], scene, candidate.get("alternate_of_revision"),
+            **read_options)
+        if bases is manifest.get("segments"):
+            bases = list(bases)
+            editorial = chain._json_document(editorial)
+        base = base_metadata["segment"]
+        bases[position] = base
+        editorial["replacements"] = [item for item in editorial.get("replacements", [])
+                                     if int(item["scene"]) != scene] + [{
+            "scene": scene, "scene_id": base["id"], "base_revision": base["revision"],
+            "alternate_revision": candidate["revision"], "media_mode": "picture_only"}]
     pictures = chain._editorial_presentation_segments(
         manifest["run_name"], bases, editorial)
     output = None
@@ -22,7 +46,8 @@ def editorial_source_manifest(manifest, chain):
             continue
         scene = int(base["index"])
         metadata, _path = chain._load_checkpoint_revision(
-            manifest["run_name"], scene, picture["revision"], verify_artifacts=False)
+            manifest["run_name"], scene, picture["revision"], verify_artifacts=False,
+            **read_options)
         resolved = dict(picture)
         compatibility = metadata.get("compatibility") or {}
         geometry = chain.saved_resolution(picture) or compatibility
@@ -49,19 +74,22 @@ def editorial_source_manifest(manifest, chain):
 
 
 def derope_source_manifest(manifest, selection, chain, upscale):
+    from .storage_legacy import LegacyStoragePaths
     manifest = editorial_source_manifest(manifest, chain)
     if not isinstance(selection, dict) or selection.get("stage") != "derope":
         raise ValueError("Unknown Checkpoint Manager processing source.")
+    from .storage_runtime import current_runtime
+    runtime = current_runtime(chain._output_root(), manifest["run_name"])
     root = Path(chain._output_root()).resolve()
-    run = Path(chain._run_dir(manifest))
+    run = Path(runtime.reader.working_directory(manifest["run_name"]) if runtime
+               else chain._run_dir(manifest))
     try:
         profile = (root / artifact_address(selection.get("profile_path"))).resolve()
     except ValueError as exc:
         raise ValueError("DeRoPE source profile is outside the selected run.") from exc
     # Exactly run/upscaled/profile or run/chapters/chapter/upscaled/profile.
     relative = profile.relative_to(run).parts if profile.is_relative_to(run) else ()
-    if not ((len(relative) == 2 and relative[0] == "upscaled") or
-            (len(relative) == 4 and relative[0] == "chapters" and relative[2] == "upscaled")):
+    if not LegacyStoragePaths.is_processing_profile(relative):
         raise ValueError("DeRoPE source profile is outside the selected run.")
 
     def confined(address):
@@ -75,7 +103,10 @@ def derope_source_manifest(manifest, selection, chain, upscale):
     branch = selection.get("branch")
     if not isinstance(branch, dict) or not branch.get("lineage"):
         raise ValueError("Select a saved DeRoPE branch, not an isolated clip.")
-    witness = chain._read_json(str(confined(branch.get("path"))))
+    def read(path):
+        return runtime.reader.read(path) if runtime else chain._read_json(str(path))
+
+    witness = read(confined(branch.get("path")))
     if (not isinstance(witness, dict) or witness.get("run_name") != manifest["run_name"] or
             witness.get("profile") != profile.name):
         raise ValueError("DeRoPE branch belongs to another run/profile.")
@@ -104,7 +135,7 @@ def derope_source_manifest(manifest, selection, chain, upscale):
         path = confined(ref.get("metadata_path"))
         if path != profile / "checkpoints" / ("clip_%04d.%s.json" % (index, revision)):
             raise ValueError("Saved DeRoPE revision address does not match its scene.")
-        metadata = chain._read_json(str(path))
+        metadata = read(path)
         if not isinstance(metadata, dict) or not isinstance(metadata.get("segment"), dict):
             raise ValueError("Saved DeRoPE scene %d has invalid metadata." % index)
         child = metadata.get("segment") or {}

@@ -12,6 +12,8 @@ from .checkpoint_manager import (
 )
 from .checkpoint_variants import validate_processing_lineage
 from .artifact_paths import artifact_address, is_link_or_junction
+from .storage_legacy import LegacyStoragePaths
+from .storage_resolver import resolve_output, logical_output
 
 
 REVISION = re.compile(r"clip_(\d{4})\.([0-9a-f]{32})\.json")
@@ -56,10 +58,19 @@ class ProcessingCheckpointManager:
             raise ValueError("Processing artifact escapes the output directory.")
         if path.exists() and not (path.is_file() or path.is_dir()):
             raise ValueError("Unsupported processing artifact: %s" % address)
-        return path
+        return resolve_output(self.root, path)
 
     def _address(self, path):
-        return path.relative_to(self.root).as_posix()
+        return logical_output(self.root, path)
+
+    def _exists(self, path):
+        return path.exists()
+
+    def _is_file(self, path):
+        return path.is_file()
+
+    def _stat(self, path):
+        return path.stat()
 
     def _read(self, path):
         self._path(self._address(path))
@@ -71,15 +82,8 @@ class ProcessingCheckpointManager:
     def _target(self, run, address):
         address = artifact_address(address)
         path = self._path(address)
-        parts = PurePosixPath(address).parts
-        if len(parts) > 4 and parts[2] == "branches" and re.fullmatch(r"[0-9a-f]{32}", parts[3]):
-            parts = parts[:2] + parts[4:]
-        if not (parts[:2] == ("h3_chains", run) and (
-                len(parts) == 6 and parts[2] == "upscaled" or
-                len(parts) == 8 and parts[2] == "chapters" and parts[4] == "upscaled")
-                and parts[-2] == "checkpoints" and REVISION.fullmatch(parts[-1])):
-            raise ValueError("Select an immutable processed checkpoint inside this run.")
-        if not path.is_file():
+        LegacyStoragePaths.processing_metadata(address, run)
+        if not self._is_file(path):
             raise FileNotFoundError("The selected processed take no longer exists.")
         return path, path.parent.parent
 
@@ -92,13 +96,13 @@ class ProcessingCheckpointManager:
                           if path.is_dir() and re.fullmatch(r"[0-9a-f]{32}", path.name))
         parents = []
         for scope in scopes:
-            parents.append(scope / "upscaled")
+            parents.append(Path(LegacyStoragePaths.processing_container(scope)))
             chapters = self._path(self._address(scope / "chapters"))
             if chapters.is_dir():
                 for chapter in chapters.iterdir():
                     self._path(self._address(chapter))
                     if chapter.is_dir():
-                        parents.append(chapter / "upscaled")
+                        parents.append(Path(LegacyStoragePaths.processing_container(chapter)))
         docs = {}
         for parent in parents:
             self._path(self._address(parent))
@@ -108,10 +112,11 @@ class ProcessingCheckpointManager:
                 self._path(self._address(profile))
                 if not profile.is_dir():
                     continue
-                folder = self._path(self._address(profile / "checkpoints"))
+                dirs = LegacyStoragePaths.processing_directories(profile)
+                folder = self._path(self._address(Path(dirs["checkpoints"])))
                 files = list(folder.glob("clip_*.json")) if folder.is_dir() else []
                 files.append(profile / "upscale_manifest.json")
-                partial = self._path(self._address(profile / "partial"))
+                partial = self._path(self._address(Path(dirs["partial"])))
                 if partial.is_dir():
                     files.extend(partial.glob("through_clip_*.manifest.json"))
                 for path in sorted(files):
@@ -160,10 +165,11 @@ class ProcessingCheckpointManager:
             if not segment.get(field):
                 continue  # Missing optional or already-lost artifacts do not prevent cleanup.
             path = self._path(segment[field])
-            if path != profile / folder / (stem + suffix):
+            expected = self._path(self._address(profile / folder / (stem + suffix)))
+            if path != expected:
                 raise ValueError("Processed take does not own its %s path." % field)
             owned[path] = label
-        pointer = profile / "checkpoints" / ("clip_%04d.json" % scene)
+        pointer = Path(LegacyStoragePaths.processing_files(profile, scene)["metadata"])
         if pointer in docs and docs[pointer]["segment"]["revision"] == revision:
             owned[pointer] = "Current processed-take pointer (cleared, not rolled back)"
 
@@ -237,7 +243,10 @@ class ProcessingCheckpointManager:
                         owned[path] = "Affected branch manifest (invalidated; assembled video kept)"
             else:
                 other = value["segment"]
-                ignored = {"segment"}
+                # A captured workflow can contain unrelated preview selections
+                # and inactive nodes. It is provenance, not a saved dependency;
+                # actual inputs are recorded in segment/source/lineage fields.
+                ignored = {"segment", "execution"}
                 if (refers(value.get("processing_lineage"))
                         and independent_successor(other)
                         and _independent_pixel_take(value)):
@@ -261,9 +270,9 @@ class ProcessingCheckpointManager:
         files = []
         for path, label in sorted(owned.items()):
             self._path(self._address(path))
-            if path.exists() and not path.is_file():
+            if self._exists(path) and not self._is_file(path):
                 raise ValueError("Expected a regular processing file: %s" % path.name)
-            stat = path.stat() if path.exists() else None
+            stat = self._stat(path) if self._exists(path) else None
             files.append({"path": self._address(path), "label": label, "owned": True,
                           "shared": False, "exists": stat is not None,
                           "size_bytes": stat.st_size if stat else 0,
@@ -290,13 +299,21 @@ class ProcessingCheckpointManager:
                                 "Other processed takes and profiles", "Assembled videos, run archives and prompt history", *png_kept]}
 
     def deletion_preview(self, run_name, metadata_path):
+        from .storage_runtime import current_runtime
+        runtime = current_runtime(self.root, run_name)
+        if runtime is not None:
+            return runtime.retention.preview_processing(metadata_path)
         from .png_export_cleanup import locked_exports
         run = _strict_run_name(run_name)
         with checkpoint_run_lock(str(self.root), run), locked_exports(self, run) as exports:
             return {k: v for k, v in self._preview(run, metadata_path, exports).items()
                     if not k.startswith("_")}
 
-    def delete(self, run_name, metadata_path, expected_snapshot=""):
+    def delete(self, run_name, metadata_path, expected_snapshot="", *, ownership_proof=None):
+        from .storage_runtime import current_runtime
+        runtime = current_runtime(self.root, run_name)
+        if runtime is not None:
+            return runtime.retention.delete_processing(metadata_path, expected_snapshot, proof=ownership_proof)
         from .png_export_cleanup import locked_exports
         from .processing_persistence import atomic_json
         run = _strict_run_name(run_name)

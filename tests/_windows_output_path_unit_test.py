@@ -19,6 +19,9 @@ import asset_store  # noqa: E402
 import checkpoint_manager  # noqa: E402
 import project_assets  # noqa: E402
 import run_manager  # noqa: E402
+import storage_resolver  # noqa: E402
+import branch_scope  # noqa: E402
+from artifact_paths import artifact_address  # noqa: E402
 
 
 def chain_paths(os_module, output_root, input_root):
@@ -30,7 +33,26 @@ def chain_paths(os_module, output_root, input_root):
     source = ast.parse((ROOT / "chain_nodes.py").read_text(encoding="utf-8"))
     functions = [node for node in source.body
                  if isinstance(node, ast.FunctionDef) and node.name in names]
+    # A Linux host cannot stat simulated Windows shares. Keep the production
+    # resolver for real filesystem checks; substitute only its V1 file lookup
+    # for the ntpath simulation, asserting the caller supplies canonical roots
+    # and portable relative addresses. Resolver integrity has its own tests.
+    package_name = 'h3_windows_path_fixture'
+    if os_module is os:
+        resolver = storage_resolver
+    else:
+        def relative(root, value):
+            assert root == os_module.path.realpath(output_root)
+            assert value == artifact_address(value)
+            return value
+
+        resolver = types.SimpleNamespace(
+            logical_output=relative,
+            resolve_output=lambda root, value: os_module.path.join(root, relative(root, value).replace('/', '\\')))
+    sys.modules[package_name] = types.ModuleType(package_name)
+    sys.modules[package_name+'.storage_resolver'] = resolver
     namespace = {
+        '__name__': package_name+'.chain_nodes', '__package__': package_name,
         "os": os_module,
         "folder_paths": types.SimpleNamespace(
             get_output_directory=lambda: output_root,
@@ -112,7 +134,7 @@ def windows_checks():
 
         with contextlib.ExitStack() as stack:
             for module in (asset_store, run_manager, project_assets,
-                           checkpoint_manager):
+                           checkpoint_manager, branch_scope):
                 stack.enter_context(patch.object(module, "os", win))
             assets = asset_store.RunAssetStore(output, inputs)
             runs = run_manager.RunArchiveManager(output, inputs)

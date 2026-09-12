@@ -14,13 +14,46 @@ import re
 import threading
 import uuid
 from datetime import datetime, timezone
+from contextlib import nullcontext
+from functools import wraps
+import inspect
 from typing import Any
+
+if __package__:
+    from .storage_writes import store_writer
+else:
+    from storage_writes import store_writer
 
 
 FORMAT = "h3_scene_prompt_history_v1"
 MAX_PROMPT_LENGTH = 200_000
 MAX_LABEL_LENGTH = 80
 _LOCK = threading.RLock()
+
+
+def history_writer(method):
+    """Keep legacy fencing; combined writes use an explicit atomic history port."""
+    legacy = store_writer(method)
+    signature = inspect.signature(method)
+
+    @wraps(method)
+    def wrapped(self, *args, operation_id=None, ownership_proof=None, **kwargs):
+        if __package__:
+            from .storage_runtime import current_runtime
+        else:
+            from storage_runtime import current_runtime
+        runtime = current_runtime(self.output_root)
+        if runtime is None:
+            if self._rehearsal_view is not None:
+                raise ValueError('A history reader does not authorize writes outside its runtime.')
+            return legacy(self, *args, **kwargs)
+        if self._rehearsal_view is not runtime.reader:
+            raise ValueError('History writes require this runtime\'s own reader.')
+        values = signature.bind(self, *args, **kwargs)
+        values.apply_defaults()
+        inputs = {key:value for key,value in values.arguments.items() if key != 'self'}
+        return runtime.history.mutate(method, inputs, operation_id, ownership_proof)
+    return wrapped
 
 
 def _safe_component(value: Any, label: str) -> str:
@@ -95,8 +128,60 @@ def _atomic_json(path: str, value: Any) -> None:
 
 
 class PromptHistoryStore:
-    def __init__(self, output_root: str):
-        self.output_root = os.path.abspath(output_root)
+    def __init__(self, output_root: str, *, rehearsal_view=None):
+        self.output_root = os.path.realpath(os.path.abspath(output_root))
+        if rehearsal_view is None:
+            if __package__:
+                from .storage_runtime import current_runtime
+            else:
+                from storage_runtime import current_runtime
+            runtime = current_runtime(self.output_root)
+            if runtime is not None:
+                rehearsal_view = runtime.reader
+        if rehearsal_view is not None:
+            if __package__:
+                from .storage_project_reads import ProjectReadView
+            else:
+                from storage_project_reads import ProjectReadView
+            if (not isinstance(rehearsal_view, ProjectReadView)
+                    or str(rehearsal_view.output) != self.output_root):
+                raise ValueError("Prompt history requires this output's explicit combined-store reader.")
+        self._rehearsal_view = rehearsal_view
+        self._history_documents = None
+
+    def _read_operation(self):
+        return self._rehearsal_view.operation() if self._rehearsal_view else nullcontext()
+
+    def _read_document(self, path):
+        if self._history_documents is not None:
+            return self._history_documents.read(path)
+        if self._rehearsal_view:
+            return self._rehearsal_view.read(path)
+        with open(path, "r", encoding="utf-8") as handle:
+            return json.load(handle)
+
+    def _write_document(self, path, value):
+        if self._history_documents is not None:
+            return self._history_documents.write(path, value)
+        if self._rehearsal_view is not None:
+            raise ValueError('History writes require an atomic transaction.')
+        return _atomic_json(path, value)
+
+    def _delete_document(self, path):
+        if self._history_documents is not None:
+            return self._history_documents.delete(path)
+        if self._rehearsal_view is not None:
+            raise ValueError('History deletion requires an atomic transaction.')
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
+
+    def _now(self):
+        return self._history_documents.timestamp if self._history_documents else _timestamp()
+
+    def _new_revision_id(self):
+        return self._history_documents.revision_id if self._history_documents else uuid.uuid4().hex
 
     def _scene_dir(self, run_name: Any, scene_id: Any) -> tuple[str, str, str]:
         run = _strict_run_name(run_name)
@@ -105,8 +190,9 @@ class PromptHistoryStore:
             from .branch_scope import working_directory
         else:
             from branch_scope import working_directory
-        path = os.path.abspath(os.path.join(working_directory(os.path.join(
-            self.output_root, "h3_chains", run), run), "prompt_history", scene))
+        directory = (self._rehearsal_view.working_directory(run) if self._rehearsal_view
+                     else working_directory(os.path.join(self.output_root, "h3_chains", run), run))
+        path = os.path.abspath(os.path.join(directory, "prompt_history", scene))
         if os.path.commonpath([self.output_root, path]) != self.output_root:
             raise ValueError("Prompt history path escapes the output directory.")
         return path, run, scene
@@ -123,10 +209,10 @@ class PromptHistoryStore:
 
     def _load_index(self, directory: str, run: str, scene: str) -> dict[str, Any]:
         path = os.path.join(directory, "index.json")
-        if not os.path.isfile(path):
+        try:
+            index = self._read_document(path)
+        except FileNotFoundError:
             return self._empty_index(run, scene)
-        with open(path, "r", encoding="utf-8") as handle:
-            index = json.load(handle)
         if (not isinstance(index, dict) or index.get("format") != FORMAT
                 or not isinstance(index.get("revisions"), list)):
             raise ValueError("The prompt-history index is invalid.")
@@ -154,8 +240,7 @@ class PromptHistoryStore:
     def _read_revision(self, directory: str, revision_id: str) -> dict[str, Any]:
         path = self._revision_path(directory, revision_id)
         try:
-            with open(path, "r", encoding="utf-8") as handle:
-                value = json.load(handle)
+            value = self._read_document(path)
         except FileNotFoundError as exc:
             raise ValueError("Prompt revision content is missing.") from exc
         if not isinstance(value, dict) or value.get("id") != revision_id:
@@ -190,13 +275,13 @@ class PromptHistoryStore:
         }
 
     def list(self, run_name: Any, scene_id: Any) -> dict[str, Any]:
-        with _LOCK:
+        with _LOCK, self._read_operation():
             directory, run, scene = self._scene_dir(run_name, scene_id)
             return self._public_index(self._load_index(directory, run, scene))
 
     def get(self, run_name: Any, scene_id: Any,
             revision_id: Any) -> dict[str, Any]:
-        with _LOCK:
+        with _LOCK, self._read_operation():
             directory, run, scene = self._scene_dir(run_name, scene_id)
             index = self._load_index(directory, run, scene)
             revision = str(revision_id or "")
@@ -213,19 +298,21 @@ class PromptHistoryStore:
             try:
                 revision = self._read_revision(directory, meta["id"])
             except ValueError:
+                if self._history_documents is not None:
+                    raise
                 continue
             if revision.get("prompt") == prompt:
                 return meta
         return None
 
     def _write_index(self, directory: str, index: dict[str, Any]) -> None:
-        _atomic_json(os.path.join(directory, "index.json"), index)
+        self._write_document(os.path.join(directory, "index.json"), index)
 
     def _create(self, directory: str, index: dict[str, Any], prompt: str,
                 parent_id: str | None) -> dict[str, Any]:
-        now = _timestamp()
+        now = self._now()
         meta = {
-            "id": uuid.uuid4().hex,
+            "id": self._new_revision_id(),
             "parent_id": parent_id,
             "label": "",
             "archived_at": None,
@@ -237,12 +324,13 @@ class PromptHistoryStore:
             "prompt_sha256": _prompt_hash(prompt),
         }
         revision = {"format": FORMAT, **meta, "prompt": prompt}
-        _atomic_json(self._revision_path(directory, meta["id"]), revision)
+        self._write_document(self._revision_path(directory, meta["id"]), revision)
         index["revisions"].append(meta)
         index["active_revision"] = meta["id"]
         self._write_index(directory, index)
         return revision
 
+    @history_writer
     def save_draft(self, run_name: Any, scene_id: Any, prompt: Any,
                    parent_revision: Any = None) -> dict[str, Any]:
         prompt = _normalized_prompt(prompt)
@@ -255,7 +343,7 @@ class PromptHistoryStore:
                     exact["archived_at"] = None
                     revision = self._read_revision(directory, exact["id"])
                     revision["archived_at"] = None
-                    _atomic_json(
+                    self._write_document(
                         self._revision_path(directory, exact["id"]), revision)
                 index["active_revision"] = exact["id"]
                 self._write_index(directory, index)
@@ -272,7 +360,7 @@ class PromptHistoryStore:
             # A draft stays mutable until it is executed. Editing an executed
             # revision creates an immutable-parent child, which is the branch.
             if parent_meta is not None and parent_meta.get("executed_at") is None:
-                now = _timestamp()
+                now = self._now()
                 parent_meta["updated_at"] = now
                 parent_meta["prompt_sha256"] = _prompt_hash(prompt)
                 revision = self._read_revision(directory, parent)
@@ -281,7 +369,7 @@ class PromptHistoryStore:
                     "prompt_sha256": parent_meta["prompt_sha256"],
                     "prompt": prompt,
                 })
-                _atomic_json(self._revision_path(directory, parent), revision)
+                self._write_document(self._revision_path(directory, parent), revision)
                 index["active_revision"] = parent
                 self._write_index(directory, index)
             else:
@@ -293,6 +381,7 @@ class PromptHistoryStore:
                 "revision": revision,
             }
 
+    @history_writer
     def activate(self, run_name: Any, scene_id: Any,
                  revision_id: Any) -> dict[str, Any]:
         with _LOCK:
@@ -306,11 +395,12 @@ class PromptHistoryStore:
             if meta.get("archived_at"):
                 meta["archived_at"] = None
                 value["archived_at"] = None
-                _atomic_json(self._revision_path(directory, revision), value)
+                self._write_document(self._revision_path(directory, revision), value)
             index["active_revision"] = revision
             self._write_index(directory, index)
             return {"history": self._public_index(index), "revision": value}
 
+    @history_writer
     def set_label(self, run_name: Any, scene_id: Any, revision_id: Any,
                   label: Any) -> dict[str, Any]:
         label = _normalized_label(label)
@@ -324,7 +414,7 @@ class PromptHistoryStore:
             revision = self._read_revision(directory, revision_id)
             meta["label"] = label
             revision["label"] = label
-            _atomic_json(
+            self._write_document(
                 self._revision_path(directory, revision_id), revision)
             self._write_index(directory, index)
             return {
@@ -332,6 +422,7 @@ class PromptHistoryStore:
                 "revision": revision,
             }
 
+    @history_writer
     def set_archived(self, run_name: Any, scene_id: Any, revision_id: Any,
                      archived: Any = True) -> dict[str, Any]:
         with _LOCK:
@@ -347,10 +438,10 @@ class PromptHistoryStore:
                     "The active prompt revision cannot be archived. "
                     "Activate another revision first.")
             revision = self._read_revision(directory, revision_id)
-            archived_at = _timestamp() if should_archive else None
+            archived_at = self._now() if should_archive else None
             meta["archived_at"] = archived_at
             revision["archived_at"] = archived_at
-            _atomic_json(
+            self._write_document(
                 self._revision_path(directory, revision_id), revision)
             self._write_index(directory, index)
             return {
@@ -358,6 +449,7 @@ class PromptHistoryStore:
                 "revision": revision,
             }
 
+    @history_writer
     def delete_draft(self, run_name: Any, scene_id: Any,
                      revision_id: Any) -> dict[str, Any]:
         with _LOCK:
@@ -384,12 +476,10 @@ class PromptHistoryStore:
                 if item.get("id") != revision_id
             ]
             self._write_index(directory, index)
-            try:
-                os.unlink(self._revision_path(directory, revision_id))
-            except FileNotFoundError:
-                pass
+            self._delete_document(self._revision_path(directory, revision_id))
             return {"history": self._public_index(index)}
 
+    @history_writer
     def mark_executed(self, run_name: Any, scene_id: Any,
                       prompt: Any) -> dict[str, Any]:
         prompt = _normalized_prompt(prompt)
@@ -410,7 +500,7 @@ class PromptHistoryStore:
                 meta["archived_at"] = None
                 revision["archived_at"] = None
 
-            now = _timestamp()
+            now = self._now()
             if meta.get("executed_at") is None:
                 meta["executed_at"] = now
                 revision["executed_at"] = now
@@ -422,7 +512,7 @@ class PromptHistoryStore:
                 "execution_count": meta["execution_count"],
                 "updated_at": now,
             })
-            _atomic_json(self._revision_path(directory, meta["id"]), revision)
+            self._write_document(self._revision_path(directory, meta["id"]), revision)
             index["active_revision"] = meta["id"]
             self._write_index(directory, index)
             return {"history": self._public_index(index), "revision": revision}

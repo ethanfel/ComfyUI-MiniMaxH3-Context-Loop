@@ -51,7 +51,7 @@
       ],
       "size": [
         360,
-        492
+        516
       ],
       "flags": {},
       "order": 1,
@@ -100,7 +100,8 @@
         1,
         0,
         false,
-        18
+        18,
+        "resume"
       ]
     },
     {
@@ -108,7 +109,7 @@
       "type": "VAELoader",
       "pos": [
         1500,
-        772
+        796
       ],
       "size": [
         360,
@@ -142,7 +143,7 @@
       "type": "MiniMaxH3ChainUpscalePixelCurrent",
       "pos": [
         1500,
-        2644
+        2668
       ],
       "size": [
         500,
@@ -229,7 +230,7 @@
       "type": "UNETLoader",
       "pos": [
         1500,
-        980
+        1004
       ],
       "size": [
         360,
@@ -262,7 +263,7 @@
       "type": "LoraLoaderModelOnly",
       "pos": [
         1500,
-        3044
+        3068
       ],
       "size": [
         360,
@@ -302,7 +303,7 @@
       "type": "CLIPLoader",
       "pos": [
         1500,
-        1212
+        1236
       ],
       "size": [
         360,
@@ -336,7 +337,7 @@
       "type": "DLSS5Settings",
       "pos": [
         1500,
-        1468
+        1492
       ],
       "size": [
         360,
@@ -423,7 +424,7 @@
       "type": "MiniMaxH3UpscaleReferencePromptOverride",
       "pos": [
         1500,
-        1964
+        1988
       ],
       "size": [
         360,
@@ -483,7 +484,7 @@
       ],
       "size": [
         600,
-        576
+        624
       ],
       "flags": {},
       "order": 10,
@@ -581,7 +582,9 @@
         "inherit",
         "strict",
         0,
-        0
+        0,
+        "inherit",
+        "inherit"
       ]
     },
     {
@@ -670,7 +673,7 @@
       "type": "KSamplerSelect",
       "pos": [
         1500,
-        2436
+        2460
       ],
       "size": [
         360,
@@ -1239,7 +1242,7 @@
         1460,
         90,
         580,
-        3126
+        3150
       ],
       "color": "#393f58",
       "font_size": 24,
@@ -1251,7 +1254,7 @@
         2110,
         90,
         680,
-        1190
+        1238
       ],
       "color": "#394c49",
       "font_size": 24,

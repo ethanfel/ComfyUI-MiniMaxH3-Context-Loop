@@ -31,13 +31,22 @@ Durability:
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 import errno
+from functools import wraps
 import json
 import os
 import re
 import tempfile
 import time
 import uuid
+
+if __package__:
+    from .storage_writes import store_writer
+    from .storage_resolver import resolve_output
+else:
+    from storage_writes import store_writer
+    from storage_resolver import resolve_output
 from datetime import datetime, timezone
 from typing import Any, Callable
 
@@ -361,6 +370,19 @@ def _safe_unlink(path: str) -> None:
         pass
 
 
+def _handoff_operation(*, write=False):
+    def decorate(method):
+        legacy = store_writer(method) if write else method
+        @wraps(method)
+        def wrapped(self, *args, **kwargs):
+            if self.controls is None:
+                return legacy(self, *args, **kwargs)
+            with self.controls.operation(write=write):
+                return method(self, *args, **kwargs)
+        return wrapped
+    return decorate
+
+
 class HandoffStore:
     """Durable handoff records for one ComfyUI output root.
 
@@ -371,17 +393,54 @@ class HandoffStore:
     """
 
     def __init__(self, output_root: str,
-                 now: Callable[[], str] | None = None):
+                 now: Callable[[], str] | None = None, *, rehearsal_controls=None):
         self._root = os.path.realpath(output_root)
         self._now = now or _utc_now_iso
+        if rehearsal_controls is None:
+            if __package__:
+                from .storage_runtime import current_runtime
+            else:
+                from storage_runtime import current_runtime
+            runtime = current_runtime(self._root)
+            if runtime is not None:
+                rehearsal_controls = runtime.handoffs
+        self.controls = rehearsal_controls
+        if self.controls is not None:
+            if __package__:
+                from .storage_handoff_controls import HandoffControlDocuments
+            else:
+                from storage_handoff_controls import HandoffControlDocuments
+            if (not isinstance(self.controls, HandoffControlDocuments)
+                    or str(self.controls.project.parent.parent) != self._root):
+                raise ValueError('Handoff controls belong to a different output project.')
+
+    def _run_lock(self, run):
+        return nullcontext() if self.controls is not None else _RunLock(self._lock_path(run))
+
+    def _exists(self, path):
+        return self.controls.exists(path) if self.controls is not None else os.path.exists(path)
+
+    def _read_json(self, path):
+        if self.controls is not None:
+            return self.controls.read(path)
+        with open(path, 'r', encoding='utf-8') as handle:
+            return json.load(handle)
+
+    def _write_json(self, path, record):
+        if self.controls is not None:
+            self.controls.write(path, record)
+        else:
+            _atomic_json(path, record)
 
     # -- path helpers -----------------------------------------------------
 
     def orchestration_dir(self, run_name: Any) -> str:
         """Absolute, containment-checked orchestration directory."""
         normalized = _validate_run_name(run_name)
-        path = os.path.realpath(os.path.join(
-            self._root, "h3_chains", normalized, HANDOFF_ORCHESTRATION_DIR))
+        if self.controls is not None:
+            return self.controls.directory(normalized)
+        path = str(resolve_output(self._root, os.path.join(
+            self._root, "h3_chains", normalized, HANDOFF_ORCHESTRATION_DIR)))
         if os.path.commonpath((self._root, path)) != self._root:
             raise HandoffError("H3 orchestration path escapes the output "
                                "directory.")
@@ -396,6 +455,7 @@ class HandoffStore:
 
     # -- read -------------------------------------------------------------
 
+    @_handoff_operation()
     def load(self, run_name: Any, handoff_id: Any) -> dict[str, Any]:
         """Read and validate one record.
 
@@ -405,8 +465,7 @@ class HandoffStore:
         """
         path = self._record_path(run_name, handoff_id)
         try:
-            with open(path, "r", encoding="utf-8") as handle:
-                record = json.load(handle)
+            record = self._read_json(path)
         except FileNotFoundError:
             raise HandoffNotFoundError(
                 "No H3 handoff %s in run %s." % (
@@ -425,6 +484,7 @@ class HandoffStore:
                 _validate_handoff_id(handoff_id))
         return record
 
+    @_handoff_operation()
     def list(self, run_name: Any) -> list[dict[str, Any]]:
         """All valid records for a run, sorted by handoff_id.
 
@@ -433,16 +493,16 @@ class HandoffStore:
         being blocked; they are never queued or repaired.
         """
         directory = self.orchestration_dir(run_name)
-        if not os.path.isdir(directory):
+        if self.controls is None and not os.path.isdir(directory):
             return []
         results: list[dict[str, Any]] = []
-        for name in sorted(os.listdir(directory)):
+        names = self.controls.names(directory) if self.controls is not None else sorted(os.listdir(directory))
+        for name in names:
             if not name.endswith(".json"):
                 continue
             path = os.path.join(directory, name)
             try:
-                with open(path, "r", encoding="utf-8") as handle:
-                    record = json.load(handle)
+                record = self._read_json(path)
                 _validate_record(record,
                                  expect_format=HANDOFF_FORMAT_VERSION)
                 results.append(record)
@@ -457,6 +517,7 @@ class HandoffStore:
 
     # -- write ------------------------------------------------------------
 
+    @_handoff_operation(write=True)
     def create(self, run_name: Any, *, action: str, scene: int | None = None,
                start_clip: int | None = None,
                end_clip: int | None = None,
@@ -548,24 +609,27 @@ class HandoffStore:
             record["working_branch_id"] = working_branch_id
         for key, value in record.items():
             _assert_lightweight_value(key, value)
+        if self.controls is not None:
+            record = self.controls.pin_record(record)
         path = self._record_path(run, record_id)
-        if os.path.exists(path):
+        if self._exists(path):
             raise HandoffExistsError(
                 "H3 handoff %s already exists in run %s." % (record_id, run))
-        with _RunLock(self._lock_path(run)):
-            if os.path.exists(path):
+        with self._run_lock(run):
+            if self._exists(path):
                 raise HandoffExistsError(
                     "H3 handoff %s already exists in run %s." %
                     (record_id, run))
-            _atomic_json(path, record)
+            self._write_json(path, record)
         return record
 
     def _write_record(self, run_name: str, record: dict[str, Any]) -> None:
         path = self._record_path(run_name, record["handoff_id"])
-        _atomic_json(path, record)
+        self._write_json(path, record)
 
     # -- transitions ------------------------------------------------------
 
+    @_handoff_operation(write=True)
     def transition(self, run_name: Any, handoff_id: Any,
                    new_status: str, accepted_prompt_id: str | None = None
                    ) -> dict[str, Any]:
@@ -579,7 +643,7 @@ class HandoffStore:
         if new_status not in HANDOFF_STATUSES:
             raise HandoffError("Unknown handoff status %r." % new_status)
         run = _validate_run_name(run_name)
-        with _RunLock(self._lock_path(run)):
+        with self._run_lock(run):
             record = self.load(run, handoff_id)
             current = record["status"]
             if new_status in _HANDOFF_TRANSITIONS.get(current, ()):
@@ -593,6 +657,7 @@ class HandoffStore:
             "Illegal H3 handoff transition %s -> %s for %s." %
             (current, new_status, _validate_handoff_id(handoff_id)))
 
+    @_handoff_operation(write=True)
     def claim(self, run_name: Any, handoff_id: Any,
               claimant: str | None = None,
               source_prompt_id: str | None = None) -> dict[str, Any]:
@@ -610,18 +675,24 @@ class HandoffStore:
         wins with the claim itself and can never be stamped by a duplicate.
         """
         run = _validate_run_name(run_name)
-        with _RunLock(self._lock_path(run)):
+        with self._run_lock(run):
             record = self.load(run, handoff_id)
             current = record["status"]
             if current == "pending":
+                if self.controls is not None:
+                    self.controls.claim_dependencies(record)
                 if record["attempt"] >= record["max_attempts"]:
                     record["status"] = "failed"
                     record["updated_at"] = self._now()
                     self._write_record(run, record)
-                    raise HandoffClaimError(
+                    error = HandoffClaimError(
                         "H3 handoff %s cannot be claimed: attempt budget "
                         "of %d is exhausted." % (
                             record["handoff_id"], record["max_attempts"]))
+                    if self.controls is not None:
+                        self.controls.fail_after_commit(error)
+                        return
+                    raise error
                 record["status"] = "claimed"
                 record["attempt"] = record["attempt"] + 1
                 record["updated_at"] = self._now()
@@ -639,6 +710,7 @@ class HandoffStore:
                 "H3 handoff %s is %s, not pending; a concurrent claim "
                 "already won." % (record["handoff_id"], current))
 
+    @_handoff_operation(write=True)
     def release(self, run_name: Any, handoff_id: Any,
                 reason: str | None = None) -> dict[str, Any]:
         """Release a claim within the bounded attempt rules.
@@ -648,7 +720,7 @@ class HandoffStore:
         to ``failed``.  Non-claimed records raise.
         """
         run = _validate_run_name(run_name)
-        with _RunLock(self._lock_path(run)):
+        with self._run_lock(run):
             record = self.load(run, handoff_id)
             if record["status"] != "claimed":
                 raise IllegalHandoffTransitionError(

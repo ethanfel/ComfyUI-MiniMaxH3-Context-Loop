@@ -6,7 +6,7 @@
     {"key":"adapter", "type":"MiniMaxH3ChainUpscaleAdapter", "settings":{
       "profile":"h3_lms_experimental", "backend":"pixel",
       "recipe_json":"{\"experimental\":\"lms_v1\",\"upscaler\":\"DLSS5_1.5x\",\"conditioning\":\"native_full_scene_guide\",\"turbo\":\"ref2v_4step_v0.1\",\"turbo_strength\":1.0,\"lms\":\"minimax_h3_lms_v1.0_r64\",\"lms_strength\":1.0,\"shift_video\":12.0,\"shift_audio\":3.0,\"sampler\":\"euler\",\"scheduler\":\"simple\",\"steps\":8,\"denoise\":1.0,\"audio\":\"preserve_source\"}",
-      "start_clip":1, "end_clip":1, "save_latent":true, "segment_crf":18
+      "start_clip":1, "end_clip":1, "save_latent":true, "segment_crf":18, "start_mode":"resume"
     }, "inputs":{"source_manifest":["manager","selected_manifest"]}},
     {"key":"video_vae", "type":"VAELoader", "settings":{"vae_name":"minimax_h3_video_vae_fp16.safetensors"}, "inputs":{}},
     {"key":"current", "type":"MiniMaxH3ChainUpscalePixelCurrent", "settings":{}, "inputs":{"state":["adapter","state"],"video_vae":["video_vae","VAE"]}},

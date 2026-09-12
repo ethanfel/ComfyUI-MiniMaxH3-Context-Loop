@@ -22,6 +22,9 @@ function carouselContext() {
         node:{graph:{setDirtyCanvas(){}}}, project:() => runNameWidget.value,
         ownership:{runName:"run_a", async select(run) { this.runName = run; }},
         projectMutationOptions:async (_node, _run, options) => options,
+        // Retry identity generation is covered separately; this fixture exercises
+        // project switching across the real handler's async transport boundaries.
+        editAttempts:{async prepare(_route, options) { return {options, accept(){}}; }},
         jsonRequest:(route, options) => new Promise((resolve, reject) => requests.push({route, options, resolve, reject})),
         syncDownstreamPlan:(_node, run) => { context.planRun = run; },
         publishProjectAssetCatalogChanged(){}, render(){}, setStatus(){},

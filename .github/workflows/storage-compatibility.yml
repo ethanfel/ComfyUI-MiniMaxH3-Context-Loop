@@ -1,0 +1,101 @@
+name: Storage compatibility
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '*storage*.py'
+      - 'processing_persistence.py'
+      - 'checkpoint_manager.py'
+      - 'checkpoint_final_cut.py'
+      - 'chapter_resolution.py'
+      - 'working_branches.py'
+      - 'handoff_state.py'
+      - 'project_ownership.py'
+      - 'chain_nodes.py'
+      - 'branch_authoring_recovery.py'
+      - 'branch_scope.py'
+      - 'artifact_paths.py'
+      - 'tests/*storage*.py'
+      - 'tests/_processing_persistence_unit_test.py'
+      - '.github/workflows/storage-compatibility.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  filesystem-contract:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ['3.12', '3.13']
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Storage resolver and recovery
+        run: python tests/_storage_resolver_unit_test.py
+      - name: Writer publication and process locking
+        run: python tests/_storage_writes_unit_test.py
+      - name: External workflow-copy contracts
+        run: python tests/_storage_workflows_unit_test.py
+      - name: Recovery of post-migration work
+        run: python tests/_storage_recovery_unit_test.py
+      - name: Atomic control-state rehearsal
+        run: python tests/_storage_state_unit_test.py
+      - name: Immutable commit log and crash recovery
+        run: python tests/_storage_commit_log_unit_test.py
+      - name: No-overwrite migration and recovery journals
+        run: python tests/_storage_journal_unit_test.py
+      - name: Branch operations through pinned controls
+        run: python tests/_storage_branch_controls_unit_test.py
+      - name: Combined media and control publication
+        run: python tests/_storage_project_unit_test.py
+      - name: Interrupted combined-copy migration
+        run: python tests/_storage_project_migration_unit_test.py
+      - name: Pinned checkpoint graph reads
+        run: python tests/_storage_project_reads_unit_test.py
+      - name: Operation-local runtime services and pins
+        run: python tests/_storage_runtime_unit_test.py
+      - name: Read-only node carriers and independent execution pins
+        run: python tests/_storage_carriers_unit_test.py
+      - name: Writer result receipts and commit-time ownership fencing
+        run: python tests/_storage_writer_carriers_unit_test.py
+      - name: Handoff runtime services and independent writer capabilities
+        run: python tests/_storage_handoff_runtime_unit_test.py
+      - name: Handoff API handlers and branch-specific resume hints
+        run: python tests/_storage_handoff_routes_unit_test.py
+      - name: Atomic checkpoint pointer retirement without media deletion
+        run: python tests/_storage_pointer_retirement_unit_test.py
+      - name: Checkpoint restore API lineage and atomic assignment
+        run: python tests/_storage_restore_routes_unit_test.py
+      - name: Checkpoint listing and branch-specific ALT pictures
+        run: python tests/_storage_listing_routes_unit_test.py
+      - name: Checkpoint attribution shared files and conflict handling
+        run: python tests/_storage_attribution_routes_unit_test.py
+      - name: Generated scene publication and independent writer grants
+        run: python tests/_storage_generation_unit_test.py
+      - name: Frozen generation deliveries and exact retry
+        run: python tests/_storage_delivery_unit_test.py
+      - name: External ownership fencing and inherited-context races
+        run: python tests/_storage_ownership_unit_test.py
+      - name: Ownership-preserving recovery and restart contracts
+        run: python tests/_storage_ownership_recovery_unit_test.py
+      - name: Branch and ownership API handlers on combined storage
+        run: python tests/_storage_branch_routes_unit_test.py
+      - name: Pinned processing catalogue reads
+        run: python tests/_storage_project_variants_unit_test.py
+      - name: Combined recovery after new work
+        run: python tests/_storage_project_recovery_unit_test.py
+      - name: Pinned handoff state and queue fences
+        run: python tests/_storage_handoff_controls_unit_test.py
+      - name: Organized layout policy
+        run: python tests/_storage_layout_unit_test.py
+      - name: Native file persistence
+        run: python tests/_processing_persistence_unit_test.py
+      - name: No-overwrite publication and transient sharing conflicts
+        run: python tests/_storage_publication_unit_test.py

@@ -5,8 +5,12 @@ must not silently pick the editorial document of an unrelated assignment view.
 """
 
 import os
+from contextlib import nullcontext
 
-from .branch_scope import branch_id, branch_scope
+if __package__:
+    from .branch_scope import branch_id, branch_scope
+else:
+    from branch_scope import branch_id, branch_scope
 
 
 def final_cut_contexts(chain, run, *, include_editorial=False):
@@ -19,12 +23,18 @@ def final_cut_contexts(chain, run, *, include_editorial=False):
         with branch_scope(run, selected):
             # Do not infer through an interrupted pointer transaction. Avoid
             # the mutation lock here: it creates files even for a local read.
-            store._pointers(selected)
+            with store.controls.operation() if store.controls is not None else nullcontext():
+                store._pointers(selected)
             active, _stale = manager.active_selection(run)
-            path = chain._run_editorial_path(run)
-            # Invalid saved cuts must fail, never masquerade as Original.
-            editorial = (chain._normalize_run_editorial(chain._read_json(path), run)
-                         if os.path.isfile(path) else chain._load_run_editorial(run))
+            if manager._rehearsal_view is not None:
+                # Uses the same accepted root for every branch, including an
+                # explicitly missing cut. Never resolve a blob through V1 I/O.
+                editorial = chain._load_run_editorial(run)
+            else:
+                path = chain._run_editorial_path(run)
+                # Invalid saved cuts must fail, never masquerade as Original.
+                editorial = (chain._normalize_run_editorial(chain._read_json(path), run)
+                             if os.path.isfile(path) else chain._load_run_editorial(run))
         contexts.append({
             "id": selected, "name": record["name"],
             "lineage": [{"scene": scene, "revision": revision}

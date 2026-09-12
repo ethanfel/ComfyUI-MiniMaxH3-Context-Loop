@@ -14,12 +14,15 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import uuid
 from datetime import datetime, timezone
 from typing import Any
 
 from . import chain_nodes as chain
 from .lms_upscale import MiniMaxH3ChainLMSGuide
+from .storage_legacy import LegacyStoragePaths
+from .storage_writes import project_writer, reserve_take
 
 try:
     from comfy.nested_tensor import NestedTensor as _ComfyNestedTensor
@@ -61,14 +64,51 @@ CONDITIONING_SYNC_MOTION_MODES = (
     "conditioning_policy",) + MOTION_REFERENCE_MODES
 
 
+def _processing_read_view():
+    """Explicit read port; never relax the general resolver for writers."""
+    from .storage_runtime import current_runtime
+    runtime = current_runtime(chain._output_root())
+    return runtime.reader if runtime is not None else None
+
+
+def _processing_read_path(value):
+    view = _processing_read_view()
+    return str(view.path(value)) if view is not None else chain._absolute_output_path(value)
+
+
+def _processing_logical_path(value):
+    view = _processing_read_view()
+    return view.logical_output(value) if view is not None else chain._relative_output_path(value)
+
+
+def _processing_metadata(value):
+    """Missing is distinct from malformed/corrupt, including after migration."""
+    view = _processing_read_view()
+    if view is not None:
+        # An unindexed leftover must not become a resume checkpoint.
+        if not os.path.isfile(view.path(value)):
+            return None
+        return view.read(value)
+    return chain._read_json(value) if os.path.isfile(value) else None
+
+
 def _profile_dir(run_name: str, profile: str, source_manifest=None) -> str:
     run = chain._safe_name(run_name, "h3_chain")
     name = chain._safe_name(profile, "upscale")
-    parent = chain._run_dir({"run_name": run, **({"_branch_id": source_manifest["_branch_id"]}
-                            if isinstance(source_manifest, dict) and source_manifest.get("_branch_id") else {})})
-    if isinstance(source_manifest, dict) and source_manifest.get("chapter"):
-        parent = chain._chapter_delivery_root({**source_manifest, "run_name": run})
-    path = os.path.abspath(os.path.join(parent, "upscaled", name))
+    view = _processing_read_view()
+    if view is not None:
+        # Construct logical identities only. The combined reader resolves files;
+        # neither this directory nor the legacy profile is created on disk.
+        parent = view.working_directory(run)
+        if isinstance(source_manifest, dict) and source_manifest.get("chapter"):
+            parent = LegacyStoragePaths("", parent).chapter(
+                chain._chapter_directory_name(source_manifest["chapter"]))
+    else:
+        parent = chain._run_dir({"run_name": run, **({"_branch_id": source_manifest["_branch_id"]}
+                                if isinstance(source_manifest, dict) and source_manifest.get("_branch_id") else {})})
+        if isinstance(source_manifest, dict) and source_manifest.get("chapter"):
+            parent = chain._chapter_delivery_root({**source_manifest, "run_name": run})
+    path = LegacyStoragePaths.processing_profile(parent, name)
     root = os.path.abspath(chain._output_root())
     if os.path.commonpath([root, path]) != root:
         raise ValueError("H3 upscale profile path escapes the output directory.")
@@ -78,19 +118,7 @@ def _profile_dir(run_name: str, profile: str, source_manifest=None) -> str:
 def _profile_paths(run_name: str, profile: str, index: int,
                    source_manifest=None) -> dict[str, str]:
     root = _profile_dir(run_name, profile, source_manifest)
-    stem = "clip_%04d" % int(index)
-    return {
-        "root": root,
-        "segment": os.path.join(root, "segments", stem + ".mp4"),
-        "checkpoint": os.path.join(root, "checkpoints", stem + ".safetensors"),
-        "metadata": os.path.join(root, "checkpoints", stem + ".json"),
-        "prompt": os.path.join(root, "prompts", stem + ".txt"),
-        "audio": os.path.join(root, "audio", stem + ".wav"),
-        "manifest": os.path.join(root, "upscale_manifest.json"),
-        "partial": os.path.join(
-            root, "partial", "through_clip_%04d.manifest.json" % int(index)),
-        "final": os.path.join(root, "final"),
-    }
+    return LegacyStoragePaths.processing_files(root, index)
 
 
 def _parse_recipe(value: str) -> dict[str, Any]:
@@ -129,7 +157,8 @@ def _verified_source_manifest(value: dict[str, Any]) -> dict[str, Any]:
             "from Checkpoint Manager.")
     from .deferred_checkpoint_source import editorial_source_manifest
     manifest = editorial_source_manifest(manifest, chain)
-    segments = chain._validate_manifest(manifest)
+    view = _processing_read_view()
+    segments = chain._validate_manifest(manifest, **({"rehearsal_view": view} if view else {}))
     if not manifest.get("processing_source"):
         chain.common_saved_resolution(segments, "Deferred upscale source")
     else:
@@ -144,6 +173,11 @@ def _verified_source_manifest(value: dict[str, Any]) -> dict[str, Any]:
 
 
 def _source_hash(manifest: dict[str, Any]) -> str:
+    if _processing_read_view() is not None:
+        # Runtime transport changes after each accepted save. It is not a
+        # different source picture, prompt or editorial selection.
+        manifest = {key: value for key, value in manifest.items()
+                    if key not in ('_storage_pin', '_branch_id', '_project_ownership')}
     return chain._fingerprint(manifest)
 
 
@@ -539,7 +573,7 @@ def _validate_processed_latent_header(source):
                 int(source["height"]) // 16, int(source["width"]) // 16]
     if any(int(source[key]) < 16 or int(source[key]) % 16 for key in ("width", "height")):
         raise ValueError("DeRoPE source canvas must be aligned to the H3 VAE.")
-    with safe_open(chain._absolute_output_path(source["checkpoint"]),
+    with safe_open(_processing_read_path(source["checkpoint"]),
                    framework="pt", device="cpu") as saved:
         keys = set(saved.keys())
         layout = source.get("latent_layout")
@@ -593,7 +627,7 @@ def _load_source_tensors(source: dict[str, Any],
         return result
     if chain._st_load is None:
         raise RuntimeError("safetensors is required for deferred H3 upscaling.")
-    checkpoint = chain._absolute_output_path(source["checkpoint"])
+    checkpoint = _processing_read_path(source["checkpoint"])
     expected = str(source.get("checkpoint_sha256") or "")
     if not os.path.isfile(checkpoint):
         raise FileNotFoundError("Source H3 checkpoint is missing: %s" % checkpoint)
@@ -1008,7 +1042,7 @@ def _load_previous_upscaled_context(
     if not segments:
         return None, "prior HQ context unavailable"
     prior_segment = segments[-1]
-    checkpoint = chain._absolute_output_path(prior_segment["checkpoint"])
+    checkpoint = _processing_read_path(prior_segment["checkpoint"])
     tensors = chain._st_load(checkpoint)
     video = tensors.get("upscaled_video_context")
     route = "compact saved HQ context"
@@ -1074,12 +1108,12 @@ def _load_upscale_prefix(state: dict[str, Any], start_clip: int
     values = []
     for index in range(_source_bounds(state["source_manifest"])[0], int(start_clip)):
         paths = _state_profile_paths(state, index)
-        if not os.path.isfile(paths["metadata"]):
+        metadata = _processing_metadata(paths["metadata"])
+        if metadata is None:
             raise FileNotFoundError(
                 "Cannot resume upscale scene %d: scene %d metadata is missing: %s. "
                 "To process a new range without earlier HQ outputs, choose start_mode=fresh_range."
                 % (start_clip, index, paths["metadata"]))
-        metadata = chain._read_json(paths["metadata"])
         if metadata.get("format") != "h3_chain_upscale_segment_v1":
             raise ValueError("Upscale scene %d metadata has an unknown format." % index)
         if (metadata.get("run_name") != state["run_name"] or
@@ -1109,7 +1143,7 @@ def _verify_upscale_segment(segment: dict[str, Any], index: int) -> None:
         expected = str(segment.get(hash_key) or "")
         if not isinstance(value, str) or not expected:
             raise ValueError("Upscale scene %d has no verified %s." % (index, key))
-        path = chain._absolute_output_path(value)
+        path = _processing_read_path(value)
         if not os.path.isfile(path):
             raise FileNotFoundError("Upscale scene %d %s is missing: %s" %
                                     (index, key, path))
@@ -1119,7 +1153,7 @@ def _verify_upscale_segment(segment: dict[str, Any], index: int) -> None:
     audio = segment.get("generated_audio")
     if audio is not None:
         expected = str(segment.get("generated_audio_sha256") or "")
-        path = chain._absolute_output_path(audio)
+        path = _processing_read_path(audio)
         if not expected or not os.path.isfile(path) or chain._file_sha256(path) != expected:
             raise ValueError("Upscale scene %d generated audio is invalid." % index)
 
@@ -1247,7 +1281,7 @@ class MiniMaxH3ChainUpscaleAdapter:
                 raise ValueError("Unknown upscale start_mode %r." % start_mode)
             manifest = _verified_source_manifest(source_manifest)
             if any(item.get("processing_source", {}).get("profile_path") ==
-                   chain._relative_output_path(_profile_dir(
+                   _processing_logical_path(_profile_dir(
                        manifest["run_name"], chain._safe_name(profile, "upscale"), manifest))
                    for item in manifest["segments"]):
                 raise ValueError("Choose a new output profile; do not overwrite the selected DeRoPE source profile.")
@@ -1269,8 +1303,8 @@ class MiniMaxH3ChainUpscaleAdapter:
                 # per-scene saves, even if manifest publication was interrupted.
                 previous_path = _profile_paths(manifest["run_name"], profile,
                                                start - 1, manifest)["metadata"]
-                if os.path.isfile(previous_path):
-                    previous = chain._read_json(previous_path)
+                previous = _processing_metadata(previous_path)
+                if previous is not None:
                     range_first = previous.get("upscale_range_start")
                     if range_first is not None:
                         if type(range_first) is not int or not first <= range_first < start:
@@ -2595,7 +2629,8 @@ class MiniMaxH3ChainUpscaleSegmentSave:
                                "the same repeated-head trim as video and "
                                "replaces the source checkpoint audio."}),
             },
-            "hidden": {"dynprompt": "DYNPROMPT", "unique_id": "UNIQUE_ID"},
+            "hidden": {"dynprompt": "DYNPROMPT", "unique_id": "UNIQUE_ID",
+                       "prompt": "PROMPT", "extra_pnginfo": "EXTRA_PNGINFO"},
         }
 
     RETURN_TYPES = (UPSCALE_SEGMENT_TYPE, "STRING")
@@ -2616,11 +2651,40 @@ class MiniMaxH3ChainUpscaleSegmentSave:
     def IS_CHANGED(cls, *args, **kwargs):
         return float("NaN")
 
+    @project_writer(domain='processing')
     def save(self, state, images, upscaled_latent=None,
-             recovered_audio=None, dynprompt=None, unique_id=None):
+             recovered_audio=None, dynprompt=None, unique_id=None,
+             prompt=None, extra_pnginfo=None):
         if chain._st_save is None or chain.torch is None:
             raise RuntimeError("safetensors and torch are required for H3 upscale saves.")
         index = int(state["index"])
+        from .storage_runtime import current_runtime
+        runtime = current_runtime(chain._output_root(), state['run_name'])
+        workspace = None
+        transaction = uuid.uuid4().hex
+        if runtime is not None:
+            from .storage_carriers import processing_operation
+            from .storage_processing_retry import ProcessingSaveRequest
+            operation = processing_operation(type(self).save, unique_id)
+            request = None
+            if operation is not None:
+                transaction = operation
+                request = ProcessingSaveRequest(runtime, operation, dict(state=state, images=images,
+                    upscaled_latent=upscaled_latent, recovered_audio=recovered_audio,
+                    prompt=prompt, extra_pnginfo=extra_pnginfo), sys.modules[__name__])
+                recovered = request.accepted()
+                if recovered is not None:
+                    return request.result(recovered)
+            from .storage_processing import ProcessingSaveWorkspace
+            workspace = ProcessingSaveWorkspace(runtime, state, sys.modules[__name__], transaction)
+            from .storage_processing_continuation import save_witness
+            workspace.witness = save_witness(runtime, state, images, upscaled_latent, sys.modules[__name__])
+            workspace.request = request
+            if request is not None:
+                recovered = request.resume(workspace)
+                if recovered is not None:
+                    return request.result(recovered)
+        logical = workspace.logical if workspace is not None else chain._relative_output_path
         source = _source_segment(state)
         raw = int(source["raw_frames"])
         delivered = int(source["delivered_frames"])
@@ -2710,20 +2774,34 @@ class MiniMaxH3ChainUpscaleSegmentSave:
                 upscaled_latent, context_steps)
 
         paths = _state_profile_paths(state, index)
-        for key in ("segment", "checkpoint", "metadata", "prompt", "audio"):
-            os.makedirs(os.path.dirname(paths[key]), exist_ok=True)
-        transaction = uuid.uuid4().hex
         segment_path = chain._versioned_path(paths["segment"], transaction)
         checkpoint_path = chain._versioned_path(paths["checkpoint"], transaction)
         metadata_path = chain._versioned_path(paths["metadata"], transaction)
         prompt_path = chain._versioned_path(paths["prompt"], transaction)
         audio_path = (chain._versioned_path(paths["audio"], transaction)
                       if "delivered_audio" in tensors else None)
-        checkpoint_tmp = "%s.%s.tmp" % (checkpoint_path, uuid.uuid4().hex)
+        from .storage_layout import storage_stage
+        payloads = {"video": segment_path, "checkpoint": checkpoint_path, "prompt": prompt_path}
+        if audio_path is not None:
+            payloads["audio"] = audio_path
+        if workspace is not None:
+            payloads = workspace.reserve(payloads)
+        else:
+            payloads = reserve_take(chain._output_root(), payloads,
+                stage=storage_stage(profile_config=state["profile_config"]),
+                identity=chain._relative_output_path(metadata_path),
+                pass_identity=chain._relative_output_path(paths["root"]))
+        segment_path, checkpoint_path, prompt_path = payloads["video"], payloads["checkpoint"], payloads["prompt"]
+        audio_path = payloads.get("audio")
+        for destination in payloads.values():
+            os.makedirs(os.path.dirname(destination), exist_ok=True)
+        checkpoint_tmp = chain._temporary_storage_path(checkpoint_path)
         committed = False
         publication_started = False
         save_warning = ""
         try:
+            from .processing_execution import capture, media_tags
+            execution = capture(chain, prompt, extra_pnginfo)
             chain._write_segment_video(
                 delivered_images, segment_path, chain.FPS,
                 int(state["profile_config"]["segment_crf"]), metadata={
@@ -2733,6 +2811,7 @@ class MiniMaxH3ChainUpscaleSegmentSave:
                     "h3_upscale_profile": state["profile"],
                     "h3_upscale_backend": state["profile_config"]["backend"],
                     "h3_source_revision": str(source.get("revision") or ""),
+                    **media_tags(execution),
                 })
             chain._atomic_text(prompt_path, str(source.get("prompt") or ""))
             if audio_path is not None:
@@ -2762,11 +2841,11 @@ class MiniMaxH3ChainUpscaleSegmentSave:
                 "revision": transaction,
                 "created_at": datetime.now(timezone.utc).isoformat(
                     timespec="seconds").replace("+00:00", "Z"),
-                "segment": chain._relative_output_path(segment_path),
-                "checkpoint": chain._relative_output_path(checkpoint_path),
-                "metadata": chain._relative_output_path(paths["metadata"]),
-                "revision_metadata": chain._relative_output_path(metadata_path),
-                "prompt_file": chain._relative_output_path(prompt_path),
+                "segment": logical(segment_path),
+                "checkpoint": logical(checkpoint_path),
+                "metadata": logical(paths["metadata"]),
+                "revision_metadata": logical(metadata_path),
+                "prompt_file": logical(prompt_path),
                 "raw_frames": raw,
                 "delivered_frames": delivered,
                 "trim_frames": trim,
@@ -2794,11 +2873,11 @@ class MiniMaxH3ChainUpscaleSegmentSave:
             }
             if audio_path is not None:
                 segment.update({
-                    "generated_audio": chain._relative_output_path(audio_path),
+                    "generated_audio": logical(audio_path),
                     "generated_audio_sha256": chain._file_sha256(audio_path),
                 })
-            previous = None
-            if os.path.isfile(paths["metadata"]):
+            previous = workspace.previous if workspace is not None else None
+            if workspace is None and os.path.isfile(paths["metadata"]):
                 try:
                     previous = chain._read_json(paths["metadata"])
                 except (OSError, ValueError, json.JSONDecodeError):
@@ -2816,6 +2895,12 @@ class MiniMaxH3ChainUpscaleSegmentSave:
                 "profile_config": state["profile_config"],
                 "segment": segment,
             }
+            if execution:
+                # Keep the snapshot with its immutable revision. Never use a
+                # mutable profile workflow or the source generation archives.
+                from .processing_execution import metadata_fields
+                metadata.update(metadata_fields(execution))
+                segment["execution_hash"] = chain._fingerprint(execution)
             if state["source_manifest"].get("upscale_range"):
                 metadata["upscale_range_start"] = _source_bounds(state["source_manifest"])[0]
             from .png_export_ownership import owner_key
@@ -2836,37 +2921,45 @@ class MiniMaxH3ChainUpscaleSegmentSave:
                 persistence.sync_file(artifact)
             for directory in {os.path.dirname(p) for p in artifacts}:
                 persistence.sync_directory(directory)
-            with chain.checkpoint_run_lock(chain._output_root(), state["run_name"]):
-                require_saved_processing_segments(chain._output_root(),
-                    list(state.get("segments", [])) + [item for item in
-                        state["source_manifest"]["segments"] if item.get("processing_source")])
-                # Once publication starts, a network error can mean "committed
-                # but acknowledgement lost". Never remove media that an immutable
-                # revision or current pointer may already reference.
+            if workspace is not None:
+                if workspace.witness != save_witness(runtime, state, images, upscaled_latent, sys.modules[__name__]):
+                    raise ValueError('Processing continuation inputs changed while encoding; no take was accepted.')
                 publication_started = True
-                persistence.atomic_json(metadata_path, metadata)
-                persistence.atomic_json(paths["metadata"], metadata)
+                accepted = workspace.publish(metadata)
                 committed = True
-                try:
-                    persistence.atomic_json(
-                        paths["manifest"] if complete else paths["partial"], partial)
-                except OSError as exc:
-                    save_warning = "; scene saved; manifest refresh failed (resume from scene checkpoints)"
-                    chain._LOG.warning("H3 upscale scene %d is saved, but its manifest refresh failed: %s", index, exc)
+                # Private transport fields are never part of the saved segment
+                # or processing lineage. A continuation port will verify these.
+                from .storage_processing_retry import result_segment
+                segment = result_segment(accepted)
+                segment_path = str(runtime.store.payload_path(runtime.accepted,
+                    runtime.reader.address(segment['segment']), verify=True))
+            else:
+                with chain.checkpoint_run_lock(chain._output_root(), state["run_name"]):
+                    require_saved_processing_segments(chain._output_root(),
+                        list(state.get("segments", [])) + [item for item in
+                            state["source_manifest"]["segments"] if item.get("processing_source")])
+                    publication_started = True
+                    persistence.atomic_json(metadata_path, metadata)
+                    persistence.atomic_json(paths["metadata"], metadata)
+                    committed = True
+                    try:
+                        persistence.atomic_json(
+                            paths["manifest"] if complete else paths["partial"], partial)
+                    except OSError as exc:
+                        save_warning = "; scene saved; manifest refresh failed (resume from scene checkpoints)"
+                        chain._LOG.warning("H3 upscale scene %d is saved, but its manifest refresh failed: %s", index, exc)
         finally:
             chain._safe_unlink(checkpoint_tmp)
             if publication_started and not committed:
-                chain._LOG.warning(
-                    "H3 upscale scene %d publication was interrupted or uncertain; "
-                    "new media was retained at %s. The previous take was not deleted.", index, segment_path)
-            if not committed and not publication_started:
-                for value in (segment_path, checkpoint_path, metadata_path,
-                              prompt_path, audio_path):
+                chain._LOG.warning("H3 upscale scene %d publication was interrupted or uncertain; media retained at %s", index, segment_path)
+            if workspace is None and not committed and not publication_started:
+                for value in (segment_path, checkpoint_path, metadata_path, prompt_path, audio_path):
                     if value:
                         chain._safe_unlink(value)
 
-        cache_cleanup = chain.confirm_saved_use(
+        cache_cleanup = (chain.confirm_saved_use(
             dynprompt, unique_id, metadata_path, chain._output_root(), chain._LOG)
+            if workspace is None else [])
         status = ("saved HQ scene %d/%d at %dx%d; latent %s -> %s" %
                   (index, _source_bounds(state["source_manifest"])[1], width,
                    height, "saved" if save_latent else "omitted", segment_path))
@@ -2877,13 +2970,17 @@ class MiniMaxH3ChainUpscaleSegmentSave:
             status += "; retained %d-step Drift-Control HQ tail" % context_steps
         if cache_cleanup:
             status += "; retired %d verified legacy reference bundle(s)" % len(cache_cleanup)
+        if workspace is not None:
+            relative = os.path.relpath(segment_path, chain._output_root()).replace(os.sep, '/')
+            preview = dict(filename=os.path.basename(relative), subfolder=os.path.dirname(relative), type='output')
+        else:
+            preview = chain._video_output_item(segment_path)
         return {
             "ui": {"text": [status],
-                   "images": [chain._video_output_item(segment_path)],
+                   "images": [preview],
                    "animated": (True,)},
             "result": (segment, status),
         }
-
 
 class MiniMaxH3ChainUpscaleLoopEnd:
     @classmethod
@@ -3044,9 +3141,20 @@ class MiniMaxH3ChainUpscaleLoopEnd:
                 "live previous HQ latent" if upscaled_latent is not None
                 else "previous HQ latent unavailable"),
         })
+        if _processing_read_view() is not None:
+            next_state['_processing_continuation'] = dict(segment)
         return next_state
 
     def _advance(self, flow, next_state, dynprompt=None, unique_id=None):
+        if _processing_read_view() is not None:
+            from .storage_runtime import current_runtime
+            from .storage_processing_continuation import delivery
+            bound = current_runtime(chain._output_root(), next_state['run_name'])
+            manifest = delivery(bound, next_state, sys.modules[__name__])
+            if int(next_state['index']) - 1 < int(next_state['end_clip']):
+                return self._recurse(flow, next_state, dynprompt, unique_id)
+            return (manifest, json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True),
+                    next_state['previous_frames'], next_state['previous_latent'])
         index = int(next_state["index"]) - 1
         state = {**next_state, "index": index}
         if index < int(state["end_clip"]):
@@ -3201,7 +3309,11 @@ def _assembly_manifest(manifest: dict[str, Any],
         "total_delivered_frames": int(manifest["total_delivered_frames"]),
         "duration_seconds": float(manifest["duration_seconds"]),
         "segments": assembled,
-        "archives": source.get("archives", {}),
+        # Retain the source Plan for existing recovery consumers, but do not
+        # advertise the generation graph as the workflow that upscaled clips.
+        "archives": {key: value for key, value in (source.get("archives") or {}).items()
+                     if key == "plan"},
+        "source_archives": source.get("archives", {}),
         "upscale": {
             "profile": manifest["profile"],
             "source_manifest_hash": manifest["source_manifest_hash"],
@@ -3241,16 +3353,33 @@ def _assembly_manifest(manifest: dict[str, Any],
 
 
 def _write_upscale_final_record(manifest: dict[str, Any],
-                                final_path: str) -> None:
+                                final_path: str, *, _workspace=None) -> None:
     """Publish the child-profile provenance beside a unified assembly."""
-    generated_sidecar = os.path.splitext(final_path)[0] + ".generated.wav"
+    # Related files share a logical stem, not necessarily a physical one.
+    # Organized exports use video.mp4 / audio.wav / video.json, and previously
+    # migrated assignments may live in other independently mapped locations.
+    logical = (_workspace.logical_file if _workspace is not None
+               else chain._relative_output_path)
+    logical_stem = os.path.splitext(logical(final_path))[0]
+    if _workspace is not None:
+        generated_sidecar = _workspace.output_files.get("audio", "")
+        metadata_path = _workspace.output_files["metadata"]
+    else:
+        generated_sidecar = chain._absolute_output_path(logical_stem + ".generated.wav")
+        metadata_path = chain._absolute_output_path(logical_stem + ".json")
     record = {
         "format": "h3_chain_upscale_final_v1",
         "run_name": manifest["run_name"],
         "profile": manifest["profile"],
         "profile_config": manifest["profile_config"],
         "source_manifest_hash": manifest["source_manifest_hash"],
-        "video": chain._relative_output_path(final_path),
+        "source_archives": manifest["source_manifest"].get("archives", {}),
+        "processing_executions": [{
+            "scene": item["index"], "revision": item["revision"],
+            "metadata": item.get("revision_metadata"),
+            "execution_hash": item.get("execution_hash"),
+        } for item in manifest["segments"]],
+        "video": logical(final_path),
         "video_sha256": chain._file_sha256(final_path),
         "frame_count": int(manifest["total_delivered_frames"]),
         "complete": manifest.get("format") == "h3_chain_upscale_manifest_v1",
@@ -3263,12 +3392,11 @@ def _write_upscale_final_record(manifest: dict[str, Any],
     }
     if os.path.isfile(generated_sidecar):
         record.update({
-            "generated_audio": chain._relative_output_path(
-                generated_sidecar),
+            "generated_audio": logical(generated_sidecar),
             "generated_audio_sha256": chain._file_sha256(
                 generated_sidecar),
         })
-    chain._atomic_json(os.path.splitext(final_path)[0] + ".json", record)
+    (_workspace.write_json if _workspace is not None else chain._atomic_json)(metadata_path, record)
 
 
 class MiniMaxH3ChainUpscaleMerge:
@@ -3301,6 +3429,7 @@ class MiniMaxH3ChainUpscaleMerge:
                     "tooltip": "Optional 0.5 Source Timeline. Usually the "
                                "parent manifest's recovery descriptor is enough."}),
             },
+            "hidden": {"unique_id": "UNIQUE_ID"},
         }
 
     RETURN_TYPES = ("STRING",)
@@ -3318,8 +3447,26 @@ class MiniMaxH3ChainUpscaleMerge:
     def IS_CHANGED(cls, *args, **kwargs):
         return float("NaN")
 
+    @project_writer(domain='exports')
     def merge(self, manifest, audio_source, filename, audio_bitrate,
-              source_audio=None, source_timeline=None):
+              source_audio=None, source_timeline=None, unique_id=None):
+        from .storage_runtime import current_runtime
+        bound = current_runtime(chain._output_root(), manifest.get('run_name'))
+        if bound is not None:
+            from .storage_assembly import AssemblyExport
+            from .storage_carriers import export_operation
+            operation = export_operation(type(self).merge, unique_id)
+            if operation is None:
+                raise ValueError('Upscale Merge needs a host-issued exact node operation ID.')
+            # This compatibility node owns its own grant and retry identity.
+            # Calling another decorated writer would either borrow its grant
+            # or require an unrelated second node ID. Share the renderer only.
+            workspace = AssemblyExport(bound, sys.modules[__name__], manifest,
+                operation=operation, audio_source=audio_source, filename=filename,
+                audio_bitrate=audio_bitrate, source_audio=source_audio,
+                source_timeline=source_timeline)
+            workspace.prepare(chain.MiniMaxH3ChainAssemble())
+            return workspace.publish()
         return chain.MiniMaxH3ChainAssemble().assemble(
             manifest, audio_source, filename, audio_bitrate,
             source_audio=source_audio, source_timeline=source_timeline)

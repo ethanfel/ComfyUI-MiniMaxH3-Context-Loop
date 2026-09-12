@@ -10,13 +10,16 @@ import re
 import threading
 import uuid
 from collections import defaultdict, deque
+from contextlib import contextmanager, nullcontext
 from datetime import datetime, timezone
 from typing import Any
 
 if __package__:
     from .branch_scope import working_directory
+    from .storage_resolver import resolve_output, logical_output, storage_state
 else:
     from branch_scope import working_directory
+    from storage_resolver import resolve_output, logical_output, storage_state
 
 
 _REVISION = re.compile(r"clip_(\d{4})\.([0-9a-f]{32})\.json")
@@ -150,8 +153,8 @@ def _strict_run_name(value: Any) -> str:
     return normalized
 
 
-def checkpoint_run_lock(output_root: str, run_name: Any) -> _RunMutationLock:
-    """Return the cross-process mutation lock shared by save and delete."""
+def _raw_checkpoint_run_lock(output_root: str, run_name: Any) -> _RunMutationLock:
+    """Stable lock authority; only maintenance may bypass the storage gate."""
     root = os.path.realpath(os.path.abspath(output_root))
     run = _strict_run_name(run_name)
     key = (root, run)
@@ -159,6 +162,16 @@ def checkpoint_run_lock(output_root: str, run_name: Any) -> _RunMutationLock:
         lock_path = os.path.join(
             root, "h3_chains", ".run_locks", run + ".lock")
         return _RUN_LOCKS.setdefault(key, _RunMutationLock(lock_path))
+
+
+@contextmanager
+def checkpoint_run_lock(output_root: str, run_name: Any):
+    """Recheck storage AFTER acquiring the lock, not before a possible wait."""
+    root = os.path.realpath(os.path.abspath(output_root))
+    run = _strict_run_name(run_name)
+    with _raw_checkpoint_run_lock(root, run):
+        storage_state(os.path.join(root, "h3_chains", run))
+        yield
 
 
 def checkpoint_revision_token(scene: Any, segment: Any) -> str:
@@ -202,10 +215,60 @@ class CheckpointDeleteBlocked(ValueError):
 class CheckpointGraphManager:
     """Build lineage graphs and remove only dependency-free revisions."""
 
-    def __init__(self, output_root: str):
+    def __init__(self, output_root: str, *, rehearsal_view=None):
         self.output_root = os.path.realpath(os.path.abspath(output_root))
         self.chains_root = os.path.realpath(os.path.join(
             self.output_root, "h3_chains"))
+        if rehearsal_view is None:
+            if __package__:
+                from .storage_runtime import current_runtime
+            else:
+                from storage_runtime import current_runtime
+            runtime = current_runtime(self.output_root)
+            if runtime is not None:
+                rehearsal_view = runtime.reader
+        if rehearsal_view is not None:
+            if __package__:
+                from .storage_project_reads import ProjectReadView
+            else:
+                from storage_project_reads import ProjectReadView
+            if (not isinstance(rehearsal_view, ProjectReadView)
+                    or str(rehearsal_view.output) != self.output_root):
+                raise ValueError("Checkpoint view requires this output's explicit combined-store reader.")
+        self._rehearsal_view = rehearsal_view
+
+    def _read_operation(self):
+        return self._rehearsal_view.operation() if self._rehearsal_view else nullcontext()
+
+    def _working_directory(self, run_dir, run):
+        return (self._rehearsal_view.working_directory(run) if self._rehearsal_view
+                else working_directory(run_dir, run))
+
+    def _read_document(self, path):
+        return self._rehearsal_view.read(path) if self._rehearsal_view else self._read_json(path)
+
+    def _read_names(self, directory):
+        return (self._rehearsal_view.names(directory) if self._rehearsal_view else
+                os.listdir(directory) if os.path.isdir(directory) else [])
+
+    def _read_path(self, path):
+        return str(self._rehearsal_view.path(path)) if self._rehearsal_view else path
+
+    def _logical_artifact(self, path):
+        return (self._rehearsal_view.logical_output(path) if self._rehearsal_view
+                else logical_output(self.output_root, path))
+
+    def _read_chapter_starts(self, run_dir):
+        if self._rehearsal_view:
+            try:
+                return self.chapter_starts_from_document(self._read_document(os.path.join(run_dir, 'editorial.json')))
+            except FileNotFoundError:
+                return set()
+        return self._chapter_starts(run_dir)
+
+    def _require_legacy_mutation(self):
+        if self._rehearsal_view:
+            raise ValueError("Combined-store checkpoint view is read-only; mutation requires its transaction service.")
 
     @staticmethod
     def _inside(root: str, path: str) -> bool:
@@ -219,17 +282,19 @@ class CheckpointGraphManager:
         path = os.path.realpath(os.path.join(self.chains_root, run))
         if not self._inside(self.output_root, path):
             raise ValueError("H3 checkpoint run path escapes the output directory.")
+        if self._rehearsal_view:
+            self._rehearsal_view.validate_run(run)
+        else:
+            storage_state(path)
         return path, run
 
     def _artifact_path(self, value: Any) -> str:
         text = str(value or "").strip()
         if not text:
             raise ValueError("Checkpoint artifact path is empty.")
-        path = os.path.realpath(
-            text if os.path.isabs(text) else os.path.join(self.output_root, text))
-        if not self._inside(self.output_root, path):
-            raise ValueError("Checkpoint artifact path escapes the output directory.")
-        return path
+        if self._rehearsal_view:
+            return str(self._rehearsal_view.path(text))
+        return str(resolve_output(self.output_root, text))
 
     def _output_item(self, path: str) -> dict[str, str]:
         relative = os.path.relpath(path, self.output_root)
@@ -294,7 +359,14 @@ class CheckpointGraphManager:
         """Read editorial branch roots without making notes executable state."""
         path = os.path.join(run_dir, "editorial.json")
         try:
-            document = cls._read_json(path)
+            return cls.chapter_starts_from_document(cls._read_json(path))
+        except (OSError, TypeError, ValueError, json.JSONDecodeError, AttributeError):
+            return set()
+
+    @staticmethod
+    def chapter_starts_from_document(document) -> set[int]:
+        """Same chapter-root rules for physical and pinned control readers."""
+        try:
             chapters = document.get("chapters")
             if not isinstance(chapters, list):
                 return set()
@@ -456,39 +528,54 @@ class CheckpointGraphManager:
     def active_selection(
             self, run_name: Any) -> tuple[dict[int, str], dict[int, str]]:
         """Cheap, read-only selection shared by recovery and the UI."""
+        with self._read_operation():
+            return self._read_active_selection(run_name)
+
+    def _read_active_selection(self, run_name):
         run_dir, _run = self._run_dir(run_name)
-        run_dir = working_directory(run_dir, _run)
+        run_dir = self._working_directory(run_dir, _run)
         checkpoint_dir = os.path.join(run_dir, "checkpoints")
-        segments = {}
-        if os.path.isdir(checkpoint_dir):
-            for filename in os.listdir(checkpoint_dir):
+        pointers = {}
+        if self._rehearsal_view or os.path.isdir(checkpoint_dir):
+            for filename in self._read_names(checkpoint_dir):
                 match = _ACTIVE.fullmatch(filename)
                 if match is None:
                     continue
                 try:
-                    segment = self._read_json(os.path.join(
-                        checkpoint_dir, filename)).get("segment")
-                    scene = int(match.group(1))
-                    if (isinstance(segment, dict) and
-                            int(segment.get("index", -1)) == scene):
-                        segments[scene] = segment
+                    pointers[int(match.group(1))] = self._read_document(os.path.join(
+                        checkpoint_dir, filename))
                 except (OSError, TypeError, ValueError, AttributeError):
                     continue
-        active, stale = self.select_active_lineage(
-            segments, self._chapter_starts(run_dir))
+        return self.active_selection_from_pointers(pointers, self._read_chapter_starts(run_dir))
+
+    @classmethod
+    def active_selection_from_pointers(cls, pointers, chapter_starts=()):
+        """Read-only lineage selection; callers supply one coherent document view.
+
+        This is not payload verification or checkpoint assignment authorization.
+        """
+        segments = {}
+        for scene, metadata in pointers.items():
+            try:
+                segment = metadata.get("segment")
+                if isinstance(segment, dict) and int(segment.get("index", -1)) == scene:
+                    segments[scene] = segment
+            except (TypeError, ValueError, AttributeError):
+                continue
+        active, stale = cls.select_active_lineage(segments, chapter_starts)
         return {scene: checkpoint_revision_token(scene, segment)
                 for scene, segment in active.items()}, stale
 
     def _active_revisions(self, checkpoint_dir: str) -> dict[int, str]:
         active: dict[int, str] = {}
-        if not os.path.isdir(checkpoint_dir):
+        if not self._rehearsal_view and not os.path.isdir(checkpoint_dir):
             return active
-        for filename in os.listdir(checkpoint_dir):
+        for filename in self._read_names(checkpoint_dir):
             match = _ACTIVE.fullmatch(filename)
             if match is None:
                 continue
             try:
-                metadata = self._read_json(os.path.join(checkpoint_dir, filename))
+                metadata = self._read_document(os.path.join(checkpoint_dir, filename))
                 segment = metadata.get("segment")
                 if not isinstance(segment, dict):
                     continue
@@ -586,23 +673,25 @@ class CheckpointGraphManager:
         run_dir, run = self._run_dir(run_name)
         checkpoint_dir = os.path.join(run_dir, "checkpoints")
         review_dir = os.path.join(run_dir, "reviews")
-        working_dir = working_directory(run_dir, run)
+        working_dir = self._working_directory(run_dir, run)
         pointer_dir = os.path.join(working_dir, "checkpoints")
-        chapter_starts = self._chapter_starts(working_dir)
+        chapter_starts = self._read_chapter_starts(working_dir)
         if adopt_legacy:
+            self._require_legacy_mutation()
             self._adopt_legacy_active_revisions(checkpoint_dir, run)
         active = self._active_revisions(pointer_dir)
         selected, stale = self.active_selection(run)
         records: dict[tuple[int, str], dict[str, Any]] = {}
-        if os.path.isdir(checkpoint_dir):
-            for filename in sorted(os.listdir(checkpoint_dir)):
+        if self._rehearsal_view or os.path.isdir(checkpoint_dir):
+            for filename in sorted(self._read_names(checkpoint_dir)):
                 match = _REVISION.fullmatch(filename)
                 if match is None:
                     continue
                 metadata_path = os.path.realpath(os.path.join(
                     checkpoint_dir, filename))
                 try:
-                    metadata = self._read_json(metadata_path)
+                    metadata = self._read_document(metadata_path)
+                    metadata_path = self._read_path(metadata_path)
                     segment = metadata.get("segment")
                     if not isinstance(segment, dict):
                         continue
@@ -761,8 +850,7 @@ class CheckpointGraphManager:
                 base["_dependents"].append(key)
 
         try:
-            review_names = os.listdir(review_dir) if os.path.isdir(
-                review_dir) else []
+            review_names = self._read_names(review_dir)
         except OSError:
             review_names = []
         segment_hash_counts: dict[str, int] = defaultdict(int)
@@ -868,15 +956,15 @@ class CheckpointGraphManager:
                     continue
                 paths.setdefault(self._artifact_path(value), (kind, False))
         video_hash = record["segment_sha256"][:12]
-        if video_hash and os.path.isdir(scan["review_dir"]):
+        if video_hash and scan["review_names"]:
             prefix = "clip_%04d.%s." % (record["scene"], video_hash)
             shared = scan["segment_hash_counts"].get(
                 record["segment_sha256"], 0) > 1
             for candidate in scan["review_names"]:
                 if candidate.startswith(prefix) and candidate.endswith(
                         ".review.mp4"):
-                    path = os.path.realpath(os.path.join(
-                        scan["review_dir"], candidate))
+                    path = self._read_path(os.path.realpath(os.path.join(
+                        scan["review_dir"], candidate)))
                     paths[path] = ("review_preview", shared)
 
         expected_prefix = "clip_%04d.%s" % (
@@ -898,25 +986,27 @@ class CheckpointGraphManager:
             scan["checkpoint_dir"], "clip_%04d.json" % record["scene"]))
         artifacts = []
         for path, (kind, shared) in sorted(paths.items()):
-            is_shared_archive = path == shared_archive_paths.get(kind)
-            if path == canonical:
+            address = self._logical_artifact(path)
+            owned_path = os.path.join(self.output_root, *address.split("/"))
+            is_shared_archive = owned_path == shared_archive_paths.get(kind)
+            if owned_path == canonical:
                 raise ValueError("Refusing to manage an active checkpoint pointer.")
             if (not is_shared_archive and
-                    not any(self._inside(root, path) for root in allowed_roots)):
+                    not any(self._inside(root, owned_path) for root in allowed_roots)):
                 raise ValueError("Checkpoint revision owns an unexpected path.")
             path_references = scan["artifact_path_counts"].get(path, 0)
             shared = bool(shared or is_shared_archive or path_references > 1)
             adopted_prefix = "clip_%04d.%s" % (
                 record["scene"], record.get("adopted_from_revision") or "")
-            owns_named_path = os.path.basename(path).startswith(expected_prefix)
+            owns_named_path = os.path.basename(owned_path).startswith(expected_prefix)
             adopts_named_path = bool(
                 record.get("adopted_from_revision") and
-                os.path.basename(path).startswith(adopted_prefix))
-            is_archive_path = self._inside(recovery_root, path)
+                os.path.basename(owned_path).startswith(adopted_prefix))
+            is_archive_path = self._inside(recovery_root, owned_path)
             owns_archive_path = (
-                is_archive_path and os.path.dirname(path) ==
+                is_archive_path and os.path.dirname(owned_path) ==
                 expected_archive_root)
-            if (not self._inside(scan["review_dir"], path) and
+            if (not self._inside(scan["review_dir"], owned_path) and
                     not owns_named_path and not adopts_named_path and
                     not is_archive_path and not is_shared_archive):
                 raise ValueError(
@@ -933,7 +1023,7 @@ class CheckpointGraphManager:
             artifacts.append({
                 "kind": kind,
                 "label": _ARTIFACT_KINDS.get(kind, kind.replace("_", " ").title()),
-                "path": os.path.relpath(path, self.output_root),
+                "path": address,
                 "exists": exists,
                 "size_bytes": size,
                 "shared": bool(shared),
@@ -1161,12 +1251,11 @@ class CheckpointGraphManager:
                 "lineage_status": record["_lineage_issue"] or (
                     "chapter root" if record["_chapter_root"] else
                     "root" if record["scene"] == 1 else "linked"),
-                "metadata_path": os.path.relpath(
-                    record["_metadata_path"], self.output_root),
+                "metadata_path": self._logical_artifact(record["_metadata_path"]),
             })
             public_records.append(item)
         try:
-            editorial = self._read_json(os.path.join(
+            editorial = self._read_document(os.path.join(
                 scan["working_dir"], "editorial.json"))
             replacement_rows = editorial.get("replacements", [])
         except (OSError, TypeError, ValueError, json.JSONDecodeError,
@@ -1245,10 +1334,11 @@ class CheckpointGraphManager:
         }
 
     def graph(self, run_name: Any, *, adopt_legacy: bool = True) -> dict[str, Any]:
-        run_dir, run = self._run_dir(run_name)
-        if not os.path.isdir(run_dir):
-            raise FileNotFoundError("H3 run %r does not exist." % run)
-        return self._public_graph(self._scan(run, adopt_legacy=adopt_legacy))
+        with self._read_operation():
+            run_dir, run = self._run_dir(run_name)
+            if not os.path.isdir(run_dir):
+                raise FileNotFoundError("H3 run %r does not exist." % run)
+            return self._public_graph(self._scan(run, adopt_legacy=adopt_legacy))
 
     def attribute(
             self, run_name: Any, parent_scene: Any, parent_revision: Any,
@@ -1258,6 +1348,11 @@ class CheckpointGraphManager:
         Only metadata is created. Video, audio, prompt, and checkpoint files
         remain shared with the original immutable candidate revision.
         """
+        runtime = getattr(self._rehearsal_view, "runtime", None)
+        if runtime is None:
+            self._require_legacy_mutation()
+        else:
+            runtime.branches._require_write()
         run_dir, run = self._run_dir(run_name)
         parent_scene_number = int(parent_scene)
         candidate_scene_number = int(candidate_scene)
@@ -1270,10 +1365,11 @@ class CheckpointGraphManager:
         if candidate_scene_number != parent_scene_number + 1:
             raise ValueError(
                 "A candidate can only be attributed to the immediately preceding scene slot.")
-        with checkpoint_run_lock(self.output_root, run):
+        with (self._read_operation() if runtime is not None else
+              checkpoint_run_lock(self.output_root, run)):
             if not os.path.isdir(run_dir):
                 raise FileNotFoundError("H3 run %r does not exist." % run)
-            scan = self._scan(run)
+            scan = self._scan(run, adopt_legacy=runtime is None)
             records = scan["records"]
             parent_key = (parent_scene_number, parent_token)
             candidate_key = (candidate_scene_number, candidate_token)
@@ -1359,7 +1455,11 @@ class CheckpointGraphManager:
                 "parent_revision": parent_token,
                 "shared_artifacts": True,
             }
-            self._atomic_json(metadata_path, metadata)
+            if runtime is None:
+                self._atomic_json(metadata_path, metadata)
+            else:
+                self._publish_runtime_attribution(runtime, scan, parent, candidate,
+                                                  metadata_path, metadata)
             return {
                 "ok": True,
                 "created": True,
@@ -1374,6 +1474,69 @@ class CheckpointGraphManager:
                     (candidate_scene_number, candidate_token[:8],
                      parent_token[:8])),
             }
+
+    def _publish_runtime_attribution(self, runtime, scan, parent, candidate,
+                                     metadata_path, metadata):
+        """Publish one immutable alias, sharing verified accepted source files.
+
+        The branch write grant permits this domain operation, not arbitrary take
+        writes. No assignment, media file or authoring snapshot is changed.
+        """
+        if __package__:
+            from .storage_state import _lock, _decode, _encode, StateConflict
+            from .storage_project import payload_key
+            from .branch_scope import current_branch
+        else:
+            from storage_state import _lock, _decode, _encode, StateConflict
+            from storage_project import payload_key
+            from branch_scope import current_branch
+        if current_branch(runtime.run) != runtime.selected:
+            raise ValueError("Checkpoint attribution belongs to a different runtime branch.")
+        documents = runtime.base.state["documents"]
+        scopes = {"branch:"+runtime.selected}
+        for record in (parent, candidate):
+            for artifact in self._artifacts(scan, record):
+                address = runtime.reader.address(artifact["path"])
+                key = address if address in documents else payload_key(address)
+                if key not in documents:
+                    if artifact["exists"]:
+                        raise StateConflict("Attribution artifact is not accepted in the input root.")
+                    continue  # Preserve V1's handling of absent optional sidecars.
+                scopes.add(documents[key]["scope"])
+                # Archived workflows are opaque, hash-verified saved bytes,
+                # not authority documents. Older workflows may contain JSON
+                # extensions such as Infinity; do not reinterpret their data.
+                raw = runtime.base.read(key)
+                if key != address:
+                    value = _decode(raw)
+                    runtime.store.payload_path(runtime.base, address, verify=True)
+                    expected = record["_segment"].get(artifact["kind"]+"_sha256")
+                    if expected and expected != value["file"]["sha256"]:
+                        raise ValueError("Attribution source metadata disagrees with its accepted artifact hash.")
+        address = runtime.reader.address(metadata_path)
+        revision = metadata["segment"]["revision"]
+        adoption = metadata["adoption"]
+        # The raw mutation lock is shared by every control-store publication.
+        # A concurrently added alias must not evade the pinned scan's dedup.
+        with runtime.branches._commit_guard(), _lock(runtime.project):
+            current = runtime.store.snapshot()
+            for name, descriptor in current.state["documents"].items():
+                if (descriptor["category"] != "takes" or
+                        documents.get(name) == descriptor or
+                        not _REVISION.fullmatch(os.path.basename(name))):
+                    continue
+                saved = _decode(current.read(name))
+                existing = saved.get("adoption") if isinstance(saved, dict) else None
+                if (isinstance(existing, dict) and
+                        existing.get("source_scene") == adoption["source_scene"] and
+                        existing.get("source_revision") == adoption["source_revision"] and
+                        existing.get("parent_revision") == adoption["parent_revision"]):
+                    raise StateConflict("Candidate was attributed while this request was pending; refresh the checkpoint graph.")
+            receipt = runtime.store.commit(runtime.base, {address: {
+                "data": _encode(metadata), "scope": "archive:"+revision,
+                "category": "takes", "immutable": True}}, operation_id=uuid.uuid4().hex,
+                read_scopes=scopes, after_stage=runtime.branches.after_stage)
+            runtime.record_commit(receipt)
 
     def _chapter_references(self, scan: dict[str, Any], revision: str,
                             artifacts: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1402,9 +1565,50 @@ class CheckpointGraphManager:
             relative = value.replace("\\", "/")
             if not (relative.startswith("h3_chains/") or os.path.isabs(relative)):
                 return False
+            if self._rehearsal_view:
+                # External reference/source paths in a sealed cut are not
+                # owned artifacts of this project. Do not turn them into
+                # permanent deletion blockers merely because the read view
+                # correctly refuses to resolve another project's files.
+                if relative.startswith("h3_chains/"):
+                    if not relative.startswith("h3_chains/" + scan["run_name"] + "/"):
+                        return False
+                elif not self._inside(scan["run_dir"], relative):
+                    return False
+                return os.path.realpath(self._artifact_path(relative)) in paths
             return os.path.realpath(os.path.join(self.output_root, relative)) in paths
 
         references = []
+        if self._rehearsal_view:
+            # Organized stores have no legacy chapter directories to scan.
+            # Read exact logical snapshot identities from this operation's pin,
+            # including other retained working branches. Never scan immutable
+            # version directories or adopt a leftover legacy snapshot.
+            documents = self._rehearsal_view._session()["controls"]
+            pattern = re.compile(
+                r"(?:branches/[0-9a-f]{32}/)?chapters/([^/]+)/manifests/([0-9a-f]{32})\.json")
+            for address in sorted(documents):
+                match = pattern.fullmatch(address)
+                if match is None:
+                    continue
+                try:
+                    document = self._read_document(os.path.join(scan["run_dir"], *address.split("/")))
+                    if (not isinstance(document, dict)
+                            or document.get("format") != "h3_chain_chapter_manifest_v1"
+                            or document.get("run_name") != scan["run_name"]
+                            or not isinstance(document.get("segments"), list)
+                            or not document["segments"]
+                            or not isinstance(document.get("chapter"), dict)):
+                        raise ValueError("invalid chapter snapshot: " + address)
+                    if mentions(document):
+                        chapter = document["chapter"]
+                        references.append({"number": chapter.get("number"),
+                            "title": str(chapter.get("title") or match[1]),
+                            "snapshot": match[2],
+                            "path": "h3_chains/" + scan["run_name"] + "/" + address})
+                except (OSError, ValueError, TypeError, RecursionError) as error:
+                    references.append({"error": "Cannot verify sealed chapter recovery: " + str(error)})
+            return references
         if not scan.get("_branch_snapshot_scan"):
             branch_root = os.path.join(scan["run_dir"], "branches")
             if os.path.isdir(branch_root):
@@ -1462,6 +1666,12 @@ class CheckpointGraphManager:
 
     def deletion_preview(self, run_name: Any, scene: Any,
                          revision: Any) -> dict[str, Any]:
+        runtime = getattr(self._rehearsal_view, "runtime", None)
+        if runtime is not None:
+            if _strict_run_name(run_name) != runtime.run:
+                raise ValueError("Retention preview belongs to another project.")
+            return runtime.retention.preview_generation(int(scene), str(revision or "").strip().lower())
+        self._require_legacy_mutation()
         run_dir, run = self._run_dir(run_name)
         scene_number = int(scene)
         token = str(revision or "").strip().lower()
@@ -1639,7 +1849,14 @@ class CheckpointGraphManager:
             }
 
     def delete(self, run_name: Any, scene: Any, revision: Any,
-               expected_snapshot: Any = "") -> dict[str, Any]:
+               expected_snapshot: Any = "", *, ownership_proof=None) -> dict[str, Any]:
+        runtime = getattr(self._rehearsal_view, "runtime", None)
+        if runtime is not None:
+            if _strict_run_name(run_name) != runtime.run:
+                raise ValueError("Retention request belongs to another project.")
+            return runtime.retention.delete_generation(int(scene), str(revision or "").strip().lower(),
+                expected_snapshot, proof=ownership_proof)
+        self._require_legacy_mutation()
         run_dir, run = self._run_dir(run_name)
         with checkpoint_run_lock(self.output_root, run):
             preview = self.deletion_preview(run, scene, revision)

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import {readFileSync} from "node:fs";
+import {projectAssetEditAttempts} from "../web/h3_project_asset_sync_core.mjs";
 import {
     canCaptureFrame, captureCarousels, captureTargetProject, carouselProject,
 } from "../web/h3_review_capture_core.mjs";
@@ -86,7 +87,7 @@ const dialogCode = source.slice(source.indexOf('    const captureRow = document.
     source.indexOf('    const prefix = document.createElement("pre");'));
 assert.ok(dialogCode.length > 4000);
 const mount = new Function("node", "root", "video", "api", "document", "canCaptureFrame",
-    "captureCarousels", "captureTargetProject", "carouselProject", "projectMutationOptions",
+    "captureCarousels", "captureTargetProject", "carouselProject", "projectMutationOptions", "projectAssetEditAttempts",
     dialogCode + "\nroot.append(captureRow); return {openCaptureDialog, captureButton, captureStatus};");
 const flush = async () => { for (let i = 0; i < 10; i++) await Promise.resolve(); };
 const reply = (body, ok = true) => ({ok, status: ok ? 200 : 400, json: async () => body});
@@ -103,7 +104,7 @@ function setup(authorize = async (_node, _project, options) => ({
     const video = {h3CaptureItem: {filename: "scene.mp4", subfolder: "run", type: "output"},
         readyState: 2, videoWidth: 64, videoHeight: 48, currentTime: 0.5, pause() {}};
     const ui = mount(node, root, video, api, {createElement: (tag) => new Element(tag)},
-        canCaptureFrame, captureCarousels, captureTargetProject, carouselProject, authorize);
+        canCaptureFrame, captureCarousels, captureTargetProject, carouselProject, authorize, projectAssetEditAttempts);
     const find = (name) => root.querySelector(`.h3r-capture-${name}`);
     const project = () => root.querySelectorAll(".h3r-capture-tag")[0];
     const tag = () => root.querySelectorAll(".h3r-capture-tag")[1];
@@ -148,7 +149,9 @@ function setup(authorize = async (_node, _project, options) => ({
     assert.equal(t.tag().disabled, true);
     assert.equal(t.ui.captureButton.disabled, true);
     assert.equal(t.requests[1].options.headers["X-H3-Workflow-Owner"], "test-owner");
-    assert.deepEqual(JSON.parse(t.requests[1].options.body), {
+    const {storage_operation_id, ...requestBody} = JSON.parse(t.requests[1].options.body);
+    assert.match(storage_operation_id,/^[a-f0-9]{32}$/);
+    assert.deepEqual(requestBody, {
         project: "A", filename: "scene.mp4", subfolder: "run", type: "output", time_seconds: 0.5, tag: "hero",
     });
     await t.save().fire("click");
@@ -184,9 +187,17 @@ function setup(authorize = async (_node, _project, options) => ({
     assert.equal(t.project().disabled, false);
     assert.match(t.find("error").textContent, /Video source is missing/);
     assert.equal(t.a.refreshed, 0);
+    const firstId = JSON.parse(t.requests[1].options.body).storage_operation_id;
+    const retry = t.save().fire("click"); await flush();
+    assert.equal(JSON.parse(t.requests[2].options.body).storage_operation_id,firstId);
+    t.requests[2].resolve(reply({error:"Still unavailable"},false)); await retry;
+    t.tag().value = "changed_tag";
+    const changed = t.save().fire("click"); await flush();
+    assert.notEqual(JSON.parse(t.requests[3].options.body).storage_operation_id,firstId);
+    t.requests[3].resolve(reply({error:"Still unavailable"},false)); await changed;
     t.node.graph = null;
     await t.save().fire("click");
-    assert.equal(t.requests.length, 2);
+    assert.equal(t.requests.length, 4);
     assert.match(t.find("error").textContent, /changed workflows/);
 }
 {

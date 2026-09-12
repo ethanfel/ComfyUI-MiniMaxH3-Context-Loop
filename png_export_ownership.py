@@ -4,8 +4,12 @@ import hashlib
 import json
 
 from . import processing_persistence as persistence
+from .storage_resolver import logical_output
 
 FORMAT = "h3_png_export_catalog_v1"
+# New runtime writes cannot overwrite an immutable imported legacy catalogue.
+# Cleanup reads both; reverse recovery keeps the ordinary directory schema.
+RUNTIME_CATALOG = "png_sequences/catalog.json"
 
 
 def owner_key(state, source_contract):
@@ -27,7 +31,7 @@ def register(root, run_name, directory, safe_path):
             or value.get("run_name") != run_name or not isinstance(value.get("directories"), list)
             or not all(isinstance(item, str) for item in value["directories"])):
         raise ValueError("Invalid PNG export catalog; saved exports were kept.")
-    address = directory.relative_to(root).as_posix()
+    address = logical_output(root, directory)
     if address not in value["directories"]:
         value["directories"].append(address)
         value["directories"].sort()

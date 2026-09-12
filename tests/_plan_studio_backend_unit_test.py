@@ -90,7 +90,7 @@ async def check():
         try:
             chain._absolute_output_path(str(escaped.relative_to(temporary)))
         except ValueError as exc:
-            assert "escapes" in str(exc)
+            assert "escapes" in str(exc) or "symlinks or junctions" in str(exc)
         else:
             raise AssertionError("Output path confinement followed an escaping symlink")
 

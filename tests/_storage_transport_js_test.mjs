@@ -1,0 +1,30 @@
+import assert from 'node:assert/strict';
+import {storageTransport} from '../web/h3_storage_transport_core.mjs';
+
+const pin = n => ({format:'h3_storage_pin_v1', run_name:'demo', branch_id:'main', root:{n}});
+const calls = [];
+let current = pin(1);
+let fail = false;
+const fetchApi = async (route, options={}) => {
+    calls.push([route, options]);
+    if (route.includes('/storage-session')) return Response.json({organized:true, pin:current});
+    if (fail) return Response.json({error:'conflict'}, {status:409});
+    current = pin(current.root.n+1);
+    return Response.json({ok:true}, {headers:{'X-H3-Storage-Pin':JSON.stringify(current)}});
+};
+const send = storageTransport(fetchApi);
+const route = '/minimax_h3_context_loop/project-assets/update';
+const options = {method:'POST', body:JSON.stringify({project:'demo', storage_operation_id:'op1'})};
+await send(route, options);
+assert.equal(calls.length, 2);
+assert.deepEqual(JSON.parse(calls[1][1].headers.get('X-H3-Storage-Pin')), pin(1));
+await send(route, options);
+assert.deepEqual(JSON.parse(calls.at(-1)[1].headers.get('X-H3-Storage-Pin')), pin(1));
+fail = true;
+const before = calls.length;
+assert.equal((await send(route, options)).status, 409);
+assert.equal(calls.length, before+1, 'never retry/rebase a conflicting edit');
+await send('/object_info');
+assert.equal(calls.at(-1)[0], '/object_info');
+assert.equal(calls.at(-1)[1].headers, undefined);
+console.log('Storage transport pin/retry/isolation checks passed.');

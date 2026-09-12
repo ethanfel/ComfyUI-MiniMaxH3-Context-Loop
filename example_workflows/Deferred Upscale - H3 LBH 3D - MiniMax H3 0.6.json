@@ -51,7 +51,7 @@
       ],
       "size": [
         360,
-        492
+        516
       ],
       "flags": {},
       "order": 1,
@@ -100,7 +100,8 @@
         1,
         0,
         false,
-        18
+        18,
+        "resume"
       ]
     },
     {
@@ -108,7 +109,7 @@
       "type": "MiniMaxH3ChainUpscaleCurrent",
       "pos": [
         1500,
-        2332
+        2356
       ],
       "size": [
         480,
@@ -234,7 +235,7 @@
       "type": "UNETLoader",
       "pos": [
         1500,
-        772
+        796
       ],
       "size": [
         360,
@@ -267,7 +268,7 @@
       "type": "ModelAttentionBackend",
       "pos": [
         1500,
-        2952
+        2976
       ],
       "size": [
         360,
@@ -346,7 +347,7 @@
       "type": "CLIPLoader",
       "pos": [
         1500,
-        1004
+        1028
       ],
       "size": [
         360,
@@ -380,7 +381,7 @@
       "type": "VAELoader",
       "pos": [
         1500,
-        1260
+        1284
       ],
       "size": [
         360,
@@ -413,7 +414,7 @@
       "type": "MiniMaxH3UpscaleReferencePromptOverride",
       "pos": [
         1500,
-        1468
+        1492
       ],
       "size": [
         360,
@@ -473,7 +474,7 @@
       ],
       "size": [
         360,
-        504
+        552
       ],
       "flags": {},
       "order": 9,
@@ -551,7 +552,9 @@
         "exclude_video_keep_audio",
         "",
         "inherit",
-        "strict"
+        "strict",
+        "inherit",
+        "inherit"
       ]
     },
     {
@@ -559,7 +562,7 @@
       "type": "RandomNoise",
       "pos": [
         2130,
-        1016
+        1064
       ],
       "size": [
         360,
@@ -601,7 +604,7 @@
       "type": "BasicScheduler",
       "pos": [
         2130,
-        1624
+        1672
       ],
       "size": [
         360,
@@ -642,7 +645,7 @@
       "type": "MinimaxH3LatentUpscaler3D",
       "pos": [
         2130,
-        1248
+        1296
       ],
       "size": [
         360,
@@ -688,7 +691,7 @@
       "type": "H3ConditioningSyncFromLatents",
       "pos": [
         2130,
-        1880
+        1928
       ],
       "size": [
         360,
@@ -884,7 +887,7 @@
       "type": "DisableNoise",
       "pos": [
         1500,
-        1940
+        1964
       ],
       "size": [
         360,
@@ -914,7 +917,7 @@
       "type": "KSamplerSelect",
       "pos": [
         1500,
-        2124
+        2148
       ],
       "size": [
         360,
@@ -1589,7 +1592,7 @@
         1460,
         90,
         560,
-        3010
+        3034
       ],
       "color": "#393f58",
       "font_size": 24,
@@ -1601,7 +1604,7 @@
         2090,
         90,
         440,
-        2062
+        2110
       ],
       "color": "#394c49",
       "font_size": 24,

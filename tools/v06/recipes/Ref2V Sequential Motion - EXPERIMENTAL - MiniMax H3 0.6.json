@@ -443,7 +443,8 @@
       "key": "n32",
       "type": "MiniMaxH3ChainLoopEnd",
       "settings": {
-        "between_scene_cleanup": "off"
+        "between_scene_cleanup": "off",
+        "execution_mode": "recursive"
       },
       "inputs": {
         "flow": [

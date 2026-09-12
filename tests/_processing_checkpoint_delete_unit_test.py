@@ -215,6 +215,22 @@ class DeleteTests(unittest.TestCase):
         self.delete(take)
         self.assertTrue((directory / "frame_00000101.png").exists())
 
+    def test_workflow_preview_reference_does_not_block_independent_deletion(self):
+        first = self.pixel_save()
+        later = self.pixel_save(revision="b" * 32, scene=2, prefix=[first])
+        path = self.root / later["revision_metadata"]
+        metadata = self.manager._read(path)
+        metadata["execution"] = {
+            "workflow": {"nodes": [{"widgets_values": [first["revision_metadata"]]}]},
+            "api_prompt": {"inactive_preview": {"inputs": {"take": first}}},
+        }
+        self.write(path, metadata)
+        self.write(path.parent / "clip_0002.json", metadata)
+        self.delete(first)
+        self.assertFalse(self.exists(first))
+        self.assertTrue(self.exists(later))
+        self.assertEqual(self.manager._read(path)["execution"], metadata["execution"])
+
     def test_independent_pixel_middle_deletion_keeps_later_clips_and_invalidates_manifests(self):
         for legacy in (True, False):
             for chapter in (None, "02_chapter_02"):

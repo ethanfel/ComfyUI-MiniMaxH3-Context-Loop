@@ -142,6 +142,8 @@ download invalidation. **None of these are migration conformance tests yet.**
 
 The complete multi-generation/multi-pass migration fixture matrix, authoritative
 dependency/retention verdicts, cancellable deep checksum verification, isolated
-assembly staging fix, central path adapter, V2 writers and migration/rollback
-tools are subsequent work. No automatic migration or cleanup is enabled by this
-batch, even if an inventory reports no notices.
+assembly staging fix, complete path-adapter coverage, V2 writers and
+migration/rollback tools remain gated. The follow-up
+[organized layout batch](STORAGE_LAYOUT_V2.md) starts centralizing legacy paths
+and defines the target hierarchy without moving files. No automatic migration
+or cleanup is enabled, even if an inventory reports no notices.

@@ -3,8 +3,11 @@
 import hashlib
 import json
 import re
+from pathlib import Path
 
 from . import processing_persistence as persistence
+from .storage_resolver import logical_output, logical_children
+from .storage_writes import reserve_directory
 
 MARKER = ".png_variant.json"
 FORMAT = "h3_png_variant_v1"
@@ -23,6 +26,9 @@ def _read(path):
 def export(chain, root, base, state, config, safe_path, folder_lock, write):
     # Serialize selection as well as publication. An existing explicit output
     # folder keeps its own lock, including when another exporter names a sibling.
+    # Variant names/settings remain legacy identities; only I/O is translated.
+    base = Path(root) / logical_output(root, base)
+    reserve_directory(root, base, "png")
     family = safe_path(root, base / ".png_variants")
     with folder_lock(root, family):
         session = str(state.get("png_export_session") or "")
@@ -40,14 +46,15 @@ def export(chain, root, base, state, config, safe_path, folder_lock, write):
 
         siblings = []
         highest = 1
-        for path in base.parent.iterdir():
+        for path in logical_children(root, base.parent):
             match = re.fullmatch(re.escape(base.name) + r"_([1-9][0-9]*)", path.name)
             if match and int(match[1]) >= 2:
                 ordinal = int(match[1])
                 highest = max(highest, ordinal)
                 # Occupied names are never overwritten or followed. Only our
                 # own reservation markers make a sibling a reusable sequence.
-                if path.is_dir() and not path.is_symlink() and (path / MARKER).is_file():
+                physical = safe_path(root, path)
+                if physical.is_dir() and not path.is_symlink() and (physical / MARKER).is_file():
                     siblings.append((ordinal, path))
         if selected is None:
             selected = max(siblings, default=(1, base))[1]
@@ -57,6 +64,7 @@ def export(chain, root, base, state, config, safe_path, folder_lock, write):
             selected = safe_path(root, selected)
             try:
                 with folder_lock(root, selected):
+                    selected.mkdir(parents=True, exist_ok=True)
                     marker = _read(safe_path(root, selected / MARKER))
                     if marker is not None and (not isinstance(marker, dict) or marker.get("format") != FORMAT):
                         raise ValueError("Invalid PNG variant reservation; saved exports were kept.")
@@ -65,7 +73,7 @@ def export(chain, root, base, state, config, safe_path, folder_lock, write):
                     if binding is not None:
                         # Bind before doing any decoding/publication. A retry
                         # continues this destination even after process exit.
-                        selection = {"directory": selected.name}
+                        selection = {"directory": Path(logical_output(root, selected)).name}
                         if _read(binding) != selection:
                             persistence.atomic_json(binding, selection)
                     return write(selected, marker)
@@ -74,9 +82,10 @@ def export(chain, root, base, state, config, safe_path, folder_lock, write):
                 # conflicting files, settings, journals, or other exports.
                 while True:
                     highest += 1
-                    candidate = safe_path(root, base.with_name("%s_%d" % (base.name, highest)))
+                    candidate = safe_path(root, reserve_directory(root,
+                        base.with_name("%s_%d" % (base.name, highest)), "png"))
                     try:
-                        candidate.mkdir()
+                        candidate.mkdir(parents=True)
                         break
                     except FileExistsError:
                         continue
