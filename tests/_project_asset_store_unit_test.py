@@ -271,6 +271,27 @@ def main():
         assert bound["catalog"]["reference_slots"] == []
         assert len(bound["catalog"]["assets"]) == 1
 
+        # Review Gate's frame-capture path re-uses a tag as an "updated take"
+        # of the same subject: @char_bob -> @char_bob-v1 -> @char_bob-v2.
+        capture_1 = store.import_file(
+            "capture_family", picture, role="picture", tag="char_bob",
+            source_kind="frame_capture")
+        assert capture_1["asset"]["tag"] == "char_bob"
+        capture_2 = store.import_file(
+            "capture_family", picture, role="picture", tag="char_bob",
+            source_kind="frame_capture")
+        assert capture_2["asset"]["tag"] == "char_bob-v1"
+        capture_3 = store.import_file(
+            "capture_family", picture, role="picture", tag="char_bob",
+            source_kind="frame_capture")
+        assert capture_3["asset"]["tag"] == "char_bob-v2"
+        # An unrelated tag that merely shares the "char_bob" prefix must
+        # never be swept into the family's ordinal scan.
+        unrelated = store.import_file(
+            "capture_family", nested, role="picture", tag="char_bob_house",
+            source_kind="frame_capture")
+        assert unrelated["asset"]["tag"] == "char_bob_house"
+
     print("H3 Project Asset Store: import, whole-project duplication, cross-project copy, backup, metadata sync, binding, listing, ordering, deletion, and edit pass")
 
 

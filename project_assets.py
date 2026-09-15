@@ -149,7 +149,7 @@ def _unique_tag(catalog: dict[str, Any], value: Any, fallback: str,
     return tag
 
 
-_TRAILING_DIGITS_RE = re.compile(r"^(.*?)(\d+)$")
+_VERSION_TAG_RE = re.compile(r"^(.*)-v(\d+)$")
 
 
 def _capture_family_tag(catalog: dict[str, Any], value: Any, fallback: str) -> str:
@@ -157,8 +157,10 @@ def _capture_family_tag(catalog: dict[str, Any], value: Any, fallback: str) -> s
 
     Unlike _unique_tag (which appends "_2", "_3", ... on any collision),
     a tag reused for a video-frame capture is meant to read as an updated
-    take of the same subject: @char-sammy -> @char-sammy1, then
-    @char-sammy2, and so on, with no underscore before the number.
+    take of the same subject: @char-sammy -> @char-sammy-v1, then
+    @char-sammy-v2, and so on. The "-vN" delimiter (rather than a bare
+    trailing digit) keeps this from misfiring on tags that just happen to
+    end in a number or the letter v, e.g. @vehicle-van or @char-venessa.
     """
     tag = _safe_tag(value, fallback)
     used = {
@@ -166,21 +168,20 @@ def _capture_family_tag(catalog: dict[str, Any], value: Any, fallback: str) -> s
     }
     if tag not in used:
         return tag
-    match = _TRAILING_DIGITS_RE.match(tag)
+    match = _VERSION_TAG_RE.match(tag)
     stem = match.group(1) if match else tag
     highest = 0
     for other in used:
-        if other == stem or not other.startswith(stem):
+        other_match = _VERSION_TAG_RE.match(other)
+        if not other_match or other_match.group(1) != stem:
             continue
-        suffix = other[len(stem):]
-        if suffix.isdigit():
-            highest = max(highest, int(suffix))
+        highest = max(highest, int(other_match.group(2)))
     ordinal = highest + 1
-    suffix = str(ordinal)
+    suffix = "-v%d" % ordinal
     candidate = stem[:64 - len(suffix)] + suffix
     while candidate in used:
         ordinal += 1
-        suffix = str(ordinal)
+        suffix = "-v%d" % ordinal
         candidate = stem[:64 - len(suffix)] + suffix
     return candidate
 

@@ -13,6 +13,26 @@ result later—without keeping the whole production in memory.
 [Changelog](CHANGELOG.md) ·
 [Documentation](docs/README.md)
 
+## Fork status (Psylenceo)
+
+Branches on this fork with work that isn't in Ethanfel's upstream yet. Update
+this section whenever a branch here is opened as a PR, merged, or dropped.
+
+| Branch | What it does | Status |
+| --- | --- | --- |
+| [`fix/prompt-optimizer-settings-visibility`](https://github.com/Psylenceo/ComfyUI-MiniMaxH3-Context-Loop/tree/fix/prompt-optimizer-settings-visibility) | Fixes Direct API settings not appearing in Settings without searching; reorders/widens the Prompt optimizer fields; adds a "Local server preset" picker with documented API endpoints for Ollama, LM Studio, llama.cpp server, vLLM, and Unsloth Studio. | Not yet submitted — PR not opened |
+| [`feature/settings-based-origin-allowlist`](https://github.com/Psylenceo/ComfyUI-MiniMaxH3-Context-Loop/tree/feature/settings-based-origin-allowlist) | Adds a per-user "Additional allowed Direct API origins" setting so local LLM servers can be allow-listed through ComfyUI Settings instead of an environment variable — same request-body-can-never-reach-it trust boundary as Ethanfel's SSRF fix ([`212486f`](https://github.com/ethanfel/ComfyUI-MiniMaxH3-Context-Loop/commit/212486fc2029cd60845cfd666a0bf89cf65dfe96)). | Held back until this node pack's pending ComfyUI Manager review resolves — PR not opened |
+| [`feature/asset-carousel-role-help`](https://github.com/Psylenceo/ComfyUI-MiniMaxH3-Context-Loop/tree/feature/asset-carousel-role-help) | Adds in-UI help text/tooltips explaining the Project Asset Carousel's video "Asset use" roles (video reference vs. motion reference vs. source track) and its Timeline mode setting (restart each scene vs. sequential), and expands `docs/PROJECT_ASSETS.md` to match — previously undocumented anywhere. | Submitted as [PR #55](https://github.com/ethanfel/ComfyUI-MiniMaxH3-Context-Loop/pull/55) |
+| [`feature/basic-prompt-drafts`](https://github.com/Psylenceo/ComfyUI-MiniMaxH3-Context-Loop/tree/feature/basic-prompt-drafts) | Adds an optional per-scene `basic_prompt` field — a plain-language scene idea kept separate from the H3-formatted `scene_prompt`/`prompt`, never affecting `prompt_hash` or generation by itself. Editable everywhere a scene's prompt already is (Plan, Plan Modern, Studio Plan, Review Gate, both Scene Prompt Editor nodes), kept in sync via the existing companion-sync bus, with Rich Scene Prompt Editor's Optimize action able to turn it into a full prompt and its history tree tracking it per revision. Also includes Review Gate routing fixes (root-graph lookup under nested subgraphs, fallback-node delivery, and diagnostic logging for rejected review events). | Submitted as [PR #56](https://github.com/ethanfel/ComfyUI-MiniMaxH3-Context-Loop/pull/56) |
+
+Already merged upstream:
+- Frame-capture support in the Review Gate (scrub a saved segment, save a
+  frame straight into the Project Asset Carousel) — merged into `nightly`,
+  then released in `main` as part of 0.6.6.
+- Drag-to-resize grip for the Review Gate's scene prompt editor — merged via
+  [PR #50](https://github.com/ethanfel/ComfyUI-MiniMaxH3-Context-Loop/pull/50),
+  released in 0.6.6. (Branch closed out; both merged.)
+
 ## Changelog
 
 ### 0.6.9 — Plan controls and workflow loading fixes
