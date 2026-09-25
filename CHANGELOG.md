@@ -2,6 +2,16 @@
 
 Newest first. This file keeps release history out of the onboarding README.
 
+## Unreleased
+
+- Add an explicit Loop Trim `fresh_narration_keep_start` option for off-screen
+  narration whose opening words fall inside the repeated visual prefix (#99).
+  It preserves the opening by trimming the audio tail to the delivered video
+  duration; closing words can be lost if there is no tail room. Reject carried,
+  source-guided or locked audio, preserve the choice through saving and export,
+  and keep existing synchronized trimming as the default. See
+  [usage and timing trade-offs](docs/AUDIO_AND_CONTINUITY.md#fresh-narration-preserve-the-opening-words).
+
 ## 0.7.0 — 2026-09-24
 
 Release scope: harden the existing workflow, review, recovery and cleanup paths;

@@ -70,6 +70,7 @@ def _install_stubs():
 
     timing = types.ModuleType(_PACKAGE + ".av_timing")
     timing.AUDIO_TRIM_FRAMES_KEY = "_audio_trim_frames"
+    timing.AUDIO_TRIM_MODE_KEY = "_h3_audio_trim_mode"
     timing.AUDIO_WITH_OVERLAP_FRAMES_KEY = "_audio_overlap_frames"
     timing.AUDIO_WITH_OVERLAP_WAVEFORM_KEY = "_audio_overlap_waveform"
     timing.conform_waveform_length = lambda waveform, length, label: (

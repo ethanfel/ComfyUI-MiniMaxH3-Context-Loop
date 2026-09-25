@@ -131,6 +131,7 @@ from .project_assets import (
     ProjectAssetStore,
 )
 from .av_timing import (
+    AUDIO_TRIM_MODE_KEY,
     AUDIO_TRIM_FRAMES_KEY,
     AUDIO_WITH_OVERLAP_FRAMES_KEY,
     AUDIO_WITH_OVERLAP_WAVEFORM_KEY,
@@ -478,6 +479,19 @@ def _resolved_scene_audio_policy(
         source_audio_target or policy.get("source_audio_target", "off"),
         policy.get("lip_sync_options"),
     )
+
+
+def _require_fresh_narration_policy(value: Any, shot: Any) -> None:
+    policy = _resolved_scene_audio_policy(value, shot)
+    if (policy["final_audio"] != "generated"
+            or policy["generated_continuity"] != "off"
+            or policy["source_reference"] != "off"
+            or policy.get("source_audio_target", "off") == "locked"):
+        raise ValueError(
+            "Keep-start narration requires Generate fresh audio per scene "
+            "for the active scene: generated final audio, no generated "
+            "carry, source guide or source lock. Use sync_with_video for "
+            "synchronized dialogue.")
 
 
 def _resolved_lip_sync_options(
@@ -10841,7 +10855,7 @@ def _public_segment(value: dict[str, Any]) -> dict[str, Any]:
         "prompt_hash", "prompt_template_hash", "prompt_choice_seed", "archives",
         "seed", "steps", "continuation_mode", "context_length",
         "context_take",
-        "audio_context_length", "context_spatial_proxy",
+        "audio_context_length", "audio_trim_mode", "context_spatial_proxy",
         "source_reference", "generated_continuity", "source_audio_target",
         "lip_sync_source", "lip_sync_source_asset",
         "prompt_seed_mode", "prompt_seed", "lora_route", "selflift_sampling",
@@ -19477,17 +19491,28 @@ class MiniMaxH3ChainSegmentSave:
                 "denoised_audio": denoised[1],
             })
         sample_rate = 0
+        audio_trim_mode = "sync_with_video"
         if audio is not None:
             waveform, sample_rate = _validate_audio(
                 audio, "H3 chain clip %d delivered audio" % index,
                 expected_frames=expected_frames)
             tensors["delivered_audio"] = _tensor_cpu_clone(waveform)
+            if AUDIO_TRIM_MODE_KEY in audio:
+                audio_trim_mode = str(audio[AUDIO_TRIM_MODE_KEY])
+                if audio_trim_mode not in ("sync_with_video", "fresh_narration_keep_start"):
+                    raise ValueError("Unknown saved audio trim mode %r." % audio_trim_mode)
+            if audio_trim_mode == "fresh_narration_keep_start":
+                _require_fresh_narration_policy(plan, shot)
             overlap_keys = (
                 AUDIO_WITH_OVERLAP_WAVEFORM_KEY,
                 AUDIO_WITH_OVERLAP_FRAMES_KEY,
                 AUDIO_TRIM_FRAMES_KEY,
             )
             overlap_present = [key in audio for key in overlap_keys]
+            if audio_trim_mode == "fresh_narration_keep_start" and any(overlap_present):
+                raise ValueError(
+                    "Keep-start narration cannot also carry synchronized "
+                    "overlap audio. Connect Loop Trim's AUDIO output directly.")
             if any(overlap_present) and not all(overlap_present):
                 raise ValueError(
                     "H3 chain clip %d received incomplete private Loop Trim "
@@ -19539,6 +19564,7 @@ class MiniMaxH3ChainSegmentSave:
                     overlap_waveform)
             elif (repeated_frames > 0
                   and continuation_mode in MASKED_CONTINUATION_MODES
+                  and audio_trim_mode != "fresh_narration_keep_start"
                   and _audio_policy_final(plan) == "generated"):
                 _LOG.warning(
                     "H3 Chain clip %d uses %s with generated final audio, but "
@@ -19669,6 +19695,8 @@ class MiniMaxH3ChainSegmentSave:
                     "true" if denoised_latent is not None else "false"),
                 "audio_with_overlap": str(
                     "audio_with_overlap" in tensors).lower(),
+                **({"audio_trim_mode": audio_trim_mode}
+                   if audio_trim_mode != "sync_with_video" else {}),
             })
             os.replace(checkpoint_tmp, published_checkpoint)
 
@@ -19700,6 +19728,8 @@ class MiniMaxH3ChainSegmentSave:
                 **({"context_take": dict(shot["context_take"])}
                    if "context_take" in shot else {}),
                 "audio_context_length": effective_audio_context_length,
+                **({"audio_trim_mode": audio_trim_mode}
+                   if audio_trim_mode != "sync_with_video" else {}),
                 "source_reference": str(
                     _resolved_scene_audio_policy(plan, shot)[
                         "source_reference"]),
@@ -22857,6 +22887,7 @@ def _assemble_generated_audio_records(
         use_overlap = (
             ordinal > 0
             and not segment.get("lip_sync_source_asset")
+            and segment.get("audio_trim_mode") != "fresh_narration_keep_start"
             and record["mode"] in MASKED_CONTINUATION_MODES
             and record["repeated_frames"] > 0
             and record["overlap"] is not None)
@@ -22872,6 +22903,7 @@ def _assemble_generated_audio_records(
                 "the incoming boundary.", int(segment["index"]),
                 int(record["repeated_frames"]))
         elif (ordinal > 0 and not segment.get("lip_sync_source_asset")
+              and segment.get("audio_trim_mode") != "fresh_narration_keep_start"
               and record["mode"] in MASKED_CONTINUATION_MODES
               and record["repeated_frames"] > 0):
             _LOG.warning(
@@ -22903,6 +22935,7 @@ def _assemble_generated_audio_records(
     first_record = records[0]
     if (first_record["mode"] in MASKED_CONTINUATION_MODES
             and not first_record["segment"].get("lip_sync_source_asset")
+            and first_record["segment"].get("audio_trim_mode") != "fresh_narration_keep_start"
             and first_record["repeated_frames"] > 0
             and first_record["overlap"] is not None):
         # Preserve scene 1's complete decoded AV window until an optional
@@ -25014,7 +25047,9 @@ def _png_export_audio_record(
         waveform = conform_waveform_length(
             waveform, raw_samples,
             "H3 PNG/WAV export clip %d raw audio" % index)
-    cut = sample_boundary_from_frames(repeated_frames, sample_rate, FPS)
+    narration = segment.get("audio_trim_mode") == "fresh_narration_keep_start"
+    cut = (0 if narration else
+           sample_boundary_from_frames(repeated_frames, sample_rate, FPS))
     delivered_samples = sample_boundary_from_frames(
         delivered_frames, sample_rate, FPS)
     delivered = waveform[..., cut:cut + delivered_samples]
@@ -25029,7 +25064,7 @@ def _png_export_audio_record(
             waveform.detach().to(device="cpu").contiguous()
             if (migrate_continuation_mode(segment.get(
                     "continuation_mode", default_mode)) in
-                MASKED_CONTINUATION_MODES and repeated_frames > 0)
+                MASKED_CONTINUATION_MODES and repeated_frames > 0 and not narration)
             else None),
         "delivered_frames": delivered_frames,
         "raw_frames": raw_frames,

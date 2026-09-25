@@ -1058,6 +1058,7 @@ def _upscale_source_contract(source: dict[str, Any]) -> str:
         *(["presentation_source"] if source.get("presentation_source") else []),
         *(["processing_source"] if source.get("processing_source") else []),
         *(["pixel_continuity"] if source.get("pixel_continuity") else []),
+        *(["audio_trim_mode"] if source.get("audio_trim_mode") else []),
     )})
 
 
@@ -2611,7 +2612,7 @@ class MiniMaxH3ChainUpscaleSegmentSave:
                 "recovered_audio": ("AUDIO", {
                     "tooltip": "Optional RAW-clock audio from H3 Audio "
                                "Recover. When connected, Segment Save applies "
-                               "the same repeated-head trim as video and "
+                               "the source scene's saved audio trim mode and "
                                "replaces the source checkpoint audio."}),
             },
             "hidden": {"dynprompt": "DYNPROMPT", "unique_id": "UNIQUE_ID"},
@@ -2678,6 +2679,7 @@ class MiniMaxH3ChainUpscaleSegmentSave:
         source_tensors = _load_source_tensors(source, ("delivered_audio",))
         tensors = {"upscale_marker": chain.torch.tensor([index])}
         sample_rate = int(source.get("sample_rate", 0))
+        audio_trim_mode = source.get("audio_trim_mode", "sync_with_video")
         audio_route = "none"
         if recovered_audio is not None:
             waveform, sample_rate = chain._validate_audio(
@@ -2694,7 +2696,8 @@ class MiniMaxH3ChainUpscaleSegmentSave:
                     "the %d-frame RAW scene needs about %d. Connect H3 Audio "
                     "Recover output, not delivered source audio." %
                     (available, sample_rate, raw, expected_raw))
-            start = int(round(trim / float(chain.FPS) * sample_rate))
+            start = (0 if audio_trim_mode == "fresh_narration_keep_start" else
+                     int(round(trim / float(chain.FPS) * sample_rate)))
             count = int(round(delivered / float(chain.FPS) * sample_rate))
             padded = chain._pad_audio_to_samples({
                 "waveform": waveform,
@@ -2772,6 +2775,8 @@ class MiniMaxH3ChainUpscaleSegmentSave:
                 "context_steps": str(context_steps),
                 "sample_rate": str(sample_rate),
                 "audio_route": audio_route,
+                **({"audio_trim_mode": audio_trim_mode}
+                   if audio_trim_mode != "sync_with_video" else {}),
             })
             os.replace(checkpoint_tmp, checkpoint_path)
 
@@ -2793,6 +2798,8 @@ class MiniMaxH3ChainUpscaleSegmentSave:
                 "height": height,
                 "sample_rate": sample_rate,
                 "audio_route": audio_route,
+                **({"audio_trim_mode": audio_trim_mode}
+                   if audio_trim_mode != "sync_with_video" else {}),
                 "latent_saved": save_latent,
                 "latent_layout": latent_layout,
                 "context_steps": context_steps,

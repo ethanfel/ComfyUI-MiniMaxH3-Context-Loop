@@ -39,6 +39,7 @@ import node_helpers
 import torch
 
 from .av_timing import (
+    AUDIO_TRIM_MODE_KEY,
     AUDIO_TRIM_FRAMES_KEY,
     AUDIO_WITH_OVERLAP_FRAMES_KEY,
     AUDIO_WITH_OVERLAP_WAVEFORM_KEY,
@@ -842,6 +843,10 @@ class MiniMaxH3LoopTrim:
     8.3 ms short (260 frames). Either error accumulates down a chain. Match
     Tail time-conforms these small grid mismatches so every delivered stream
     is exactly frames/fps long without inserting a silence tail.
+
+    An explicit fresh-narration mode keeps the audio start and removes the
+    excess from the end instead. It is only for independent voice-over, not
+    synchronized dialogue; it can discard closing words.
     """
 
     @classmethod
@@ -859,9 +864,11 @@ class MiniMaxH3LoopTrim:
             },
             "optional": {
                 "audio": ("AUDIO", {
-                    "tooltip": "Decoded audio for the same clip. Trimmed by the "
-                               "matching duration so sound stays locked to "
-                               "picture. Leave unwired for silent clips."}),
+                    "tooltip": "Decoded audio for the same clip. Default "
+                               "sync_with_video removes the matching head "
+                               "duration; the explicit fresh-narration mode "
+                               "removes it from the tail instead. Leave "
+                               "unwired for silent clips."}),
                 "fps": ("FLOAT", {
                     "default": 24.0, "min": 1.0, "max": 240.0, "step": 0.001,
                     "tooltip": "Frame rate used to convert the trim into an "
@@ -878,6 +885,18 @@ class MiniMaxH3LoopTrim:
                                "Shot's state output. Loop Trim reads the active "
                                "scene's resolved blend directly, so a Plan "
                                "default can never override a per-scene value."}),
+                "audio_trim_mode": (["sync_with_video", "fresh_narration_keep_start"], {
+                    "default": "sync_with_video",
+                    "display_name": "Audio trim mode",
+                    "tooltip": "sync_with_video preserves A/V timing (default). "
+                               "fresh_narration_keep_start keeps the opening "
+                               "of off-screen narration and cuts the excess "
+                               "from the END to match delivered video length. "
+                               "This shifts sound relative to picture: NOT for "
+                               "lip-sync. Requires Current Shot state, fresh "
+                               "generated audio (no carry/source guide/lock), "
+                               "and match_tail. Leave room at the end for the "
+                               "removed duration; it can cut closing words."}),
             },
         }
 
@@ -886,10 +905,11 @@ class MiniMaxH3LoopTrim:
                     "overlap_frames")
     OUTPUT_TOOLTIPS = (
         "Delivered frames with the repeated leading context removed.",
-        "Audio trimmed by the same duration and, when match_tail is enabled, "
-        "fitted exactly to the delivered image duration. The same AUDIO value "
-        "privately carries the full decoded overlap to Segment Save so AV "
-        "audio feathers survive final assembly; no extra wire is needed.",
+        "Audio trimmed using audio_trim_mode and, when match_tail is enabled, "
+        "fitted exactly to the delivered image duration. Synchronized mode "
+        "privately carries decoded overlap to Segment Save for AV feathers; "
+        "keep-start narration carries its timing choice without that overlap. "
+        "Connect directly to Segment Save; no extra wire is needed.",
         "Optional blend-ready image stream. When overlap_frames is positive, "
         "this retains only the final requested part of the repeated visual "
         "context before the delivered frames. Audio remains fully trimmed.",
@@ -899,12 +919,21 @@ class MiniMaxH3LoopTrim:
     FUNCTION = "trim"
     CATEGORY = "conditioning/minimax/context_loop"
     DESCRIPTION = ("Remove the leading pinned frames from a decoded H3 clip, "
-                   "trimming picture and sound by the same duration. In 0.5 "
+                   "trimming picture and sound together by default. Optional "
+                   "fresh-narration mode keeps opening audio by cutting its "
+                   "tail instead, unsuitable for lip-sync. In 0.5 "
                    "chains, Current Shot state also resolves the scene blend "
                    "without a separate default-versus-scene integer wire.")
 
     def trim(self, images, trim_frames, audio=None, fps=24.0, match_tail=True,
-             state=None):
+             state=None, audio_trim_mode="sync_with_video"):
+        if audio_trim_mode not in ("sync_with_video", "fresh_narration_keep_start"):
+            raise ValueError("Unknown H3 audio trim mode %r." % audio_trim_mode)
+        narration = audio_trim_mode == "fresh_narration_keep_start"
+        if narration and (state is None or audio is None or not match_tail):
+            raise ValueError(
+                "Keep-start narration requires Current Shot state, decoded "
+                "audio, and match_tail enabled. It is not an A/V-sync mode.")
         n = max(0, int(trim_frames))
         total = int(images.shape[0])
         if n >= total:
@@ -929,6 +958,10 @@ class MiniMaxH3LoopTrim:
                 raise ValueError(
                     "h3_motion_context: Loop Trim state has no valid current "
                     "scene.") from exc
+            if narration:
+                from .chain_nodes import _require_fresh_narration_policy
+
+                _require_fresh_narration_policy(plan, shot)
             configured = shot.get("video_blend_frames")
             if configured is None or (
                     isinstance(configured, str) and not configured.strip()):
@@ -992,9 +1025,22 @@ class MiniMaxH3LoopTrim:
                         "h3_motion_context: decoded %d-frame full audio" %
                         total)
                 full_waveform = waveform
-                waveform = full_waveform[..., cut:]
                 frames_left = total - n
                 want = int(round(frames_left / float(fps) * sr))
+                if narration:
+                    # Voice-over is explicitly placed at delivered scene time
+                    # zero. Never publish the raw overlap as continuation audio:
+                    # masked-AV assembly would put it back over the prior scene.
+                    waveform = full_waveform[..., :want]
+                    full_waveform = None
+                    if n:
+                        _LOG.warning(
+                            "H3 keep-start narration: keeping the opening audio "
+                            "and removing %.3fs from the END. Sound is advanced "
+                            "relative to picture; inspect the closing words.",
+                            seconds)
+                else:
+                    waveform = full_waveform[..., cut:]
                 have = int(waveform.shape[-1])
                 if have != want:
                     waveform = conform_waveform_length(
@@ -1006,6 +1052,8 @@ class MiniMaxH3LoopTrim:
                 waveform = waveform[..., cut:]
 
             out_audio = {"waveform": waveform, "sample_rate": sr}
+            if narration:
+                out_audio[AUDIO_TRIM_MODE_KEY] = audio_trim_mode
             if full_waveform is not None:
                 out_audio.update({
                     AUDIO_WITH_OVERLAP_WAVEFORM_KEY: full_waveform,

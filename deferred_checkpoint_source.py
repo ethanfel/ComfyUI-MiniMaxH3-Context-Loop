@@ -34,6 +34,10 @@ def editorial_source_manifest(manifest, chain):
         if isinstance(metadata.get("scene_dependency"), dict):
             resolved["scene_dependency"] = chain._json_document(metadata["scene_dependency"])
         resolved["sample_rate"] = base.get("sample_rate", 0)
+        # A picture-only alternate does not own the soundtrack or its trim.
+        resolved.pop("audio_trim_mode", None)
+        if "audio_trim_mode" in base:
+            resolved["audio_trim_mode"] = base["audio_trim_mode"]
         resolved["presentation_source"] = {
             "mode": "picture_only", "original": chain._json_document(base)}
         if output is None:

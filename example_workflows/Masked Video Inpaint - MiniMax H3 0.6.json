@@ -1002,7 +1002,8 @@
       "widgets_values": [
         0,
         24,
-        true
+        true,
+        "sync_with_video"
       ]
     },
     {

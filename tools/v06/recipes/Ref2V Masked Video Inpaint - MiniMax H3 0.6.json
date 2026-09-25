@@ -332,7 +332,8 @@
       "settings": {
         "trim_frames": 0,
         "fps": 24,
-        "match_tail": true
+        "match_tail": true,
+        "audio_trim_mode": "sync_with_video"
       },
       "inputs": {
         "images": [

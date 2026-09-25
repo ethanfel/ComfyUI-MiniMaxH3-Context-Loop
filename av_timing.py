@@ -27,6 +27,7 @@ _LOG = logging.getLogger("minimax_h3_context_loop.av_timing")
 AUDIO_WITH_OVERLAP_WAVEFORM_KEY = "_h3_audio_with_overlap_waveform"
 AUDIO_WITH_OVERLAP_FRAMES_KEY = "_h3_audio_with_overlap_frames"
 AUDIO_TRIM_FRAMES_KEY = "_h3_audio_trim_frames"
+AUDIO_TRIM_MODE_KEY = "_h3_audio_trim_mode"
 
 
 def sample_boundary_from_seconds(seconds: float, sample_rate: int) -> int:

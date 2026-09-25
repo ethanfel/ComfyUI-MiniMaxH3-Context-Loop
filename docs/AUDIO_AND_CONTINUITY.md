@@ -467,7 +467,35 @@ Use **MiniMax H3 Context Loop Trim** after decoding. In head mode it removes the
 repeated visual prefix. With `match_tail=true`, it time-conforms the small H3
 grid mismatch to the exact delivered-frame duration and carries the
 full AV overlap privately to Segment Save. Connect Trim's AUDIO output directly;
-there is no second overlap-audio socket.
+there is no second overlap-audio socket. The default `audio_trim_mode` is
+`sync_with_video`: both streams lose the same prefix, preserving lip-sync.
+
+### Fresh narration: preserve the opening words
+
+Fresh generated speech can start inside the repeated visual prefix. For
+**off-screen narration only**, choose **Generate fresh audio per scene** on
+Generation Profile, then set **Loop Trim → Audio trim mode** to
+`fresh_narration_keep_start`. Connect **Current Shot → state** to Loop Trim,
+keep `match_tail=true`, and wire Trim's AUDIO output directly to Segment Save.
+The active scene must have generated final audio with no generated carry,
+source guide or source lock; incompatible scene overrides are rejected.
+
+This opt-in mode keeps audio from time zero and removes excess duration from
+the **end**, while video still loses its repeated head. For a 22-frame prefix
+at 24 fps, that preserves the first 0.917 seconds instead of removing them,
+but discards the last 0.917 seconds. Leave enough room after the narration and
+inspect the closing words. This shifts audio relative to picture: **do not use
+it for lip-sync, timed effects, music synchronization or carried audio**.
+It does not stretch speech to squeeze the full recording into the scene.
+
+The choice is saved with newly processed scene checkpoints and retained by
+assembly, deferred processing and PNG/WAV latent re-decode. Narration is not
+overlaid onto the preceding scene's audio at a masked-AV boundary. Changing
+the widget does not rewrite previously saved takes: process and save a new
+revision to use it. Existing workflows and saved scenes retain synchronized
+trimming unless explicitly opted in.
+
+### Visual overlap for assembly
 
 `images_with_overlap` exposes an additional visual stream containing the
 retained repeated context selected by the active scene state. In 0.5 chains,
