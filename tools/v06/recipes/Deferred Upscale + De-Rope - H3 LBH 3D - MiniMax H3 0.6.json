@@ -298,7 +298,8 @@
         "blend_schedule": "plan",
         "boundary_tone_match": "off",
         "color_stabilization": "off",
-        "delete_checkpoints_after_assembly": false
+        "delete_checkpoints_after_assembly": false,
+        "generated_audio_join": "av_overlap"
       },
       "inputs": {
         "manifest": [

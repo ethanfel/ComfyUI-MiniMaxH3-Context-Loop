@@ -279,7 +279,9 @@ class AssembleTests(Fixture, unittest.TestCase):
         from workflow_schema import widget_fields, validate_value
         schema = {"input": self.chain.MiniMaxH3ChainAssemble.INPUT_TYPES()}
         fields = list(widget_fields(schema, {}))
-        name, spec = fields[-1]
+        # New widgets append after cleanup; its original serialized slot must
+        # remain stable so old workflows cannot accidentally enable deletion.
+        name, spec = fields[8]
         self.assertEqual(name, "delete_checkpoints_after_assembly")
         self.assertIs(spec[1]["default"], False)
         self.assertIn(name, schema["input"]["optional"])
@@ -292,7 +294,8 @@ class AssembleTests(Fixture, unittest.TestCase):
                 self.assertEqual(len(values), len(fields), path.name)
                 for value, (field, field_spec) in zip(values, fields):
                     validate_value(value, field_spec, (path.name, field))
-                self.assertIs(values[-1], False, path.name)
+                self.assertIs(values[8], False, path.name)
+                self.assertEqual(values[9], "av_overlap", path.name)
                 checked += 1
         self.assertGreater(checked, 0)
         for path in sorted((ROOT / "tools/v06/recipes").rglob("*.json")):

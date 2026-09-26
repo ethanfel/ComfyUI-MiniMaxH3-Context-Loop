@@ -81,7 +81,7 @@ def main():
 
         chain._validate_manifest = lambda value: value["segments"]
         chain._validate_prelude = lambda _value: None
-        chain._generated_audio = lambda _value: generated
+        chain._generated_audio = lambda _value, **_kwargs: generated
         chain._manifest_media_metadata = lambda _value: {}
         original_which = chain.shutil.which
         original_run_ffmpeg = chain._run_ffmpeg

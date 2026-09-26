@@ -22778,7 +22778,8 @@ def _load_checkpoint_audio(path: str) -> dict[str, Any]:
                 if key in available}
 
 
-def _generated_audio(manifest: dict[str, Any]) -> dict[str, Any]:
+def _generated_audio(manifest: dict[str, Any],
+                     audio_join_mode: str = "av_overlap") -> dict[str, Any]:
     started = time.perf_counter()
     segments = list(manifest["segments"])
     if not segments:
@@ -22847,7 +22848,8 @@ def _generated_audio(manifest: dict[str, Any]) -> dict[str, Any]:
             "mode": mode,
         })
 
-    result = _assemble_generated_audio_records(records, int(sample_rate))
+    result = _assemble_generated_audio_records(
+        records, int(sample_rate), audio_join_mode=audio_join_mode)
     _LOG.info(
         "H3 assembly audio: read PCM tensors only and joined %d scenes in %.2fs.",
         len(segments), time.perf_counter() - started)
@@ -22855,13 +22857,16 @@ def _generated_audio(manifest: dict[str, Any]) -> dict[str, Any]:
 
 
 def _assemble_generated_audio_records(
-    records: list[dict[str, Any]], sample_rate: int
+    records: list[dict[str, Any]], sample_rate: int,
+    audio_join_mode: str = "av_overlap",
 ) -> dict[str, Any]:
     """Assemble decoded scene audio with the saved AV-boundary ownership."""
     if torch is None:
         raise RuntimeError("Generated-audio assembly requires torch.")
     if not records:
         raise ValueError("Generated-audio assembly requires at least one scene.")
+    if audio_join_mode not in ("av_overlap", "delivered_only"):
+        raise ValueError("Unknown generated audio join mode %r." % audio_join_mode)
     sample_rate = int(sample_rate)
     if sample_rate <= 0:
         raise ValueError("Generated-audio assembly sample rate must be positive.")
@@ -22885,7 +22890,7 @@ def _assemble_generated_audio_records(
         source = record["delivered"]
         start_frame = cumulative_frames
         use_overlap = (
-            ordinal > 0
+            audio_join_mode == "av_overlap" and ordinal > 0
             and not segment.get("lip_sync_source_asset")
             and segment.get("audio_trim_mode") != "fresh_narration_keep_start"
             and record["mode"] in MASKED_CONTINUATION_MODES
@@ -22902,7 +22907,8 @@ def _assemble_generated_audio_records(
                 "H3 generated audio: clip %d owns its %d-frame AV overlap at "
                 "the incoming boundary.", int(segment["index"]),
                 int(record["repeated_frames"]))
-        elif (ordinal > 0 and not segment.get("lip_sync_source_asset")
+        elif (audio_join_mode == "av_overlap"
+              and ordinal > 0 and not segment.get("lip_sync_source_asset")
               and segment.get("audio_trim_mode") != "fresh_narration_keep_start"
               and record["mode"] in MASKED_CONTINUATION_MODES
               and record["repeated_frames"] > 0):
@@ -22933,7 +22939,8 @@ def _assemble_generated_audio_records(
 
     result = {"waveform": assembled, "sample_rate": sample_rate}
     first_record = records[0]
-    if (first_record["mode"] in MASKED_CONTINUATION_MODES
+    if (audio_join_mode == "av_overlap"
+            and first_record["mode"] in MASKED_CONTINUATION_MODES
             and not first_record["segment"].get("lip_sync_source_asset")
             and first_record["segment"].get("audio_trim_mode") != "fresh_narration_keep_start"
             and first_record["repeated_frames"] > 0
@@ -26483,6 +26490,15 @@ class MiniMaxH3ChainAssemble:
                                "Deleted checkpoints cannot be used for resume, "
                                "latent upscale or checkpoint-based reassembly. "
                                "Leave OFF if further processing is planned."}),
+                "generated_audio_join": (["av_overlap", "delivered_only"], {
+                    "default": "av_overlap",
+                    "tooltip": "av_overlap preserves normal AV boundary "
+                               "ownership (default). delivered_only concatenates "
+                               "each saved scene's trimmed audio, ignoring "
+                               "regenerated overlaps from third-party audio "
+                               "refiners. Recovery only: may leave hard audio "
+                               "cuts. Does not change timing, source audio, "
+                               "checkpoints or sampling."}),
             },
         }
 
@@ -26509,7 +26525,10 @@ class MiniMaxH3ChainAssemble:
                  source_timeline=None, blend_schedule="plan",
                  blend_video_vae=None, boundary_tone_match="off",
                  color_stabilization="off",
-                 delete_checkpoints_after_assembly=False):
+                 delete_checkpoints_after_assembly=False,
+                 generated_audio_join="av_overlap"):
+        if generated_audio_join not in ("av_overlap", "delivered_only"):
+            raise ValueError("Unknown generated audio join mode %r." % generated_audio_join)
         upscale_manifest = None
         upscale_support = None
         manifest_format = str((manifest or {}).get("format") or "")
@@ -26589,7 +26608,8 @@ class MiniMaxH3ChainAssemble:
         generated_warning = ""
         if preserve_generated or selected == "generated":
             try:
-                generated_track = _generated_audio(manifest)
+                generated_track = _generated_audio(
+                    manifest, audio_join_mode=generated_audio_join)
             except Exception as exc:
                 if selected == "generated":
                     raise
@@ -26890,6 +26910,8 @@ class MiniMaxH3ChainAssemble:
                 "h3_chain_upscale_partial_manifest_v1"):
             status += "; partial upscale %d/%d scenes; remaining scenes can be resumed" % (
                 len(segments), int(upscale_manifest["clip_count"]))
+        if generated_audio_join == "delivered_only":
+            status += "; generated audio uses delivered-only joins (no AV overlap)"
         _LOG.info("H3 Chain %s", status)
         published_video = output_copy or final_path
         _publish_final_review_preview(manifest, published_video, status)

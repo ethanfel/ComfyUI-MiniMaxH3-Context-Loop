@@ -4,6 +4,13 @@ Newest first. This file keeps release history out of the onboarding README.
 
 ## Unreleased
 
+- Add Chain Audio Refine Sampler to retain original context audio protection
+  during an audio-only second pass (#97). Freeze video, preserve hard locks
+  and fractional audio masks, and reject conflicting dynamic-mask models.
+  Add opt-in Assemble `generated_audio_join=delivered_only` to recover saved
+  third-party-refined clips without reusing their altered overlaps; default
+  AV-overlap assembly is unchanged. See the
+  [wiring and recovery guide](docs/AUDIO_AND_CONTINUITY.md#audio-only-refinement-without-rewriting-the-carried-boundary).
 - Add an explicit Loop Trim `fresh_narration_keep_start` option for off-screen
   narration whose opening words fall inside the repeated visual prefix (#99).
   It preserves the opening by trimming the audio tail to the delivered video

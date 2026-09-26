@@ -302,6 +302,53 @@ The raw per-scene implementation and separate visual/audio context fields are
 under Advanced boundary controls. Plan-wide raw 0.4 defaults belong to the
 Legacy 0.4 Policy Adapter.
 
+### Audio-only refinement without rewriting the carried boundary
+
+Use **MiniMax H3 Chain Audio Refine Sampler** for an audio-only second pass
+inside a chain. The third-party `H3 Audio Refine Sampler` opens every audio
+tick, including a protected carried prefix. In an AV continuation, assembly
+normally gives the later scene ownership of that decoded overlap; reworking
+it can therefore replace otherwise good sound at the end of the prior scene
+([#97](https://github.com/ethanfel/ComfyUI-MiniMaxH3-Context-Loop/issues/97)).
+
+Replace the third-party sampler with the Chain sampler and wire:
+
+| Chain Audio Refine input | Connect from |
+| --- | --- |
+| `latent` | Finished joint AV output of Sample Video + Audio |
+| `context_latent` | Apply Scene Context's **latent** output, before the first sampler |
+| `positive` | Apply Scene Context's conditioning output |
+| `negative` | The same conditioning at CFG 1; your negative conditioning otherwise |
+| `model` | Separate refinement branch **before Turbo LoRA and the Drift-Control patch** |
+| `seed` | Current Scene's noise seed, or an explicit refinement seed |
+
+Connect its output to both VAE decoders, Save Segment + Checkpoint's
+`sampled_latent`, and Loop End's `sampled_latent`. Keep decoded images/audio
+going through Loop Trim as before. The extra `context_latent` wire must come
+from the same scene and match the sampled latent's resolution and length.
+
+The node freezes all video, preserves hard audio locks, retains fractional
+audio masks (including Soft AV feathers), and skips sampling when audio is
+entirely locked. It uses ComfyUI's native sampler and does not require the
+AudioRefine pack. Dynamic denoise-mask model patches are rejected rather than
+allowed to reopen the frozen picture. An optional Frozen Video Cache may
+fall back to its exact uncached path for mixed protected/generated audio;
+disable that cache for an initial quality comparison. This integration has
+CPU mask/saving/assembly coverage, not a guarantee of perceptual improvement.
+
+For **already-saved clips** refined without boundary protection, load their
+manifest and set Assemble Final Video's `generated_audio_join` to
+**`delivered_only`**. This concatenates the saved trimmed audio and ignores
+the regenerated raw overlap, equivalent to using the individual generated
+WAVs. It neither reruns diffusion nor changes checkpoints or A/V timing.
+It also applies to generated-audio sidecars, but does not alter source-track
+audio. The setting is local to that assembly node, not a global preview or
+PNG-export preference. Hard cuts can still be audible; this recovers assembly,
+not the lost continuity inside an already-refined clip.
+
+The default **`av_overlap`** is unchanged and remains appropriate for ordinary
+AV continuation, including Soft AV's intentional boundary feather.
+
 ### Editorial scene placement, gaps, and subtitles
 
 Plan Studio can place each generated scene at an exact 24 fps timeline frame.

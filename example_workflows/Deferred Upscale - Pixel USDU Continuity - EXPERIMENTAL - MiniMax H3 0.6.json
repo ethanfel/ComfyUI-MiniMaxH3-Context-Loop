@@ -1191,7 +1191,7 @@
       ],
       "size": [
         440,
-        360
+        364
       ],
       "flags": {},
       "order": 21,
@@ -1235,7 +1235,8 @@
         "plan",
         "off",
         "off",
-        false
+        false,
+        "av_overlap"
       ]
     },
     {
@@ -1243,7 +1244,7 @@
       "type": "MiniMaxH3PixelBoundaryExport",
       "pos": [
         4584,
-        640
+        644
       ],
       "size": [
         360,
@@ -1798,7 +1799,7 @@
         4544,
         90,
         520,
-        814
+        818
       ],
       "color": "#393f58",
       "font_size": 24,
