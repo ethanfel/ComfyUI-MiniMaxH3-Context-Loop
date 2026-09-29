@@ -182,6 +182,7 @@ function injectStyles() {
         .h3c-prefix-body[hidden] { display: none; }
         .h3c-toolbar { position: sticky; top: -10px; z-index: 4; padding: 7px 0; background: var(--h3c-bg); flex-wrap: wrap; }
         .h3c-toolbar .h3c-spacer { flex: 1; }
+        .h3c-toolbar .h3c-scroll-bottom { min-height: 44px; touch-action: manipulation; }
         .h3c-card {
             --h3c-scene-color: var(--h3c-accent);
             margin-bottom: 9px;
@@ -2034,7 +2035,13 @@ function mountEditor(node) {
         });
         const collapseAll = button("Collapse all", "Collapse all scene cards", () => setScenesCollapsed(true));
         const expandAll = button("Expand all", "Expand all scene cards", () => setScenesCollapsed(false));
-        toolbar.append(add, advanced, collapseAll, expandAll, element("span", "h3c-spacer"), json);
+        const scrollBottom = button("↓ Scroll to bottom", "Scroll to the bottom of this Plan editor", () => {
+            // Scroll only this editor, without moving the workflow canvas or rebuilding scene cards.
+            root.scrollTop = root.scrollHeight;
+        });
+        scrollBottom.classList.add("h3c-scroll-bottom");
+        scrollBottom.setAttribute("aria-label", "Scroll to bottom");
+        toolbar.append(add, advanced, collapseAll, expandAll, element("span", "h3c-spacer"), scrollBottom, json);
 
         const errors = element("div", "h3c-errors");
         const cards = element("div", "h3c-cards");

@@ -9,7 +9,7 @@ import {spawn} from "node:child_process";
 const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "h3-plan-collapse-"));
 const html = `<!doctype html><meta charset="utf-8"><style>
 body{margin:12px;background:#191b20;display:flex;gap:16px;color:#ddd}
-.host{width:920px;height:860px;flex:none}
+.host{width:700px;height:650px;flex:none}
 </style><script type="module">(${browserChecks.toString()})();</script>`;
 const server = http.createServer((req, res) => {
     const url = new URL(req.url, "http://localhost");
@@ -139,12 +139,45 @@ async function browserChecks() {
                 await waitFor(() => width.hidden);
                 checkBackingWidgets();
             }
+            await wait(40); // Let connection-refresh renders restore their scroll position first.
             const cards = () => [...node.root.querySelectorAll(".h3c-card")];
             const click = (text, root = node.root) => [...root.querySelectorAll("button")].find(b => b.textContent === text).click();
             const plan = () => node.widgets.find(w => w.name === "plan_json").value;
             const layout = () => node.properties.h3_chain_plan_layout;
             const collapsed = () => cards().filter(c => c.querySelector(".h3c-card-body").hidden);
             const input = (el, value) => { el.value = value; el.dispatchEvent(new Event("input", {bubbles:true})); };
+            const checkScrollToBottom = async () => {
+                const before = {plan:plan(), state:JSON.stringify(node._h3ChainEditor.plan),
+                    properties:JSON.stringify(node.properties), size:JSON.stringify(node.size), requests};
+                const firstCard = cards()[0];
+                const others = graph._nodes.filter(other => other !== node && other.root?.isConnected)
+                    .map(other => [other.root, other.root.scrollTop]);
+                const page = [window.scrollX, window.scrollY];
+                node.root.scrollTop = 0;
+                const navigation = node.root.querySelector(".h3c-toolbar .h3c-scroll-bottom");
+                check(navigation?.getAttribute("aria-label") === "Scroll to bottom",
+                    type + ": accessible bottom navigation in the scene toolbar");
+                check(navigation.getBoundingClientRect().height >= 44, "Bottom button has a tablet-sized tap target");
+                navigation.click();
+                await wait(40);
+                check(Math.abs(node.root.scrollTop - (node.root.scrollHeight - node.root.clientHeight)) <= 1,
+                    "Bottom navigation uses the current content height");
+                const viewport = node.root.getBoundingClientRect();
+                const footer = node.root.querySelector(".h3c-footer").getBoundingClientRect();
+                const control = navigation.getBoundingClientRect();
+                check(footer.bottom <= viewport.bottom && footer.top >= viewport.top, "Editor footer is visible at the bottom");
+                check(control.top >= viewport.top && control.bottom <= viewport.bottom,
+                    "Sticky bottom navigation stays reachable");
+                check(others.every(([root, top]) => root.scrollTop === top)
+                    && window.scrollX === page[0] && window.scrollY === page[1], "Only this editor scrolls");
+                check(plan() === before.plan && JSON.stringify(node._h3ChainEditor.plan) === before.state
+                    && JSON.stringify(node.properties) === before.properties, "Navigation leaves plan and properties unchanged");
+                check(cards()[0] === firstCard && JSON.stringify(node.size) === before.size && requests === before.requests,
+                    "Navigation does not rebuild cards, resize nodes, or request backend work");
+                node.root.scrollTop = 0;
+            };
+            check(node.root.scrollHeight > node.root.clientHeight, "Expanded scenes overflow the editor for navigation testing");
+            await checkScrollToBottom();
             check(collapsed().length === 0, type + ": old workflows start expanded");
             const authored = plan(), statePlan = JSON.stringify(node._h3ChainEditor.plan);
             const oldSize = JSON.stringify(node.size), oldRequests = requests;
@@ -180,6 +213,7 @@ async function browserChecks() {
             check(first.querySelector(".h3c-collapse").getAttribute("aria-expanded") === "false", "Accessible collapsed button");
             check(layout().collapsedScenes.one === true, "State lives in workflow properties");
             click("Collapse all"); check(collapsed().length === 3, "Collapse all");
+            await checkScrollToBottom();
             click("Expand all"); check(collapsed().length === 0, "Expand all");
             check(prefixBody().hidden, "Scene bulk controls leave the global prompt state alone");
             check(graph._nodes.filter(other => other !== node && other.root?.isConnected).every(other =>
@@ -230,6 +264,15 @@ async function browserChecks() {
             prefixToggle().click(); prefixToggle().click();
             check(plan() === edited && node.root.querySelector(".h3c-prefix").value === "Edited global prompt.",
                 "Collapse never reverts an edited global prompt");
+            click("Raw JSON");
+            await wait(40);
+            await checkScrollToBottom();
+            click("Hide raw JSON");
+            await wait(40);
+            // Navigation fits the minimum-width, tablet-sized editor viewport.
+            await checkScrollToBottom();
+            const toolbar = node.root.querySelector(".h3c-toolbar");
+            check(toolbar.scrollWidth <= toolbar.clientWidth, "Scene toolbar fits the minimum editor width");
             click("Collapse all");
             node.root.scrollTop = 0;
         }
