@@ -157,7 +157,13 @@ async function browserChecks() {
                 const navigation = node.root.querySelector(".h3c-toolbar .h3c-scroll-bottom");
                 check(navigation?.getAttribute("aria-label") === "Scroll to bottom",
                     type + ": accessible bottom navigation in the scene toolbar");
-                check(navigation.getBoundingClientRect().height >= 44, "Bottom button has a tablet-sized tap target");
+                const navigationBounds = navigation.getBoundingClientRect();
+                const peers = [...navigation.parentElement.querySelectorAll("button")].filter(button => button !== navigation);
+                check(navigationBounds.height > 0 && peers.every(button =>
+                    Math.abs(button.getBoundingClientRect().height - navigationBounds.height) <= 1),
+                    "Bottom navigation matches the other toolbar button heights");
+                check(Math.abs(navigation.nextElementSibling.getBoundingClientRect().top - navigationBounds.top) <= 1,
+                    "Bottom navigation aligns with the adjacent raw JSON button");
                 navigation.click();
                 await wait(40);
                 check(Math.abs(node.root.scrollTop - (node.root.scrollHeight - node.root.clientHeight)) <= 1,

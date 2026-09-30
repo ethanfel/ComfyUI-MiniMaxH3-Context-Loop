@@ -182,7 +182,7 @@ function injectStyles() {
         .h3c-prefix-body[hidden] { display: none; }
         .h3c-toolbar { position: sticky; top: -10px; z-index: 4; padding: 7px 0; background: var(--h3c-bg); flex-wrap: wrap; }
         .h3c-toolbar .h3c-spacer { flex: 1; }
-        .h3c-toolbar .h3c-scroll-bottom { min-height: 44px; touch-action: manipulation; }
+        .h3c-toolbar .h3c-scroll-bottom { touch-action: manipulation; }
         .h3c-card {
             --h3c-scene-color: var(--h3c-accent);
             margin-bottom: 9px;
