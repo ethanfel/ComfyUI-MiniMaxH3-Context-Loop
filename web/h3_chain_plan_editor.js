@@ -247,7 +247,9 @@ function injectStyles() {
         .h3c-json-panel { display: none; }
         .h3c-json-panel.h3c-open { display: block; }
         .h3c-json { min-height: 260px; font-family: ui-monospace, SFMono-Regular, Consolas, monospace !important; }
-        .h3c-json-actions { margin-top: 6px; }
+        .h3c-json-actions { margin-top: 6px; flex-wrap: wrap; }
+        .h3c-json-navigation { display: inline-flex; gap: 4px; margin-left: auto; }
+        .h3c-json-navigation button { color: var(--h3c-muted); touch-action: manipulation; }
         .h3c-json-status { color: var(--h3c-muted); }
         .h3c-footer { justify-content: space-between; padding-top: 4px; color: var(--h3c-muted); }
         .h3c-footer a { color: var(--h3c-accent); }
@@ -2090,8 +2092,15 @@ function mountEditor(node) {
             loadInput.value = "";
         });
         const loadJson = button("Load .json", "Load a plan JSON file", () => loadInput.click());
+        const jsonNavigation = element("div", "h3c-json-navigation");
+        jsonNavigation.setAttribute("role", "group");
+        jsonNavigation.setAttribute("aria-label", "Raw JSON navigation");
+        const jsonTop = button("↑", "Scroll raw JSON to top", () => { jsonArea.scrollTop = 0; });
+        const jsonBottom = button("↓", "Scroll raw JSON to bottom", () => { jsonArea.scrollTop = jsonArea.scrollHeight; });
+        for (const control of [jsonTop, jsonBottom]) control.setAttribute("aria-label", control.title);
+        jsonNavigation.append(jsonTop, jsonBottom);
         const jsonActions = element("div", "h3c-json-actions");
-        jsonActions.append(apply, copyJson, saveJson, loadJson, loadInput, jsonStatus);
+        jsonActions.append(apply, copyJson, saveJson, loadJson, loadInput, jsonStatus, jsonNavigation);
         jsonPanel.append(jsonArea, jsonActions);
 
         const footer = element("div", "h3c-footer");

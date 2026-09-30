@@ -4,6 +4,8 @@ Newest first. This file keeps release history out of the onboarding README.
 
 ## Unreleased
 
+- Add discreet top/bottom arrow buttons inside the raw JSON section of both
+  Plan editors. They scroll the JSON text only, preserving unapplied edits and selection.
 - Add a tablet-friendly **Scroll to bottom** button to the sticky scene toolbar
   in both Plan editors. It scrolls only the current editor without changing scenes
   or generation settings.
