@@ -622,14 +622,15 @@ assert.equal(authoringSignature(reordered),authoringSignature(authoring('2')));
     vm.runInContext(handler,context);
     assert.equal(JSON.parse(context.captureBranchAuthoring().plan_json).shots[0].prompt,live.shots[0].prompt);
 }
-{
+for (const wrap of [value => value, value => new Proxy(value, {})]) {
     // Execute the actual production callback, including its state rollback.
     const source=fs.readFileSync(new URL('../web/h3_chain_plan_studio.js',import.meta.url),'utf8');
     const handler=source.match(/^    async function applyWorkingBranch\([^]*?^    }$/m)[0];
     const branchWidget={name:'working_branch_id',value:'main'};
     const width={name:'width',value:64}, height={name:'height',value:64};
     const plan={name:'plan_json',value:authoring('old').plan_json};
-    const node={properties:{},widgets:[branchWidget,width,height,plan]};
+    const node={properties:wrap({}),widgets:[branchWidget,width,height,plan,
+        {value:wrap({nested:new Proxy({prompt:'untouched'}, {})})}, {value:()=>{}}]};
     const state={checkpointToken:1,presentationToken:1,history:{loadToken:1,sceneKey:'old'},
         promptEditors:[],planNode:null,lastBranchId:'main'};
     const branches={selected:'main'};
@@ -664,7 +665,7 @@ assert.equal(authoringSignature(reordered),authoringSignature(authoring('2')));
 }
 console.log('Branch recovery: stale workflows, edits during switch, revision binding, lost responses, crash drafts, quota errors and rollback pass');
 
-{
+for (const wrap of [value => value, value => new Proxy(value, {})]) {
     // Real restore + real widget setter, not a mock that conceals edit effects.
     const source=fs.readFileSync(new URL('../web/h3_chain_plan_studio.js',import.meta.url),'utf8');
     const functions=['applyWorkingBranch','writePlanSetting'].map(name =>
@@ -672,7 +673,7 @@ console.log('Branch recovery: stale workflows, edits during switch, revision bin
     const oldPlan=parsePlanJson(authoring('old').plan_json);
     const branchWidget={name:'working_branch_id',value:'main'};
     const planWidget={name:'plan_json',value:planToJson(oldPlan)};
-    const node={properties:{},widgets:[branchWidget,planWidget,
+    const node={properties:wrap({}),widgets:[branchWidget,planWidget,
         ...Object.entries({width:1344,height:768,default_steps:20}).map(([name,value])=>({name,value}))]};
     const state={plan:oldPlan,planOwner:node,planNode:null,promptEditors:[],history:{loadToken:1},
         checkpointToken:1,presentationToken:1};

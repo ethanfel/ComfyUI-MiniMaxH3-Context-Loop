@@ -103,12 +103,46 @@ export class BranchDrafts {
     }
 }
 
+// Live frontend data can be reactive proxies, which structuredClone rejects.
+// Copy plain data recursively instead of JSON-round-tripping it: rollback must
+// preserve undefined, exact seeds, sparse arrays, aliases and circular values.
+// Callbacks and opaque UI objects retain their identity; they are not authored
+// data and the branch transaction does not mutate their internals.
+function snapshotWidgetValue(value, seen) {
+    if (value === null || typeof value !== "object") return value;
+    if (seen.has(value)) return seen.get(value);
+    const prototype = Object.getPrototypeOf(value);
+    const array = Array.isArray(value);
+    const plain = prototype === null || prototype === Object.prototype
+        || (Object.getPrototypeOf(prototype) === null && prototype.constructor?.name === "Object");
+    if (!array && !plain) {
+        // Retain the existing copy behavior for cloneable built-ins (dates,
+        // typed arrays, etc.), but do not try to duplicate DOM/UI instances.
+        try {
+            const copy = structuredClone(value);
+            seen.set(value, copy);
+            return copy;
+        } catch (error) {
+            if (error?.name !== "DataCloneError") throw error;
+            return value;
+        }
+    }
+    const copy = array ? new Array(value.length) : Object.create(prototype === null ? null : Object.prototype);
+    seen.set(value, copy);
+    for (const key of Object.keys(value)) {
+        Object.defineProperty(copy, key, {value:snapshotWidgetValue(value[key], seen),
+            enumerable:true, configurable:true, writable:true});
+    }
+    return copy;
+}
+
 // Roll back widget values without invoking the callback that just failed.
 export function branchWidgetTransaction(nodes, action) {
     const unique = [...new Set(nodes.filter(Boolean))];
-    const snapshots = unique.map(node => ({node, properties:structuredClone(node.properties ?? {}),
-        widgets:(node.widgets ?? []).filter(w => w.serialize !== false)
-            .map(widget => ({widget, value:structuredClone(widget.value)}))}));
+    const seen = new WeakMap();
+    const snapshots = unique.map(node => ({node, properties:snapshotWidgetValue(node.properties ?? {}, seen),
+        widgets:(node.widgets ?? []).filter(w => w.serialize !== false && w.options?.serialize !== false)
+            .map(widget => ({widget, value:snapshotWidgetValue(widget.value, seen)}))}));
     try { return action(); }
     catch (error) {
         for (const {node, properties, widgets} of snapshots) {

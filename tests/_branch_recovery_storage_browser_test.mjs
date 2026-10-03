@@ -9,7 +9,7 @@ import {join} from "node:path";
 
 async function browserTests() {
     const {BranchRecoveryStorage, RECOVERY_BYTE_LIMIT} = await import("/web/h3_branch_recovery_storage.mjs");
-    const {BranchDrafts, StudioBranches} = await import("/web/h3_working_branches.mjs");
+    const {BranchDrafts, StudioBranches, branchWidgetTransaction} = await import("/web/h3_working_branches.mjs");
     const results = [];
     const check = (condition, message) => { if (!condition) throw Error(message); };
     const rejects = async (promise, pattern) => {
@@ -27,6 +27,50 @@ async function browserTests() {
     const store = (options = {}) => new BranchRecoveryStorage({indexedDB, name:crypto.randomUUID(), ...options});
     const close = async storage => (await storage.ready).close();
     check(RECOVERY_BYTE_LIMIT === 64 * 1024 * 1024, "recovery has a finite byte budget");
+
+    // Issue #104: real structuredClone/DOM objects, reactive node properties,
+    // and IndexedDB recovery while reloading a conflicting saved branch.
+    const reloadStorage = store();
+    const reloadDrafts = new BranchDrafts(reloadStorage, "reactive-reload");
+    const localPlan = draft("18446744073709551615").authoring.plan_json;
+    const savedPlan = draft("18446744073709551614").authoring.plan_json;
+    const planWidget = {name:"plan_json", value:localPlan};
+    const callback = () => {};
+    const element = document.createElement("span");
+    const node = {properties:new Proxy({cache:new Proxy({prompt:"local"}, {})}, {}), widgets:[
+        planWidget, {name:"button", value:callback}, {name:"runtime", value:element},
+        {options:{serialize:false}, get value() { throw Error("Do not snapshot a non-serialized widget"); }},
+    ]};
+    let failApply = true;
+    const reload = new StudioBranches({drafts:reloadDrafts,
+        capture:()=>({plan_json:planWidget.value}), flush:async()=>{}, changed(){},
+        apply:async record => branchWidgetTransaction([node], () => {
+            planWidget.value = record.authoring.plan_json;
+            node.properties.cache.prompt = "saved";
+            if (failApply) throw Error("fixture callback failure");
+        }),
+        request:async body => {
+            if (body.action === "list") return {branches:[{id:"main",revision:"1"}],default_branch:"main"};
+            check(body.action === "load", "reload must not write server authoring");
+            return {id:"main",revision:"1",authoring:{plan_json:savedPlan}};
+        },
+    });
+    await reload.refresh("run");
+    check(Boolean(reload.conflict), "a different local Plan requires a reload decision");
+    await reload.reloadSaved();
+    check(reload.error === "fixture callback failure", "clone must succeed and expose the real callback failure");
+    check(planWidget.value === localPlan && node.properties.cache.prompt === "local", "failed reload rolls back all edits");
+    check((await reloadDrafts.read("run", "main")).authoring.plan_json === localPlan, "failed reload keeps the exact local draft");
+    failApply = false;
+    // Model the frontend re-wrapping restored node properties reactively.
+    node.properties = new Proxy(node.properties, {});
+    await reload.reloadSaved();
+    check(!reload.error && !reload.conflict, "reactive branch reload succeeds");
+    check(planWidget.value === savedPlan, "saved prompts and exact uint64 seed loaded");
+    check(node.widgets[1].value === callback && node.widgets[2].value === element, "UI runtime identities unchanged");
+    check((await reloadDrafts.read("run", "main")).authoring.plan_json === localPlan, "successful reload also retains the old draft");
+    await close(reloadStorage);
+    results.push("reactive branch reload with DOM/callback widgets: rollback, exact seeds and IndexedDB recovery");
 
     // A gap-only edit must survive closing/reopening the recovery database,
     // even though the saved Plan has not changed at all.
