@@ -16,6 +16,7 @@ import uuid
 from .branch_scope import working_directory, branch_id
 from .checkpoint_manager import checkpoint_run_lock, _strict_run_name
 from .chain_layout import resolve_path
+from .processing_persistence import sync_file
 
 
 def digest(value):
@@ -87,8 +88,7 @@ def save_bundle(path, value):
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
         save_file(tensors, str(temporary), metadata={"format": "h3_selflift_bundle_v1", "tree": tree})
-        with temporary.open("rb") as handle:
-            os.fsync(handle.fileno())
+        sync_file(temporary)
         os.replace(temporary, path)
         _sync_directory(path.parent)
     finally:

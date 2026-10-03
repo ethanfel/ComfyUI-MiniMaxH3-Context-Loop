@@ -6,6 +6,8 @@ Newest first. This file keeps release history out of the onboarding README.
 
 - Fix Plan Studio branch reload/switch failures on reactive frontend objects
   (#104), preserving local recovery and rollback without cloning UI callbacks.
+- Fix Windows `Bad file descriptor` errors while saving SelfLift handoff bundles
+  and Tiny VAE previews by using the shared non-truncating, Windows-safe file sync helper.
 - Add discreet top/bottom arrow buttons inside the raw JSON section of both
   Plan editors. They scroll the JSON text only, preserving unapplied edits and selection.
 - Add a tablet-friendly **Scroll to bottom** button to the sticky scene toolbar

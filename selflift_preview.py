@@ -6,6 +6,8 @@ import os
 from pathlib import Path
 import uuid
 
+from .processing_persistence import sync_file
+
 
 def tiny_models():
     try:
@@ -93,8 +95,7 @@ def save_preview(video, path, tiny_vae, raw_frames, trim_frames=0):
                 raise ValueError("SelfLift preview is empty after context trim.")
             for packet in stream.encode():
                 container.mux(packet)
-        with temporary.open("rb") as handle:
-            os.fsync(handle.fileno())
+        sync_file(temporary)
         os.replace(temporary, path)
         _sync_directory(path.parent)
     finally:
