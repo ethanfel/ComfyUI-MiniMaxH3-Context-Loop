@@ -625,7 +625,7 @@ assert.equal(authoringSignature(reordered),authoringSignature(authoring('2')));
 for (const wrap of [value => value, value => new Proxy(value, {})]) {
     // Execute the actual production callback, including its state rollback.
     const source=fs.readFileSync(new URL('../web/h3_chain_plan_studio.js',import.meta.url),'utf8');
-    const handler=source.match(/^    async function applyWorkingBranch\([^]*?^    }$/m)[0];
+    const handler=source.match(/^    function applyWorkingBranch\([^]*?^    }$/m)[0];
     const branchWidget={name:'working_branch_id',value:'main'};
     const width={name:'width',value:64}, height={name:'height',value:64};
     const plan={name:'plan_json',value:authoring('old').plan_json};
@@ -640,7 +640,7 @@ for (const wrap of [value => value, value => new Proxy(value, {})]) {
         writePlanSetting(name,value){node.widgets.find(w=>w.name===name).value=value;if(name==='height')throw Error('callback failure');},
         widget(){return null;},loadPlan(){},renderShell(){},dirty(){}});
     vm.runInContext(handler,context);
-    await assert.rejects(context.applyWorkingBranch({id,authoring:{width:128,height:96,plan_json:authoring('new').plan_json}}),/callback failure/);
+    assert.throws(()=>context.applyWorkingBranch({id,authoring:{width:128,height:96,plan_json:authoring('new').plan_json}}),/callback failure/);
     assert.equal(branchWidget.value,'main');assert.equal(width.value,64);assert.equal(height.value,64);
     assert.equal(plan.value,authoring('old').plan_json);assert.equal(branches.selected,'main');
     assert.equal(state.history.sceneKey,'old');assert.ok(state.checkpointToken>1);
@@ -649,7 +649,7 @@ for (const wrap of [value => value, value => new Proxy(value, {})]) {
         assert.equal(force,true);assert.equal(throwOnError,true);
         state.history.sceneKey='failed new view';throw Error('render failure');
     };
-    await assert.rejects(context.applyWorkingBranch({id,authoring:{width:128,height:96,plan_json:authoring('new').plan_json}}),/render failure/);
+    assert.throws(()=>context.applyWorkingBranch({id,authoring:{width:128,height:96,plan_json:authoring('new').plan_json}}),/render failure/);
     assert.equal(branchWidget.value,'main');assert.equal(plan.value,authoring('old').plan_json);
     assert.equal(state.history.sceneKey,'old');
     context.loadPlan=()=>{};

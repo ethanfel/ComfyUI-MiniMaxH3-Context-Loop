@@ -1,6 +1,7 @@
 import {app} from "/scripts/app.js";
 import {bindNodeWheel} from "./h3_dom_wheel.mjs?v=0.7.1";
 import {api} from "/scripts/api.js";
+import {prepareProjectPlanSwitch} from "./h3_project_plan_switch.mjs?v=0.7.1";
 import {
     coupledOutputDimensions,
     AUDIO_TRACK_ROLES,
@@ -138,7 +139,11 @@ function button(label, action, title = "") {
 async function jsonRequest(route, options = {}) {
     const response = await api.fetchApi(route, options);
     const payload = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(payload.error || `${response.status}`);
+    if (!response.ok) {
+        const error = new Error(payload.error || `${response.status}`);
+        error.status = response.status;
+        throw error;
+    }
     return payload;
 }
 
@@ -2504,6 +2509,26 @@ function mount(node) {
         if (failed) throw failed.reason;
     }
 
+    async function requestProjectBranch(body) {
+        const path = "/minimax_h3_context_loop/working-branches";
+        if (["list", "load"].includes(body.action)) {
+            return jsonRequest(`${path}?${new URLSearchParams(body)}`);
+        }
+        return jsonRequest(path, await projectMutationOptions(node, body.run_name, {
+            method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body),
+        }));
+    }
+    async function archivedProjectPlan(run) {
+        const listing = await jsonRequest("/minimax_h3_context_loop/runs");
+        const saved = listing.runs?.find(item => item.run_name === run);
+        if (!saved?.restorable) {
+            if (saved?.checkpoint_count) throw new Error(`Project ${run} has saved clips but no recoverable Plan archive.`);
+            return null;
+        }
+        const archive = await jsonRequest(`/minimax_h3_context_loop/run?${new URLSearchParams({run_name:run})}`);
+        const {run_name, ...authoring} = archive.plan_inputs;
+        return {...authoring, policy_inputs:archive.policy_inputs ?? {}};
+    }
     async function performProjectSwitch(selectedProject, requireExisting = true) {
         selectedProject = String(selectedProject ?? "").trim();
         if (requireExisting && !state.projectNames.has(selectedProject)) return false;
@@ -2515,14 +2540,60 @@ function mount(node) {
             return false;
         }
         const previousProject = String(ownership.runName ?? "");
+        let prepared = null;
+        let committed = false;
         if (previousProject && previousProject !== selectedProject) {
             try {
-                setStatus(`Saving pending edits for ${previousProject}…`);
-                await flushProjectEditors(previousProject);
+                setStatus(`Saving Plan and pending edits for ${previousProject}…`);
+                prepared = await prepareProjectPlanSwitch(node, previousProject, selectedProject, {
+                    request:requestProjectBranch, requestArchive:archivedProjectPlan,
+                    flush:flushProjectEditors,
+                });
+                if (!prepared) await flushProjectEditors(previousProject);
+                // Fetch the destination before releasing ownership or changing
+                // any run/Plan widget. A failed load leaves the source intact.
+                const catalog = await jsonRequest(
+                    `/minimax_h3_context_loop/project-assets?project=${encodeURIComponent(selectedProject)}`,
+                );
+                if (catalog.project !== selectedProject) throw new Error("The server returned assets for a different project.");
+                prepared?.assertCurrent();
                 if (ownership.owned) await ownership.release();
+                await ownership.select(selectedProject);
+                const changeRun = () => {
+                    if (runNameWidget) {
+                        runNameWidget.value = selectedProject;
+                        runNameWidget.callback?.(selectedProject);
+                    }
+                    syncDownstreamPlan(node, selectedProject);
+                };
+                if (prepared) prepared.commit(changeRun);
+                else changeRun();
+                committed = true;
+                projectEpoch += 1;
+                refreshSequence += 1;
+                state.selected = ""; state.folder = "";
+                stopMedia();
+                runNameInput.value = selectedProject;
+                persistCatalog(catalog); render();
+                void refreshProjectSuggestions();
+                setStatus(`Loaded ${selectedProject}${prepared ? " · saved prompts and Plan settings" : ""}.`);
+                node.graph?.setDirtyCanvas?.(true, true);
+                return true;
             } catch (error) {
+                if (committed) {
+                    setStatus(`Loaded ${selectedProject}, but the display needs refreshing: ${error.message}`, true);
+                    return true;
+                }
+                prepared?.cancel();
+                if (ownership.runName !== previousProject || !ownership.owned) {
+                    try {
+                        if (ownership.runName !== previousProject && ownership.owned) await ownership.release();
+                        await ownership.select(previousProject);
+                        if (!ownership.owned && ownership.status?.locking_enabled !== false) await ownership.request("claim");
+                    } catch { /* Keep the original error. */ }
+                }
                 setStatus(
-                    `Stayed on ${previousProject}: pending edits could not be saved (${error.message}).`,
+                    `Stayed on ${previousProject}: ${error.message}`,
                     true,
                 );
                 runNameInput.value = previousProject;

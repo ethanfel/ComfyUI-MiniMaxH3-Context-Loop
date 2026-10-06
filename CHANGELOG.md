@@ -4,6 +4,10 @@ Newest first. This file keeps release history out of the onboarding README.
 
 ## Unreleased
 
+- Switching Carousel projects now saves the outgoing prompts/Plan and restores
+  the destination's saved branch automatically, including linked prompt editors.
+  Remember per-project branch selection, recover older Plan archives, and keep
+  local edits in place on failed loads, conflicting revisions or ownership errors.
 - Fix Plan Studio branch reload/switch failures on reactive frontend objects
   (#104), preserving local recovery and rollback without cloning UI callbacks.
 - Fix Windows `Bad file descriptor` errors while saving SelfLift handoff bundles

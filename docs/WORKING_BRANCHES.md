@@ -4,6 +4,11 @@ Plan Studio can keep several working versions of one project. A working branch
 owns its clip selection, Plan snapshot, editorial data and processing outputs.
 It does not have to become the project default before generation or upscaling.
 
+Switching projects in **Project Asset Carousel** saves the outgoing branch's
+prompts/settings and loads the destination's saved Plan automatically. It
+remembers the branch last used for each project, otherwise choosing that
+project's default. See [project switching and safeguards](PROJECT_ASSETS.md#switch-projects-without-separate-workflows).
+
 ## Plan Studio
 
 - Use the arrows or branch dropdown to change the Plan and clips shown in Studio.

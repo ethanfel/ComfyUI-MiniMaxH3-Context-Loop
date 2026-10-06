@@ -20,6 +20,37 @@ reloads and reconnections. Modern Plan, the legacy Run Manager's **Active Plan**
 label, and linked Plan Studio show that same run. The Run Manager's **Selected
 archive** is a separate recovery selection; unrelated Plans are not renamed.
 
+### Switch projects without separate workflows
+
+Choose another project in the Carousel's Run name dropdown, or type its name
+and commit it. The Carousel now saves the current branch's prompts and Plan
+settings before loading the destination project's assets **and saved Plan**.
+This works with the original/Modern Plan and with connected or standalone
+Plan Studio; linked prompt editors refresh with the restored Plan.
+
+The last branch used for each project in this Plan is remembered. On the first
+visit, the destination's project-default branch is used. Older runs without a
+branch snapshot can restore their archived Plan. A genuinely new project starts
+with one empty scene, retaining compatible generation controls but not another
+project's prompts, tags, chapters or context bindings. Save the workflow as
+usual to retain graph connections and the per-project branch selections.
+
+Switching keeps the current workflow's model/reference connections. External
+`plan_json_input` must be disconnected because it overrides the editable Plan.
+Use one independent Plan (and one Studio for it) per Carousel for unambiguous
+project switching. Workflow reload, reconnection and refreshing the current
+project do not automatically overwrite the currently displayed Plan.
+
+Failed saves/loads, write-ownership conflicts, unresolved recovery drafts, newer saved
+branch revisions, or edits made while a switch is pending leave the current
+project and its prompts in place. Resolve the displayed warning before trying
+again; no generated clips are deleted or regenerated. This is save-on-switch,
+not continuous server autosave: use **Save branch** to save without leaving
+the project, and save your workflow normally before closing it.
+
+A project owned by another workflow can still be loaded read-only. Saving edits
+requires ownership; switching never forces a takeover.
+
 ## Inputs and outputs
 
 | Side | Field | Use |
