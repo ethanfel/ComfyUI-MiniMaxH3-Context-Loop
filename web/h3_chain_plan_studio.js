@@ -10,9 +10,9 @@ import {
 } from "./h3_studio_chapters.mjs?v=0.7.1";
 import {CONTEXT_MASK_MODES} from "./h3_context_mask_core.mjs?v=0.7.1";
 import {contextMaskEditor} from "./h3_context_mask_editor.mjs?v=0.7.2";
-import {StudioBranches, BranchDrafts, branchOperationId, branchWidgetTransaction, branchRequestPath, workingBranchId, visibleWorkingBranches} from "./h3_working_branches.mjs?v=0.7.29";
+import {StudioBranches, BranchDrafts, branchOperationId, branchWidgetTransaction, branchRequestPath, workingBranchId, visibleWorkingBranches} from "./h3_working_branches.mjs?v=0.7.30";
 import {browserBranchRecoveryStorage} from "./h3_branch_recovery_storage.mjs?v=0.7.23";
-import {PLAN_SETTING_WIDGETS} from "./h3_project_plan_switch.mjs?v=0.7.1";
+import {PLAN_SETTING_WIDGETS} from "./h3_project_plan_switch.mjs?v=0.7.4";
 import {branchPolicyNodes, captureBranchPolicyInputs, restoreBranchPolicyInputs} from "./h3_plan_restore_core.mjs?v=0.7.21";
 import {inputSource as resolvedInputSource} from "./h3_reference_preview_core.mjs?v=0.7.27";
 import {syncManagedPlanRunName} from "./h3_project_asset_sync_core.mjs?v=0.7.3";
@@ -135,7 +135,7 @@ import {
 import * as promptCompanionSync from "./h3_prompt_companion_sync.mjs?v=0.7.26";
 import {
     projectMutationOptions, subscribeProjectOwnership, isProjectReadOnlyError,
-} from "./h3_project_ownership.mjs?v=0.7.5";
+} from "./h3_project_ownership.mjs?v=0.7.6";
 
 const {
     connectedPromptEditors,

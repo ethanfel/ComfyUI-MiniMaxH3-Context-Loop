@@ -1,7 +1,7 @@
 import {app} from "/scripts/app.js";
 import {
     loadOwnershipSettings, setOwnershipEnabled, subscribeOwnershipSettings,
-} from "./h3_project_ownership.mjs?v=0.7.5";
+} from "./h3_project_ownership.mjs?v=0.7.6";
 
 const ID = "MiniMaxH3ContexLoop.ProjectOwnership.Enabled";
 let ready = false;

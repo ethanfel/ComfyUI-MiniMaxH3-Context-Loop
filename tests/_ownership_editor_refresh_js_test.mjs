@@ -50,7 +50,7 @@ for (const filename of ["h3_chain_scene_prompt_editor.js", "h3_chain_rich_scene_
     const unsubscribe = ownerContext.subscribeProjectOwnership({graph}, context.onProjectOwnershipChanged);
     fixtures.push({context, requests, unsubscribe, setRun:value => { run = value; }});
     assert.match(text, /unsubscribeOwnership\(\)/, "listeners are removed with the node");
-    assert.match(text, /h3_project_ownership\.mjs\?v=0\.7\.5/);
+    assert.match(text, /h3_project_ownership\.mjs\?v=0\.7\.6/);
 }
 let foreignEvents = 0;
 ownerContext.subscribeProjectOwnership({graph:otherGraph}, () => foreignEvents++);

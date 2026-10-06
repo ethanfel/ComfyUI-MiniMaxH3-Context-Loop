@@ -111,6 +111,37 @@ function fixture({live = authoring("18446744073709551614"), storage = memoryStor
     return {controller,events,disk,drafts,storage,getLive:()=>live,setLive:value=>live=value,getBinding:()=>remembered};
 }
 {
+    const t=fixture();await t.controller.refresh('demo');
+    const request=t.controller.request;
+    let calls=0;
+    const refusal=()=>Object.assign(Error('Project demo is read-only here;'),
+        {status:423,code:'h3_project_read_only',requestNotSent:true});
+    t.controller.request=async()=>{calls++;throw refusal();};
+    await assert.rejects(t.controller.save(), /read-only/);
+    assert.equal(calls,1,'definite local refusals are not retried');
+    assert.equal(t.controller.pending,null);
+    assert.equal(await t.drafts.pending(),null);
+
+    // A later preflight refusal cannot settle an earlier lost response: keep
+    // the operation ID so an explicit retry can recover its receipt safely.
+    calls=0;
+    t.controller.request=async body=>{
+        if(calls++ === 0){await request(body);throw Error('response lost');}
+        throw refusal();
+    };
+    await assert.rejects(t.controller.save(), /uncertain/);
+    const pending=t.controller.pending;
+    assert.ok(pending);
+    assert.equal((await t.drafts.pending()).operation_id,pending.operation_id);
+    await t.controller.retryPending();
+    assert.equal(t.controller.pending.operation_id,pending.operation_id,
+        'continued lack of permission does not discard an uncertain write');
+    t.controller.request=request;
+    await t.controller.retryPending();
+    assert.equal(t.controller.pending,null);
+    assert.equal(t.controller.binding.revision,t.disk.get('main').revision);
+}
+{
     // Exercise the actual node's initialization when even the tiny identity
     // hint fails. That must not bypass the IndexedDB migration/recovery path.
     const source=fs.readFileSync(new URL('../web/h3_chain_plan_studio.js',import.meta.url),'utf8');

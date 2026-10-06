@@ -109,6 +109,8 @@ async function command(body) {
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
         const error = new Error(payload.error || `HTTP ${response.status}`);
+        error.status = response.status;
+        error.code = payload.code;
         error.payload = payload;
         throw error;
     }
@@ -242,15 +244,34 @@ export function registerProjectOwnership(node, onChange = null) {
     return controller;
 }
 
+function ownershipDenied(message) {
+    // Match a server-side refusal, but also record that the guarded mutation
+    // was never sent. Save/recovery code must not treat this as a lost reply.
+    return Object.assign(new Error(message), {
+        status:423, code:"h3_project_read_only", requestNotSent:true,
+    });
+}
+
+async function claimForWrite(controller) {
+    try {
+        if (!controller.owned) await controller.request("claim");
+    } catch (error) {
+        // Even if the ownership request itself failed in transit, the caller
+        // has not yet submitted its project mutation.
+        error.requestNotSent = true;
+        throw error;
+    }
+}
+
 export async function projectMutationOptions(node, runName, options = {}) {
     const controller = controllerFor(node, runName);
     if (!controller) return options;
     if (controller.status?.locking_enabled === false) return options;
-    if (!controller.owned) await controller.request("claim");
+    await claimForWrite(controller);
     if (controller.status?.locking_enabled === false) return options;
     if (!controller.owned) {
         const owner = controller.status?.owner_label || "another workflow";
-        throw new Error(
+        throw ownershipDenied(
             `Project ${runName} is read-only here; it is owned by ${owner}. ` +
             "Use Force ownership in this workflow's Project Asset Carousel.",
         );
@@ -265,11 +286,11 @@ export async function queuedProjectOwnership(node, runName) {
     const controller = controllerFor(node, runName);
     if (!controller) return "";
     if (controller.status?.locking_enabled === false) return "";
-    if (!controller.owned) await controller.request("claim");
+    await claimForWrite(controller);
     if (controller.status?.locking_enabled === false) return "";
     if (!controller.owned) {
         const owner = controller.status?.owner_label || "another workflow";
-        throw new Error(
+        throw ownershipDenied(
             `Project ${runName} is read-only here; it is owned by ${owner}. ` +
             "Use Force ownership in the Project Asset Carousel.",
         );

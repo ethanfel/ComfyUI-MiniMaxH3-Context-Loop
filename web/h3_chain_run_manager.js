@@ -17,7 +17,7 @@ import {
     refreshRestoredPlanEditors,
     restoreConnectedPolicyInputs,
 } from "./h3_plan_restore_core.mjs?v=0.7.21";
-import {projectMutationOptions} from "./h3_project_ownership.mjs?v=0.7.5";
+import {projectMutationOptions} from "./h3_project_ownership.mjs?v=0.7.6";
 import {inputSource as resolvedInputSource} from "./h3_reference_preview_core.mjs?v=0.7.27";
 import {syncManagedPlanRunName} from "./h3_project_asset_sync_core.mjs?v=0.7.3";
 

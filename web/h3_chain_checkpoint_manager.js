@@ -3,7 +3,7 @@ import {applyContextTake} from "./h3_context_take_core.mjs?v=0.7.1";
 import {bindNodeWheel} from "./h3_dom_wheel.mjs?v=0.7.1";
 import {api} from "/scripts/api.js";
 import {mountStorageInspector} from "./h3_storage_inspector.mjs?v=0.7.1";
-import {branchRequestPath, branchSelectionJson, visibleWorkingBranches, emptyBranchKeepTarget} from "./h3_working_branches.mjs?v=0.7.26";
+import {branchRequestPath, branchSelectionJson, visibleWorkingBranches, emptyBranchKeepTarget} from "./h3_working_branches.mjs?v=0.7.30";
 import {checkpointForkGraph, checkpointGraphKey, checkpointSaveOrder, checkpointGraphOutput, mountCheckpointGraphEdges} from "./h3_checkpoint_graph.mjs?v=0.7.20";
 import {mountCheckpointMultiSelect} from "./h3_checkpoint_multiselect.mjs?v=0.7.1";
 import {
@@ -43,7 +43,7 @@ import {
     refreshRestoredPlanEditors,
     restoreConnectedPolicyInputs,
 } from "./h3_plan_restore_core.mjs?v=0.7.21";
-import {projectMutationOptions} from "./h3_project_ownership.mjs?v=0.7.5";
+import {projectMutationOptions} from "./h3_project_ownership.mjs?v=0.7.6";
 
 const NODE_NAME = "MiniMaxH3ChainCheckpointManager";
 const PLAN_NAME = "MiniMaxH3ChainPlan";

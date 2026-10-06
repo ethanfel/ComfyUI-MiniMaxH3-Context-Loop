@@ -15,7 +15,7 @@ IMPORT = re.compile(
 SEMVER = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
 MINIMUM_CACHE_VERSION = {
     "h3_checkpoint_graph.mjs": "0.7.19",
-    "h3_working_branches.mjs": "0.7.26",
+    "h3_working_branches.mjs": "0.7.30",
     "h3_policy_core.mjs": "0.7.10",
     "h3_project_asset_editor_core.mjs": "0.7.9",
     "h3_plan_restore_core.mjs": "0.7.21",
@@ -37,7 +37,8 @@ MINIMUM_CACHE_VERSION = {
     "h3_checkpoint_manager_core.mjs": "0.7.20",
     "h3_prompt_companion_sync.mjs": "0.7.2",
     "h3_project_asset_sync_core.mjs": "0.7.3",
-    "h3_project_ownership.mjs": "0.7.5",
+    "h3_project_ownership.mjs": "0.7.6",
+    "h3_project_plan_switch.mjs": "0.7.4",
     "h3_reference_preview_core.mjs": "0.7.25",
     "h3_lora_scheduler_core.mjs": "0.7.25",
     "h3_notification_stack_core.mjs": "0.7.10",

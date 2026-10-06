@@ -1,7 +1,7 @@
 import {app} from "/scripts/app.js";
 import {bindNodeWheel} from "./h3_dom_wheel.mjs?v=0.7.1";
 import {api} from "/scripts/api.js";
-import {prepareProjectPlanSwitch} from "./h3_project_plan_switch.mjs?v=0.7.1";
+import {prepareProjectPlanSwitch} from "./h3_project_plan_switch.mjs?v=0.7.4";
 import {
     coupledOutputDimensions,
     AUDIO_TRACK_ROLES,
@@ -22,7 +22,7 @@ import {
 import {
     projectMutationOptions,
     registerProjectOwnership,
-} from "./h3_project_ownership.mjs?v=0.7.5";
+} from "./h3_project_ownership.mjs?v=0.7.6";
 import {
     lineageChildren,
     lineageFlatten,

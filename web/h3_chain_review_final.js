@@ -27,7 +27,7 @@ import {
     reviewPlanScenePrompt,
     reviewSeed,
 } from "./h3_chain_review_core.mjs?v=0.7.27";
-import {projectMutationOptions} from "./h3_project_ownership.mjs?v=0.7.5";
+import {projectMutationOptions} from "./h3_project_ownership.mjs?v=0.7.6";
 import {appendedReviewPrompts, appendedReviewScene, continueAppendedReview} from "./h3_chain_review_append.mjs?v=0.7.1";
 import {submitWithPromptIdentity} from "./h3_chain_top_level_requeue_coordinator.mjs?v=0.7.26";
 

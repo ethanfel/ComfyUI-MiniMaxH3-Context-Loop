@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import vm from "node:vm";
+import {StudioBranches, BranchDrafts} from "../web/h3_working_branches.mjs";
 
 const read = name => fs.readFileSync(new URL(`../web/${name}`, import.meta.url), "utf8");
 const script = name => read(name).replace(/^import[\s\S]*?;\n/gm, "").replace(/^export /gm, "");
@@ -90,6 +91,35 @@ await blocked.select("film");
 assert.equal(blocked.owned, false);
 await assert.rejects(second.context.projectMutationOptions({graph:second.graph}, "film"), /read-only/);
 
+// A local permission refusal never reaches the branch mutation endpoint. It
+// must not become an uncertain request that keeps Studio navigation blocked.
+const denied = error => error.status === 423 && error.code === "h3_project_read_only"
+    && error.requestNotSent === true && /read-only/.test(error.message);
+await assert.rejects(second.context.queuedProjectOwnership({graph:second.graph}, "film"), denied);
+const recovery = new Map();
+const drafts = new BranchDrafts({getItem:key=>recovery.get(key) ?? null,
+    setItem:(key,value)=>recovery.set(key,value), removeItem:key=>recovery.delete(key)}, "ownership-test");
+let live = {plan_json:JSON.stringify({shots:[{id:"one",prompt:["original"]}]})};
+let record = {id:"main",run_name:"film",revision:"1",authoring:structuredClone(live)};
+let branchSaves = 0;
+const branches = new StudioBranches({drafts, capture:()=>live, isCurrent:()=>true,
+    changed(){}, flush:async()=>{}, apply(){}, request:async body=>{
+        if(body.action === "list") return {default_branch:"main",branches:[record]};
+        if(body.action === "load") return record;
+        await second.context.projectMutationOptions({graph:second.graph}, "film");
+        branchSaves++;
+        return record = {...record,revision:"2",authoring:body.authoring};
+    }});
+await branches.refresh("film");
+live = {plan_json:JSON.stringify({shots:[{id:"one",prompt:["unsaved edit"]}]})};
+await branches.preserveDraft();
+await assert.rejects(branches.save(), denied);
+assert.equal(branchSaves, 0);
+assert.equal(branches.pending, null);
+assert.equal(await drafts.pending(), null, "no false pending request survives a reload");
+assert.equal((await drafts.read("film", "main")).authoring.plan_json, live.plan_json,
+    "the local prompt recovery draft is preserved");
+
 // A stale ownership HTTP reply must not revive a proof after a settings event.
 let release;
 backend.hold = new Promise(resolve => { release = resolve; });
@@ -103,6 +133,9 @@ assert.equal(first.timers.size, 0);
 assert.equal(await first.context.queuedProjectOwnership({graph:first.graph}, "film"), "");
 const options = {method:"POST", headers:{"Content-Type":"application/json"}};
 assert.equal(await second.context.projectMutationOptions({graph:second.graph}, "film", options), options);
+await branches.save();
+assert.equal(branchSaves, 1, "normal save works after disabling ownership, without Retry pending");
+assert.equal(record.authoring.plan_json, live.plan_json);
 const third = tab(true);
 await third.setup();
 assert.equal(third.value(), false, "new tabs load the persisted unlocked mode");
@@ -147,7 +180,7 @@ for (const client of tabs) assert.equal(client.timers.size, 0);
 for (const file of fs.readdirSync(new URL("../web/", import.meta.url))) {
     if (!/\.(mjs|js)$/.test(file)) continue;
     for (const match of read(file).matchAll(/h3_project_ownership\.mjs\?v=([^"']+)/g)) {
-        assert.equal(match[1], "0.7.5", file);
+        assert.equal(match[1], "0.7.6", file);
     }
 }
 assert.match(read("h3_project_asset_manager.js"), /locking_enabled === false/);

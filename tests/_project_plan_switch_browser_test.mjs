@@ -32,7 +32,7 @@ try {
     chrome = spawn(process.env.H3_TEST_BROWSER || "/opt/google/chrome/chrome", [
         "--headless", "--disable-gpu", "--no-first-run", "--disable-extensions",
         "--disable-background-networking", "--disable-component-update", "--disable-sync",
-        "--user-data-dir=" + path.join(temporary, "profile"), "--virtual-time-budget=22000",
+        "--user-data-dir=" + path.join(temporary, "profile"), "--virtual-time-budget=60000",
         "--dump-dom", `http://127.0.0.1:${server.address().port}/`,
     ], {stdio:["ignore", "pipe", "pipe"]});
     let stdout = "", stderr = "";
@@ -87,6 +87,10 @@ async function browserChecks() {
                     owned_by_requester:locking && owners.get(run)===body.owner_id,
                     available:!owners.has(run),owner_label:"another workflow",epoch:1};
             }
+            else if(url.pathname.endsWith("/project-ownership/settings")) {
+                if(typeof body.enabled === "boolean" && locking !== body.enabled){locking=body.enabled;policyEpoch++;}
+                data={enabled:locking,epoch:policyEpoch};
+            }
             else if(url.pathname.endsWith("/projects")) data={items:[{project:"alpha"},{project:"beta"},{project:"offline"}]};
             else if(url.pathname.endsWith("/project-assets")) {
                 if(failRead && run==="offline") return {ok:false,status:503,json:async()=>({error:"offline test"})};
@@ -137,7 +141,8 @@ async function browserChecks() {
         await import("/web/h3_chain_plan_studio.js");
         await import("/web/h3_chain_rich_scene_prompt_editor.js");
         await import("/web/h3_project_asset_manager.js");
-        const {captureProjectPlan}=await import("/web/h3_project_plan_switch.mjs?v=0.7.1");
+        const {setOwnershipEnabled}=await import("/web/h3_project_ownership.mjs?v=0.7.6");
+        const {captureProjectPlan}=await import("/web/h3_project_plan_switch.mjs?v=0.7.4");
         for(const lockingEnabled of [false,true])for(const useStudio of [false,true]){
             records.clear();requests.length=0;failRead=false;
             owners.clear();locking=lockingEnabled;policyEpoch++;
@@ -198,6 +203,7 @@ async function browserChecks() {
                 failRead=false;owners.set("beta","another-workflow");
                 switchTo("beta");
                 await waitFor(()=>widget(carousel,"run_name").value==="beta");
+                await studio?._h3ProjectPlanSession.controller.projectSwitchRead;
                 check(carousel.root.textContent.includes("Read-only here"),"owned destination can be inspected read-only");
                 widget(plan,"plan_json").value=planText("local read-only edit");
                 plan._h3ChainEditorRefresh?.();studio?._h3PlanStudioRefresh?.();
@@ -205,10 +211,20 @@ async function browserChecks() {
                 const savedBefore=records.get("beta").revision;
                 switchTo("alpha");
                 await waitFor(()=>carousel.root.textContent.includes("Stayed on beta"));
+                check(carousel.root.textContent.includes("Project beta is read-only here"),"switch is refused specifically by outgoing-save ownership");
                 check(widget(plan,"run_name").value==="beta","source write ownership conflict blocks the switch");
                 check(JSON.parse(widget(plan,"plan_json").value).shots[0].prompt[0]==="local read-only edit","read-only edits stay local");
                 check(records.get("beta").revision===savedBefore,"ownership conflict cannot overwrite saved prompts");
                 check(owners.get("beta")==="another-workflow","switch never steals ownership");
+                check(!carousel.root.textContent.includes("outcome is uncertain"),"permission denial is reported without false uncertainty");
+                if(studio) check(studio._h3ProjectPlanSession.controller.pending===null,"denied save leaves no pending Studio operation");
+                await setOwnershipEnabled(false);
+                check(carousel.root.textContent.includes("Workflow ownership locking off"),"disabling updates the active Carousel");
+                switchTo("alpha");
+                await waitFor(()=>widget(carousel,"run_name").value==="alpha");
+                check(JSON.parse(records.get("beta").authoring.plan_json).shots[0].prompt[0]==="local read-only edit",
+                    "retrying the switch saves the edits after disabling, without Retry pending");
+                check(JSON.parse(widget(plan,"plan_json").value).shots[0].prompt[0]==="alpha edited","destination loads normally after disabling");
             }
             for(const node of [carousel,rich,studio,plan].filter(Boolean)){node.onRemoved?.();node.host?.remove();}
             graph._nodes=[];graph.links={};await wait(30);

@@ -304,11 +304,14 @@ export class StudioBranches {
     async mutation(body) {
         if (this.pending) throw new Error("An earlier save may have succeeded. Retry pending operation before making another change.");
         this.pending = {...structuredClone(body), operation_id:branchOperationId()};
-        return this.sendPending();
+        return this.sendPending({fresh:true});
     }
 
-    async sendPending() {
+    async sendPending({fresh = false} = {}) {
         const body = this.pending;
+        // Recovered/retried requests may already have reached the server.
+        // A new preflight refusal cannot settle an older uncertain outcome.
+        let uncertain = !fresh;
         try { await this.drafts?.pending(body); }
         catch (error) { this.draftStatus = `Pending request is only in memory: ${error.message}`; }
         for (let attempt = 0; attempt < 2; attempt++) {
@@ -318,12 +321,14 @@ export class StudioBranches {
                 try { await this.drafts?.pending(null); } catch { /* Replaying the same ID is safe. */ }
                 return result;
             } catch (error) {
-                if (error.status >= 400 && error.status < 500) {
+                const rejected = error.status >= 400 && error.status < 500;
+                if ((error.requestNotSent && !uncertain) || (rejected && !error.requestNotSent)) {
                     this.pending = null;
                     try { await this.drafts?.pending(null); } catch { /* Preserve the original error. */ }
                     throw error;
                 }
-                if (attempt) throw new Error(`Request outcome is uncertain. Use Retry pending operation. ${error.message}`);
+                if (attempt || error.requestNotSent) throw new Error(`Request outcome is uncertain. Use Retry pending operation. ${error.message}`);
+                uncertain = true;
             }
         }
     }
