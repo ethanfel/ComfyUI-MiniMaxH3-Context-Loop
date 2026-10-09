@@ -71,7 +71,7 @@ def main():
     for path in (ROOT / "web").iterdir():
         if path.suffix in (".js", ".mjs"):
             for version in re.findall(r'h3_chain_plan_core\.mjs\?v=([^"\']+)', path.read_text()):
-                assert version == "0.7.11", (path.name, version)
+                assert version == "0.7.12", (path.name, version)
     print(f"Python/browser parity: {len(durations)} durations, 6 compiled plans, exact frames and cache keys passed")
 
 

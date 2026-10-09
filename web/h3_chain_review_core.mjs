@@ -12,7 +12,7 @@ import {
     sceneVisualContextLeadSource,
     sceneVisualContextSource,
     sharedPrompt,
-} from "./h3_chain_plan_core.mjs?v=0.7.11";
+} from "./h3_chain_plan_core.mjs?v=0.7.12";
 import {normalizeContextMask} from "./h3_context_mask_core.mjs?v=0.7.1";
 import {normalizeSceneLipSyncSource} from "./h3_scene_lip_sync.mjs?v=0.7.2";
 

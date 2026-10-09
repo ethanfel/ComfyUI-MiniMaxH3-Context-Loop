@@ -1,9 +1,9 @@
 import {app} from "/scripts/app.js";
-import {applyContextTake} from "./h3_context_take_core.mjs?v=0.7.1";
+import {applyContextTake} from "./h3_context_take_core.mjs?v=0.7.4";
 import {bindNodeWheel} from "./h3_dom_wheel.mjs?v=0.7.1";
 import {api} from "/scripts/api.js";
 import {mountStorageInspector} from "./h3_storage_inspector.mjs?v=0.7.1";
-import {branchRequestPath, branchSelectionJson, visibleWorkingBranches, emptyBranchKeepTarget} from "./h3_working_branches.mjs?v=0.7.30";
+import {branchRequestPath, branchSelectionJson, visibleWorkingBranches, emptyBranchKeepTarget} from "./h3_working_branches.mjs?v=0.7.31";
 import {checkpointForkGraph, checkpointGraphKey, checkpointSaveOrder, checkpointGraphOutput, mountCheckpointGraphEdges} from "./h3_checkpoint_graph.mjs?v=0.7.20";
 import {mountCheckpointMultiSelect} from "./h3_checkpoint_multiselect.mjs?v=0.7.1";
 import {
@@ -36,8 +36,8 @@ import {
     parsePlanJson,
     planToJson,
     promptValueToText,
-} from "./h3_chain_plan_core.mjs?v=0.7.11";
-import {applyCheckpointRevisionSet} from "./h3_chain_review_core.mjs?v=0.7.27";
+} from "./h3_chain_plan_core.mjs?v=0.7.12";
+import {applyCheckpointRevisionSet} from "./h3_chain_review_core.mjs?v=0.7.28";
 import * as promptCompanionSync from "./h3_prompt_companion_sync.mjs?v=0.7.26";
 import {
     refreshRestoredPlanEditors,

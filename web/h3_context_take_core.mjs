@@ -1,4 +1,6 @@
 // Exact saved context identity; no path assignment, editorial selection or seed edits.
+import {safeShotId} from "./h3_chain_plan_core.mjs?v=0.7.12";
+
 export function applyContextTake(plan, scene, revision = null) {
     const source = Number(scene);
     if (!Number.isInteger(source) || source < 1 || source >= (plan?.shots?.length ?? 0)) {
@@ -12,7 +14,7 @@ export function applyContextTake(plan, scene, revision = null) {
     if (revision === null) {
         delete shot.context_take;
     } else {
-        const id = String(result.shots[source - 1].id ?? "").trim();
+        const id = safeShotId(result.shots[source - 1].id, "");
         shot.context_take = {source:id && !/^\d+$/.test(id) ? id : source, revision:String(revision).toLowerCase()};
         // Use this complete take as the source; context length and mode remain
         // the user's settings. Discard windows/masks authored for another take.

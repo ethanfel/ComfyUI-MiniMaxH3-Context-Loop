@@ -4,6 +4,10 @@ Newest first. This file keeps release history out of the onboarding README.
 
 ## Unreleased
 
+- Fix scene names containing spaces or punctuation breaking saved context-take
+  references on rerun (#108). Resolve authored and canonical IDs consistently
+  across visual/audio context, take previews, scene renaming and duplication;
+  preserve selected revisions and existing checkpoint identities.
 - Fix ownership-denied project/branch saves being treated as uncertain writes.
   Disabling locking or obtaining ownership lets the next project switch save
   normally, without a false pending-operation block. Preserve local drafts and

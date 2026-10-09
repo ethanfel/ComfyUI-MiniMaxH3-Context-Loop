@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import {readFileSync} from "node:fs";
 import {applyContextTake} from "../web/h3_context_take_core.mjs";
-import {duplicateShot, renamePlanShot, planToJson, parsePlanJson} from "../web/h3_chain_plan_core.mjs";
+import {duplicateShot, renamePlanShot, planToJson, parsePlanJson, safeShotId} from "../web/h3_chain_plan_core.mjs";
 import {applyCheckpointRevisionSet} from "../web/h3_chain_review_core.mjs";
 
 const revision = "a".repeat(32);
@@ -54,10 +54,13 @@ const resolver = studio.slice(studio.indexOf("    const contextTakePreviews = ne
 let run = "project-one", rendered = 0;
 const requests = [];
 const state = {plan:applyContextTake(plan, 1, revision), active:1, view:"context"};
+// A saved pin may predate normalization of the source scene's display name.
+state.plan.shots[0].id = "Street_Ride";
+state.plan.shots[1].context_take.source = "Street Ride";
 const api = {fetchApi(url) { return new Promise(resolve => requests.push({url,resolve})); }};
 const {contextPlayerCheckpoint} = new Function("state", "runName", "api", "playerCheckpoint", "renderPanel", "safeShotId",
     resolver + "\nreturn {contextPlayerCheckpoint};")(
-        state, () => run, api, () => ({video:"assigned"}), () => rendered++, value => value);
+        state, () => run, api, () => ({video:"assigned"}), () => rendered++, safeShotId);
 assert.deepEqual(contextPlayerCheckpoint(2), {video:"assigned"});
 assert.equal(contextPlayerCheckpoint(0), null, "never substitute assigned media while the pin is loading");
 assert.equal(contextPlayerCheckpoint(0), null);

@@ -5329,8 +5329,11 @@ def _resolve_prior_scene_source(
         if value.isdigit():
             source = int(value)
         else:
+            # Scene IDs are normalized by the Plan compiler. Older authored
+            # context links can still contain the original display spelling.
+            value = _safe_name(value, "")
             matches = [int(shot_index) for shot_index, shot in enumerate(
-                shots, 1) if str(shot.get("id") or "") == value]
+                shots, 1) if value and str(shot.get("id") or "") == value]
             if len(matches) == 1:
                 source = matches[0]
     if source is None:

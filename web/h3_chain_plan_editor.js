@@ -36,7 +36,7 @@ import {
     shotLengthMode,
     sharedPrompt,
     visualContextCompositions,
-} from "./h3_chain_plan_core.mjs?v=0.7.11";
+} from "./h3_chain_plan_core.mjs?v=0.7.12";
 import {availableReferenceRecords} from "./h3_reference_preview_core.mjs?v=0.7.27";
 import {syncManagedPlanRunName} from "./h3_project_asset_sync_core.mjs?v=0.7.3";
 import {

@@ -1,5 +1,5 @@
-import {parsePlanJson, planToJson} from "./h3_chain_plan_core.mjs?v=0.7.11";
-import {StudioBranches, authoringSignature, branchWidgetTransaction, workingBranchId} from "./h3_working_branches.mjs?v=0.7.30";
+import {parsePlanJson, planToJson} from "./h3_chain_plan_core.mjs?v=0.7.12";
+import {StudioBranches, authoringSignature, branchWidgetTransaction, workingBranchId} from "./h3_working_branches.mjs?v=0.7.31";
 import {branchPolicyNodes, captureBranchPolicyInputs, restoreBranchPolicyInputs,
     refreshRestoredPlanEditors} from "./h3_plan_restore_core.mjs?v=0.7.21";
 import {connectedProjectAssetPlans} from "./h3_project_asset_sync_core.mjs?v=0.7.3";

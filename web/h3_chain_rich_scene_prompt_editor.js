@@ -1,7 +1,7 @@
 import {app} from "/scripts/app.js";
 import {bindNodeWheel} from "./h3_dom_wheel.mjs?v=0.7.1";
 import {api} from "/scripts/api.js";
-import {workingBranchId} from "./h3_working_branches.mjs?v=0.7.30";
+import {workingBranchId} from "./h3_working_branches.mjs?v=0.7.31";
 import {
     projectMutationOptions, subscribeProjectOwnership, isProjectReadOnlyError,
 } from "./h3_project_ownership.mjs?v=0.7.6";
@@ -11,11 +11,11 @@ import {
     promptTextToLines,
     promptValueToText,
     sharedPrompt,
-} from "./h3_chain_plan_core.mjs?v=0.7.11";
+} from "./h3_chain_plan_core.mjs?v=0.7.12";
 import {
     buildPromptAssistantContext,
     makePromptAssistRequest,
-} from "./h3_prompt_assistant_core.mjs?v=0.7.8";
+} from "./h3_prompt_assistant_core.mjs?v=0.7.9";
 import {PromptAssistantClient} from "./h3_prompt_assistant_client.mjs?v=0.7.0";
 import {
     directOptimizerConfigurationError,

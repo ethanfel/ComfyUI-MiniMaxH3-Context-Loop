@@ -10,9 +10,9 @@ import {
 } from "./h3_studio_chapters.mjs?v=0.7.1";
 import {CONTEXT_MASK_MODES} from "./h3_context_mask_core.mjs?v=0.7.1";
 import {contextMaskEditor} from "./h3_context_mask_editor.mjs?v=0.7.2";
-import {StudioBranches, BranchDrafts, branchOperationId, branchWidgetTransaction, branchRequestPath, workingBranchId, visibleWorkingBranches} from "./h3_working_branches.mjs?v=0.7.30";
+import {StudioBranches, BranchDrafts, branchOperationId, branchWidgetTransaction, branchRequestPath, workingBranchId, visibleWorkingBranches} from "./h3_working_branches.mjs?v=0.7.31";
 import {browserBranchRecoveryStorage} from "./h3_branch_recovery_storage.mjs?v=0.7.23";
-import {PLAN_SETTING_WIDGETS} from "./h3_project_plan_switch.mjs?v=0.7.4";
+import {PLAN_SETTING_WIDGETS} from "./h3_project_plan_switch.mjs?v=0.7.5";
 import {branchPolicyNodes, captureBranchPolicyInputs, restoreBranchPolicyInputs} from "./h3_plan_restore_core.mjs?v=0.7.21";
 import {inputSource as resolvedInputSource} from "./h3_reference_preview_core.mjs?v=0.7.27";
 import {syncManagedPlanRunName} from "./h3_project_asset_sync_core.mjs?v=0.7.3";
@@ -69,7 +69,7 @@ import {
     visualContextDefaultPartition,
     visualContextMaximumBlocks,
     visualContextPartitionFromBoundaries,
-} from "./h3_chain_plan_core.mjs?v=0.7.11";
+} from "./h3_chain_plan_core.mjs?v=0.7.12";
 import {
     promptRevisionHelp,
     promptRevisionLabel,
@@ -4724,7 +4724,8 @@ function mount(node) {
         if (!pin) return null;
         const raw = String(pin.source ?? "").trim();
         const index = /^\d+$/.test(raw) ? Number(raw) - 1 : state.plan.shots.findIndex(
-            (shot, offset) => safeShotId(shot.id, `clip_${String(offset + 1).padStart(4, "0")}`) === raw);
+            (shot, offset) => safeShotId(shot.id, `clip_${String(offset + 1).padStart(4, "0")}`)
+                === safeShotId(raw, ""));
         return {index, revision:pin.revision, run:runName(),
             key:JSON.stringify([runName(), index, pin.revision])};
     }

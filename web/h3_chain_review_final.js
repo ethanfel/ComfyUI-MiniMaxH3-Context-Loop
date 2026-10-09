@@ -8,7 +8,7 @@ import {
     parsePlanJson,
     planToJson,
     promptValueToText,
-} from "./h3_chain_plan_core.mjs?v=0.7.11";
+} from "./h3_chain_plan_core.mjs?v=0.7.12";
 import * as promptCompanionSync from "./h3_prompt_companion_sync.mjs?v=0.7.26";
 import {
     refreshRestoredPlanEditors,
@@ -26,7 +26,7 @@ import {
     reviewLocalDeadline,
     reviewPlanScenePrompt,
     reviewSeed,
-} from "./h3_chain_review_core.mjs?v=0.7.27";
+} from "./h3_chain_review_core.mjs?v=0.7.28";
 import {projectMutationOptions} from "./h3_project_ownership.mjs?v=0.7.6";
 import {appendedReviewPrompts, appendedReviewScene, continueAppendedReview} from "./h3_chain_review_append.mjs?v=0.7.1";
 import {submitWithPromptIdentity} from "./h3_chain_top_level_requeue_coordinator.mjs?v=0.7.26";

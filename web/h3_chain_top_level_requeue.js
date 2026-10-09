@@ -1,7 +1,7 @@
 import {app} from "/scripts/app.js";
 import {appendedReviewPrompts} from "./h3_chain_review_append.mjs?v=0.7.1";
 import {api} from "/scripts/api.js";
-import {activeSceneFromOutput} from "./h3_chain_cancel_reroll_core.mjs?v=0.7.12";
+import {activeSceneFromOutput} from "./h3_chain_cancel_reroll_core.mjs?v=0.7.13";
 import {
     DEFAULT_CLEANUP_DELAY_MS,
     HANDOFF_API_BASE,

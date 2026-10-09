@@ -464,33 +464,41 @@ export function renamePlanShot(plan, index, requestedId) {
     if (duplicate) {
         throw new Error(`Another scene already uses the ID “${nextId}”.`);
     }
-    if (nextId === previousId) return {previousId, id:nextId, changed:false};
+    if (nextId === previousId && shot.id === nextId) {
+        return {previousId, id:nextId, changed:false};
+    }
 
     shot.id = nextId;
     for (const chapter of Array.isArray(plan?.chapters) ? plan.chapters : []) {
-        if (String(chapter?.start_scene_id ?? "") === previousId) {
+        if (safeShotId(chapter?.start_scene_id, "") === previousId) {
             chapter.start_scene_id = nextId;
         }
     }
     // Authored visual-context links use stable scene IDs. Numeric spellings
     // deliberately remain scene indexes and must not be rewritten as IDs.
+    const namesPreviousId = value => {
+        const raw = String(value ?? "").trim();
+        return !/^\d+$/.test(raw)
+            && !["", "previous", "immediate"].includes(raw.toLowerCase())
+            && safeShotId(raw, "") === previousId;
+    };
     if (!/^\d+$/.test(previousId)) {
         for (const candidate of shots) {
-            if (String(candidate?.context_take?.source ?? "").trim() === previousId) {
+            if (namesPreviousId(candidate?.context_take?.source)) {
                 candidate.context_take.source = nextId;
             }
             for (const field of [
                 "visual_context_source", "visual_context_lead_source",
                 "audio_context_source", "audio_context_lead_source",
             ]) {
-                if (String(candidate?.[field] ?? "").trim() === previousId) {
+                if (namesPreviousId(candidate?.[field])) {
                     candidate[field] = nextId;
                 }
             }
             for (const block of Array.isArray(
                 candidate?.visual_context_blocks,
             ) ? candidate.visual_context_blocks : []) {
-                if (String(block?.source ?? "").trim() === previousId) {
+                if (namesPreviousId(block?.source)) {
                     block.source = nextId;
                 }
             }
@@ -652,8 +660,9 @@ export function duplicateShot(shots, index) {
             if (numeric && Number.isInteger(Number(raw))) prior = Number(raw) - 1;
             else if (typeof raw === "string") {
                 if (["", "previous", "immediate"].includes(raw.trim().toLowerCase())) return;
-                prior = ids.indexOf(raw.trim());
-                if (prior !== ids.lastIndexOf(raw.trim())) return;
+                const id = safeShotId(raw, "");
+                prior = ids.indexOf(id);
+                if (prior !== ids.lastIndexOf(id)) return;
             } else return;
             // Do not silently repair invalid authored references.
             if (prior < 0 || prior >= oldIndex || !Number.isInteger(prior)) return;
@@ -847,10 +856,10 @@ function resolvePriorSceneSource(plan, index, raw, field, defaultPrevious) {
             && /^\d+$/.test(raw.trim()))) && Number.isInteger(numeric)) {
         source = numeric;
     } else if (typeof raw === "string") {
-        const wanted = raw.trim();
+        const wanted = safeShotId(raw, "");
         const matches = shots.map((shot, offset) => safeShotId(
             shot?.id, `clip_${String(offset + 1).padStart(4, "0")}`,
-        ) === wanted ? offset + 1 : null).filter(Boolean);
+        ) === wanted && wanted ? offset + 1 : null).filter(Boolean);
         if (matches.length === 1) source = matches[0];
     }
     if (source === null) {
