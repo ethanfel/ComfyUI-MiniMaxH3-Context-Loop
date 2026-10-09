@@ -4,6 +4,8 @@ Newest first. This file keeps release history out of the onboarding README.
 
 ## Unreleased
 
+- Restore all seven Prompt optimizer settings by assigning unique display
+  paths. Keep saved setting IDs, values and API-key masking unchanged.
 - Fix scene names containing spaces or punctuation breaking saved context-take
   references on rerun (#108). Resolve authored and canonical IDs consistently
   across visual/audio context, take previews, scene renaming and duplication;

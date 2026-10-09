@@ -55,13 +55,15 @@ function notifyChanged() {
     globalThis.dispatchEvent?.(new CustomEvent("h3-prompt-optimizer-settings-changed"));
 }
 
-const category = ["MiniMax H3 Context Loop", "Prompt optimizer", "Connection"];
+const category = ["MiniMax H3 Context Loop", "Prompt optimizer"];
 
 app.registerExtension({
     name: "minimax_h3_context_loop.prompt_optimizer_settings",
     init() {
         const add = (definition) => app.ui?.settings?.addSetting?.({
-            category,
+            // ComfyUI keys the display tree by category path, not setting ID.
+            // Give each control its own leaf without changing persisted IDs.
+            category: [...category, definition.id.split(".").pop()],
             ...definition,
             onChange(value, previous) {
                 definition.onChange?.(value, previous);
