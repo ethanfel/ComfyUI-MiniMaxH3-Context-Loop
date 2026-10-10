@@ -27901,13 +27901,83 @@ def _load_checkpoint_revision(
     return metadata, metadata_path
 
 
+_CHECKPOINT_OUTPUT_IGNORED_KEYS = frozenset((
+    "generation_fingerprint", "generation_fingerprint_lineage",
+    "encode_mode", "crop", "anchor_mode", "context_length",
+    "audio_context_length", "context_storage_length", "segment_crf",
+))
+
+
 def _checkpoint_output_compatibility(value: dict[str, Any]) -> dict[str, Any]:
-    # Reference catalogs can grow between already-generated scenes. Their
-    # fingerprints protect generation/resume, not playback of an immutable
-    # lineage. Preserve each take's cache identity separately; all other
-    # compatibility checks (including geometry/audio) remain unchanged.
-    return {key:item for key, item in value.items() if key not in (
-        "generation_fingerprint", "generation_fingerprint_lineage")}
+    # These settings describe how an immutable take was generated/encoded.
+    # Its saved frames, overlaps and per-scene context remain authoritative.
+    # Keep audio/continuation policy, geometry, source identities and UNKNOWN
+    # fields guarded: downstream assembly/upscale still consumes those.
+    return {key:item for key, item in value.items()
+            if key not in _CHECKPOINT_OUTPUT_IGNORED_KEYS}
+
+
+def _checkpoint_compatibility_differences(
+        first: dict[str, Any], current: dict[str, Any], prefix: str = ""
+        ) -> list[tuple[str, str, str]]:
+    """Name every differing field, including missing keys and nested policy."""
+    differences = []
+    for key in sorted(first.keys() | current.keys()):
+        path = "%s.%s" % (prefix, key) if prefix else key
+        if key not in first or key not in current:
+            differences.append((
+                path, _canonical_json(first[key]) if key in first else "<missing>",
+                _canonical_json(current[key]) if key in current else "<missing>"))
+        elif isinstance(first[key], dict) and isinstance(current[key], dict):
+            differences.extend(_checkpoint_compatibility_differences(
+                first[key], current[key], path))
+        elif _canonical_json(first[key]) != _canonical_json(current[key]):
+            differences.append((
+                path, _canonical_json(first[key]), _canonical_json(current[key])))
+    return differences
+
+
+def _require_checkpoint_output_compatibility(
+        first: dict[str, Any], current: dict[str, Any], *,
+        chapter_output: bool) -> None:
+    differences = _checkpoint_compatibility_differences(
+        _checkpoint_output_compatibility(first["compatibility"]),
+        _checkpoint_output_compatibility(current["compatibility"]))
+    if not differences:
+        return
+    before, after = first["segment"], current["segment"]
+    def describe(items):
+        return "\n".join(
+            "- %s: scene %s = %s; scene %s = %s" % (
+                path, before["index"], left, after["index"], right)
+            for path, left, right in items)
+
+    details = "Blocking output differences:\n" + describe(differences)
+    allowed = _checkpoint_compatibility_differences(
+        {key: value for key, value in first["compatibility"].items()
+         if key in _CHECKPOINT_OUTPUT_IGNORED_KEYS},
+        {key: value for key, value in current["compatibility"].items()
+         if key in _CHECKPOINT_OUTPUT_IGNORED_KEYS})
+    if allowed:
+        details += ("\nAllowed generation/encoding differences (not blocking):\n"
+                    + describe(allowed))
+    fields = {path.split(".", 1)[0] for path, _left, _right in differences}
+    advice = "Choose takes with matching output settings."
+    if chapter_output:
+        advice = "Choose compatible takes within this chapter."
+    elif fields & {"width", "height"}:
+        advice = ("For differently sized chapters, choose Selected chapter only "
+                  "in Checkpoint Manager's output scope.")
+    if fields & {"external_context_hash", "external_context_frames"}:
+        advice += (" Imported-video context differs or is missing; check that "
+                   "these revisions belong to the same imported-video lineage.")
+    raise ValueError(
+        "Selected checkpoint revisions use different compatibility settings.\n"
+        "Comparing scene %s revision %s with scene %s revision %s:\n%s\n"
+        "Generation-only settings and segment encoding quality may differ; "
+        "output settings, source identities and unknown fields remain guarded. %s"
+        % (before["index"], before["revision"], after["index"],
+           after["revision"], details, advice))
 
 
 def _checkpoint_selection_manifest(value: Any) -> dict[str, Any] | None:
@@ -28010,6 +28080,7 @@ def _checkpoint_selection_manifest(value: Any) -> dict[str, Any] | None:
 
     loaded = []
     compatibility = None
+    compatibility_metadata = None
     prompt_prefix = None
     for index, item in enumerate(lineage, start=1):
         if not isinstance(item, dict) or int(item.get("scene", 0)) != index:
@@ -28054,14 +28125,10 @@ def _checkpoint_selection_manifest(value: Any) -> dict[str, Any] | None:
                 % index)
         if compatibility is None:
             compatibility = current_compatibility
-        elif _canonical_json(_checkpoint_output_compatibility(
-                current_compatibility)) != _canonical_json(
-                _checkpoint_output_compatibility(compatibility)):
-            raise ValueError(
-                "Selected checkpoint revisions use different compatibility "
-                "settings." + (" Choose compatible takes within this chapter."
-                if chapter_output else " For differently sized chapters, choose "
-                "Selected chapter only in Checkpoint Manager's output scope."))
+            compatibility_metadata = metadata
+        else:
+            _require_checkpoint_output_compatibility(
+                compatibility_metadata, metadata, chapter_output=chapter_output)
         segment = metadata["segment"]
         current_prefix = str(segment.get("prompt_prefix") or "")
         if prompt_prefix is None:
@@ -28130,6 +28197,14 @@ def _checkpoint_selection_manifest(value: Any) -> dict[str, Any] | None:
 
     segments = [_public_segment(item["segment"]) for item in loaded]
     output_metadata = loaded[scope_start_scene - 1:] if chapter_output else loaded
+    # Older saves may omit effective per-scene context. Only materialize their
+    # own fallback when accepting newly supported mixed defaults; leave old
+    # homogeneous manifest hashes (and resumable upscale profiles) unchanged.
+    for key in ("context_length", "audio_context_length"):
+        if len({_canonical_json(item["compatibility"].get(key, 0))
+                for item in output_metadata}) > 1:
+            for segment, metadata in zip(segments, loaded):
+                segment.setdefault(key, metadata.get("compatibility", {}).get(key, 0))
     if len({str(item["compatibility"].get("generation_fingerprint") or "")
             for item in output_metadata}) > 1:
         for segment, metadata in zip(segments, loaded):

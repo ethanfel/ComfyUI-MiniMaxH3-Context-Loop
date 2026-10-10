@@ -72,6 +72,16 @@ def main():
         selected_metadata.write_text(json.dumps(incompatible))
         h.rejected(lambda: chain._checkpoint_selection_manifest(selection),
                    "compatible takes within this chapter")
+        try:
+            chain._checkpoint_selection_manifest(selection)
+        except ValueError as exc:
+            message = str(exc)
+            assert "scene 3 revision " + "3" * 32 in message, message
+            assert "scene 4 revision " + "4" * 32 in message, message
+            assert "width: scene 3 = 960; scene 4 = 1024" in message, message
+            assert "scene 1 revision" not in message, message
+        else:
+            raise AssertionError("Chapter geometry mismatch was accepted")
         selected_metadata.write_text(original_metadata)
 
         # The reported Chapter 2 takes differ only in reference-catalog

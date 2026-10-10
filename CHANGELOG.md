@@ -4,6 +4,11 @@ Newest first. This file keeps release history out of the onboarding README.
 
 ## Unreleased
 
+- Report exact scene/revision pairs, field names and both values for Checkpoint
+  Manager output incompatibilities. Allow confirmed generation-only differences
+  and segment encoding quality while guarding geometry, audio/source identities
+  and unknown fields. Preserve each take's context lengths in mixed selections
+  and use the next scene's context length for deferred upscale carry.
 - Restore all seven Prompt optimizer settings by assigning unique display
   paths. Keep saved setting IDs, values and API-key masking unchanged.
 - Fix scene names containing spaces or punctuation breaking saved context-take
