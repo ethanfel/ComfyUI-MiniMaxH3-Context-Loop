@@ -3054,9 +3054,15 @@ class MiniMaxH3ChainUpscaleLoopEnd:
         if int(images.shape[0]) != raw:
             raise ValueError("Upscale Loop End expected %d RAW frames." % raw)
         delivered_images = images[trim:trim + delivered]
-        context_length = min(
-            int(state["source_manifest"].get("compatibility", {}).get(
-                "context_length", 0)), delivered)
+        default_context = int(state["source_manifest"].get(
+            "compatibility", {}).get("context_length", 0))
+        # The next take may have been generated with a different context
+        # length. Do not truncate its HQ carry using the first take's default.
+        context_length = default_context
+        if index < int(state["end_clip"]):
+            context_length = int(_source_segment(state, index + 1).get(
+                "context_length", default_context))
+        context_length = min(max(0, context_length), delivered)
         next_state = dict(state)
         next_state.update({
             "index": index + 1,
