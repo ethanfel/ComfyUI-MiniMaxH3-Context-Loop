@@ -1,5 +1,27 @@
 # Runs, review, and recovery
 
+## Project switching blocked by local recovery
+
+If the Carousel says **Stayed on … Resolve the local recovery draft**, save a
+copy of your workflow first. Do not delete project folders or clear browser
+storage: the unsaved recovery copy lives in the browser, not in those folders.
+
+1. Click **Open Plan recovery** beside the Carousel error, or open Plan Studio.
+2. If the displayed prompts/settings are the ones you want, choose **Update
+   active branch** and confirm. To recover the older browser copy instead,
+   choose **Restore local draft**, inspect it, then **Update active branch**.
+   **Reload saved branch** is the alternative when you want the server copy.
+3. Retry changing the Carousel's Run name. A cut-save block caused only by the
+   now-resolved branch recovery is rechecked. If you explicitly restored local
+   timeline edits, use **Retry save** in Studio first. **Reload saved cut** is
+   only for deliberately discarding those unsaved timeline edits.
+
+Recovery choices retain browser backups; they do not delete generated clips.
+If you already deleted the project folders, **Update active branch** can save
+the displayed Plan again, but cannot recreate deleted media or checkpoints.
+Those require your filesystem backup or trash. Actual ownership, newer-revision,
+and missing-media errors remain blocked and must be resolved separately.
+
 ## Review Gate
 
 Place **Review Gate** between Segment + Checkpoint and Loop End. Each scene is

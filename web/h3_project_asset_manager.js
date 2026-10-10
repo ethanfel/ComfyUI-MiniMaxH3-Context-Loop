@@ -2488,8 +2488,7 @@ function mount(node) {
         clearFileDropState();
         void uploadFiles(files, {dropped: true});
     }, dropListenerOptions);
-    async function flushProjectEditors(runName) {
-        if (!runName) return;
+    function projectEditors() {
         const rootGraph = node.graph?.rootGraph ?? node.graph ?? app.graph;
         const editors = [];
         const visit = (graph) => {
@@ -2502,6 +2501,11 @@ function mount(node) {
             }
         };
         visit(rootGraph);
+        return editors;
+    }
+    async function flushProjectEditors(runName) {
+        if (!runName) return;
+        const editors = projectEditors();
         const results = await Promise.allSettled(editors.map(
             (editorNode) => editorNode._h3FlushProjectWrites(runName),
         ));
@@ -2596,6 +2600,13 @@ function mount(node) {
                     `Stayed on ${previousProject}: ${error.message}`,
                     true,
                 );
+                const recovery = projectEditors().find(editor =>
+                    editor._h3ProjectPlanSession?.recoveryNeeded?.(previousProject));
+                if (recovery) {
+                    status.append(document.createTextNode(" "), button("Open Plan recovery", () => {
+                        recovery._h3ProjectPlanSession?.openRecovery?.(previousProject);
+                    }, "Open Plan Studio's recovery controls. Keep the displayed Plan with Update active branch, restore the local draft, or reload saved settings. No files are deleted."));
+                }
                 runNameInput.value = previousProject;
                 return false;
             }

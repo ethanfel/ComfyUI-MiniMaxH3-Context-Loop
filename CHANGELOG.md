@@ -4,6 +4,10 @@ Newest first. This file keeps release history out of the onboarding README.
 
 ## Unreleased
 
+- Fix project switching remaining blocked by a stale local-recovery cut-save
+  error after the Plan recovery choice (#112). Recheck that guard on an explicit
+  save/switch retry, preserving real cut-save conflicts and browser backups.
+  Add Open Plan recovery beside the Carousel error to reach Studio's choices.
 - Report exact scene/revision pairs, field names and both values for Checkpoint
   Manager output incompatibilities. Allow confirmed generation-only differences
   and segment encoding quality while guarding geometry, audio/source identities
