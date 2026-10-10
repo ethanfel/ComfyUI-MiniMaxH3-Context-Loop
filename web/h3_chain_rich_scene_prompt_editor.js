@@ -61,6 +61,14 @@ import * as promptCompanionSync from "./h3_prompt_companion_sync.mjs?v=0.7.26";
 import {
     PROJECT_ASSET_CATALOG_CHANGED_EVENT,
 } from "./h3_project_asset_sync_core.mjs?v=0.7.3";
+import {
+    ASSET_DETAILS_CHANGED_EVENT,
+    assetDetailContext,
+    assetDetailEntries,
+    assetDetailLine,
+    insertAssetDetails,
+    staleAssetDetails,
+} from "./h3_asset_details_core.mjs?v=0.7.32";
 
 const {
     publishCompanionScene,
@@ -203,6 +211,7 @@ function injectStyles() {
       .h3rp-toolbar { flex-wrap:wrap; }
       .h3rp-toolbar .h3rp-guide { min-width:150px; }
       .h3rp-toolbar-spacer { flex:1; }
+      .h3rp-asset-details-stale { border-color:#d9a441 !important; color:#f0c674; }
       .h3rp-status { min-width:0; color:var(--h3rp-muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
       .h3rp-status-error { color:#ffaaaa; }
       .h3rp-status-success { color:#9bdab0; }
@@ -1841,7 +1850,103 @@ function mount(node) {
         const contentDirective = basic
             ? `Base the rewrite on this plain-language scene idea, expressed in the required H3 style: ${basic} `
             : "";
-        return `${contentDirective}${richGuideInstruction(state.guide, mode)} Connected scene references: ${referenceSummary}.`;
+        const details = assetDetailContext(assetDetailEntries(refs.records));
+        const detailDirective = details.length
+            ? " Carousel descriptions of these references are in context.asset_details; use them to define the tagged subjects, settings, and style, and do not contradict them."
+            : "";
+        return `${contentDirective}${richGuideInstruction(state.guide, mode)} Connected scene references: ${referenceSummary}.${detailDirective}`;
+    }
+
+    // Remember, per viewer, the exact lines this editor inserted so a later
+    // Carousel description change can be offered as a refresh. Lines the user
+    // edited no longer match and are never touched.
+    function assetDetailsStorageKey(shotId) {
+        return `h3.asset-details.${planRunName()}\u0000${planBranchId()}\u0000${shotId}`;
+    }
+
+    function insertedAssetDetailLines(shotId) {
+        try {
+            const value = JSON.parse(globalThis.localStorage?.getItem(assetDetailsStorageKey(shotId)) || "{}");
+            return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+        } catch (_error) {
+            return {};
+        }
+    }
+
+    function rememberAssetDetailLines(shotId, lines) {
+        try {
+            globalThis.localStorage?.setItem(assetDetailsStorageKey(shotId), JSON.stringify({
+                ...insertedAssetDetailLines(shotId), ...lines,
+            }));
+        } catch (_error) {
+            // Storage is a convenience; insertion itself already succeeded.
+        }
+    }
+
+    function sceneAssetDetails() {
+        const shot = state.plan?.shots?.[state.active];
+        if (!shot || !state.editor) return null;
+        const shotId = String(shot.id || `clip_${String(state.active + 1).padStart(4, "0")}`);
+        const text = editorPlainText(state.editor);
+        const refs = availableReferenceRecords(node, state.active + 1, {
+            includeInactive:true,
+            prompt:[sharedPrompt(state.plan).text.trim(), text.trim()].filter(Boolean).join("\n\n"),
+        });
+        const entries = assetDetailEntries(refs.records);
+        const stale = staleAssetDetails(text, entries, insertedAssetDetailLines(shotId));
+        return {shot, shotId, text, entries, stale};
+    }
+
+    function refreshAssetDetailsUi() {
+        const control = root.querySelector(".h3rp-asset-details");
+        if (!control || state.disposed) return;
+        const scene = sceneAssetDetails();
+        const count = scene?.stale.length ?? 0;
+        control.lastChild.textContent = count ? `Asset details (${count} updated)` : "Asset details";
+        control.classList.toggle("h3rp-asset-details-stale", count > 0);
+        control.title = count
+            ? `${count} inserted description${count === 1 ? "" : "s"} changed in the Asset Carousel (${scene.stale.map((item) => item.token).join(", ")}). Click to refresh them and insert any missing details. Lines you edited are left alone.`
+            : "Insert the Asset Carousel description of every described @tag this scene uses";
+    }
+
+    function insertSceneAssetDetails() {
+        if (optimizerBusy()) return;
+        const scene = sceneAssetDetails();
+        if (!scene) return;
+        if (!scene.entries.length) {
+            state.optimizer.error = "";
+            state.optimizer.message = "No tagged asset in this scene has a description yet. Add one in the Asset Carousel.";
+            refreshOptimizerUi();
+            return;
+        }
+        const result = insertAssetDetails(scene.text, scene.entries, {refresh:scene.stale});
+        if (!result.inserted.length && !result.refreshed.length) {
+            state.optimizer.error = "";
+            state.optimizer.message = "Every described @tag in this scene already has its details.";
+            refreshOptimizerUi();
+            return;
+        }
+        const {shot, shotId} = scene;
+        recordPromptReplacement(state.active, shot, result.text);
+        shot.prompt = promptTextToLines(result.text);
+        markShotFieldEdited(shot, "prompt");
+        writePlan("Asset details saved to Plan");
+        refreshTaggedReferencesForShot(result.text);
+        renderEditorText(result.text);
+        scheduleHistoryDraft(shotId, result.text, shot.basic_prompt);
+        void flushHistoryDraft();
+        const byToken = new Map(scene.entries.map((entry) => [entry.token, entry]));
+        rememberAssetDetailLines(shotId, Object.fromEntries(
+            [...result.inserted, ...result.refreshed].map((token) => [
+                token, assetDetailLine(byToken.get(token)),
+            ])));
+        const parts = [];
+        if (result.inserted.length) parts.push(`inserted ${result.inserted.join(", ")}`);
+        if (result.refreshed.length) parts.push(`refreshed ${result.refreshed.join(", ")}`);
+        state.optimizer.error = "";
+        state.optimizer.message = `Asset details ${parts.join("; ")}.`;
+        refreshOptimizerUi();
+        refreshAssetDetailsUi();
     }
 
     function optimizerMeta(sceneIndex, sceneId, sceneKey, source, current) {
@@ -1982,6 +2087,8 @@ function mount(node) {
             includeShared:true, includeAdjacent:true,
         });
         context.generation_mode = mode;
+        const assetDetails = assetDetailContext(assetDetailEntries(refs.records));
+        if (assetDetails.length) context.asset_details = assetDetails;
         const requestId = `rich-${globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`}`;
         const instruction = optimizerInstruction(mode, refs, shot.basic_prompt);
         const meta = optimizerMeta(sceneIndex, sceneId, sceneKey, source, current);
@@ -2181,8 +2288,16 @@ function mount(node) {
         applyPending.hidden = true;
         const optimizerStatus = element("span", "h3rp-status");
         state.optimizerStatus = optimizerStatus;
+        const assetDetailsButton = button(
+            "Asset details",
+            "Insert the Asset Carousel description of every described @tag this scene uses",
+            insertSceneAssetDetails, "reference",
+        );
+        assetDetailsButton.classList.add("h3rp-asset-details");
+        assetDetailsButton.dataset.h3rpLock = "";
+        assetDetailsButton.addEventListener("pointerenter", refreshAssetDetailsUi);
         toolbar.replaceChildren(
-            refsButton, dialogue, presentation, guide,
+            refsButton, dialogue, presentation, assetDetailsButton, guide,
             optimize, stop, applyPending, optimizerStatus,
         );
 
@@ -2377,6 +2492,8 @@ function mount(node) {
         if (state.schema) root.append(state.schema.panel);
         root.append(refs, editorShell, footer);
         refreshOptimizerUi();
+        refreshAssetDetailsUi();
+        editor.addEventListener("blur", refreshAssetDetailsUi);
         void loadHistory(shotId, editorPlainText(editor));
     }
 
@@ -2477,10 +2594,20 @@ function mount(node) {
         if (state.refs?.classList.contains("h3rp-open")) renderReferenceTray();
         state.completion?.refresh();
         state.schema?.refresh();
+        refreshAssetDetailsUi();
     };
     globalThis.addEventListener?.(
         PROJECT_ASSET_CATALOG_CHANGED_EVENT, onProjectAssetCatalogChanged,
     );
+    // Description edits do not change the catalog revision, so they arrive
+    // on their own lightweight event that only re-checks stale details.
+    const onAssetDetailsChanged = (event) => {
+        const changedProject = String(event?.detail?.project ?? "").trim();
+        const currentProject = planRunName();
+        if (changedProject && currentProject && changedProject !== currentProject) return;
+        refreshAssetDetailsUi();
+    };
+    globalThis.addEventListener?.(ASSET_DETAILS_CHANGED_EVENT, onAssetDetailsChanged);
     node._h3FlushProjectWrites = async (expectedRun = planRunName()) => {
         const run = String(expectedRun ?? "").trim();
         const draftRun = String(state.history.pendingDraft?.runName ?? "");
@@ -2533,6 +2660,9 @@ function mount(node) {
             () => api.removeEventListener("executed", onPromptExecuted),
             () => globalThis.removeEventListener?.(
                 PROJECT_ASSET_CATALOG_CHANGED_EVENT, onProjectAssetCatalogChanged,
+            ),
+            () => globalThis.removeEventListener?.(
+                ASSET_DETAILS_CHANGED_EVENT, onAssetDetailsChanged,
             ),
             () => state.optimizer.client?.close(),
             () => state.optimizer.abortController?.abort(),

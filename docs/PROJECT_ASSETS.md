@@ -76,8 +76,9 @@ Use any of these routes from the Carousel:
 - Import from an H3 run recovery backup.
 
 An imported asset receives its own project-owned media copy. Copying from
-another run preserves its role, tag, reference options, and audio lyrics; the
-source project is not changed.
+another run preserves its role, tag, reference options, audio lyrics, and
+description fields (tag-type, object, and description); the source project is
+not changed.
 
 ## Assign a role
 
@@ -205,6 +206,40 @@ they do not change prompts or generation fingerprints.
 Selecting an audio asset opens a lyrics workspace. Lyrics are saved with the
 catalog and recovery backup, but remain notes: they are not added to prompts or
 generation fingerprints.
+
+## Describe an asset
+
+The asset editor keeps a short description of each asset, saved with the
+catalog and recovery backup. Descriptions are notes: like lyrics, they are not
+added to prompts or generation fingerprints by themselves. Use the Rich Scene
+Prompt Editor's **Asset details** button to copy them into a scene prompt (see
+[Scene authoring](SCENE_AUTHORING.md#asset-details)).
+
+| Field | What it does |
+|---|---|
+| **Tag-type** | Categorizes the asset for descriptions: **Character** (`char`) describes the character's look and ignores objects, background, and lighting; **Scene** (`scene`) describes the environment and ignores characters and objects; **Object** (`object`) describes one prop and ignores characters, background, and lighting; **Style** (`style`) extracts the visual style rather than the content. |
+| **Prefix tag with tag-type** | Renames the prompt tag to `<tag-type>_<tag>`, for example `@alice` → `@char_alice`. Changing the tag-type swaps the prefix and turning it off removes it; prefixes never stack. Scene prompts that use the old tag are not rewritten. |
+| **Object to describe** | Shown for Object assets. Names the object, or which object in the media to describe (for example "the red umbrella held by the woman"). |
+| **Description** | Free text about the asset. It saves shortly after you stop typing and when you leave the field. |
+
+**Generate description** sends the asset's media and a tag-type specific
+instruction to the Direct API provider configured in **Settings → MiniMax H3
+Context Loop → Prompt optimizer**, then saves the result. Descriptions are kept
+to two or three sentences and start with "is" so they read naturally after the
+tag (`@cabinet is a tall, narrow wooden linen cabinet…`). The previous
+description is not sent, so a poor result never biases the next attempt.
+
+| Media | Gemini Native | OpenAI-compatible | OpenAI Responses |
+|---|---|---|---|
+| Image | Sent | Sent | Sent |
+| Video | Whole clip (up to 32 MB) | One still frame | One still frame |
+| Audio | Sent | WAV/MP3 as `input_audio`, if the model accepts it | Not supported |
+
+A local server must be allow-listed first with
+`H3_PROMPT_OPTIMIZER_ALLOWED_ORIGINS`. The image is sent at its
+stored resolution; how much detail a local vision model sees is set by the
+server's per-image token budget (for llama.cpp-based servers,
+`--image-min-tokens`/`--image-max-tokens`), not by this node pack.
 
 ## Storage and recovery
 

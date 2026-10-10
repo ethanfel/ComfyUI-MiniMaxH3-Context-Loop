@@ -163,6 +163,35 @@ special-token case, and legacy `<cutoff>`; they do not rewrite saved prompts
 or change generation. No task-aware Edit templates or new node sockets are
 introduced by this port.
 
+### Asset details
+
+The Rich Scene Prompt Editor uses the descriptions kept in the Project Asset
+Carousel (see [Describe an asset](PROJECT_ASSETS.md#describe-an-asset)):
+
+- **Optimize** sends the descriptions of the scene's tagged assets to the
+  optimizer as `asset_details`, so a rewrite can define subjects, settings, and
+  style from them.
+- **Asset details** inserts one editable line for each described `@tag` the
+  scene prompt uses and does not already define, such as
+  `@cabinet is a tall, narrow wooden linen cabinet.` Characters, objects, and
+  custom types go to `subject_definitions:`; scenes and styles go to the end of
+  `detailed_description:` (or `integrated_multimodal_description:`). A prompt
+  without H3 sections gets the lines at the top. Lines already opening with
+  `@tag is …` or `@tag: …` are left alone, so the button is safe to press again.
+
+Inserted text is ordinary prompt text, saved to the Plan as a normal undoable
+edit. The compiler never inserts descriptions itself, so the prompt you see is
+the prompt that is sent. Style details stay in the scene rather than the shared
+prompt, because an `@tag` in the shared prompt would activate that reference in
+every scene.
+
+When an asset's description changes after you inserted it, the button turns
+amber and reads **Asset details (N updated)**. Clicking it refreshes those lines
+and inserts anything missing; lines you edited by hand are never overwritten.
+The editor remembers what it inserted in this browser's local storage, so the
+update notice does not follow you to another browser, although insertion still
+works there.
+
 ## Prompt revisions
 
 The compact `‹ Active current / total ›` selector below the editor activates a

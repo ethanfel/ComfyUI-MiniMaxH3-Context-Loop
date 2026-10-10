@@ -65,12 +65,15 @@ MAX_CATALOG_ASSETS = 512
 MAX_REFERENCE_SLOTS = 512
 MAX_ASSET_FOLDERS = 128
 MAX_ASSET_LYRICS_CHARACTERS = 100_000
+MAX_ASSET_DESCRIPTION_CHARACTERS = 20_000
+MAX_ASSET_SUBJECT_CHARACTERS = 500
 MAX_DERIVED_IMAGE_PIXELS = 268_435_456
 MAX_INPUT_RESULTS = 2000
 INPUT_BROWSER_EXCLUDED_DIRECTORIES = frozenset((
     "clipspace", "h3_projects",
 ))
 _TAG_RE = re.compile(r"[A-Za-z][A-Za-z0-9_-]{0,63}")
+_TAG_TYPE_RE = re.compile(r"[a-z][a-z0-9-]{0,23}")
 _PROJECT_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._-]{0,94}[A-Za-z0-9])?")
 _CATALOG_LOCKS: dict[str, threading.RLock] = {}
 _CATALOG_LOCKS_GUARD = threading.Lock()
@@ -185,6 +188,25 @@ def _safe_tag(value: Any, fallback: str = "asset") -> str:
         tag = tag[:64]
     if _TAG_RE.fullmatch(tag) is None:
         raise ValueError("Asset tag must begin with a letter and contain only letters, numbers, _ or -.")
+    return tag
+
+
+def normalize_asset_tag_type(value: Any) -> str:
+    """Return a lowercase tag-type slug such as ``char`` ('' clears it)."""
+    text = re.sub(r"[^a-z0-9-]+", "-", str(value or "").strip().lower())
+    text = text.strip("-")[:24].strip("-")
+    if text and _TAG_TYPE_RE.fullmatch(text) is None:
+        raise ValueError(
+            "Tag-type must begin with a letter and contain only letters, "
+            "numbers, or -.")
+    return text
+
+
+def _tag_type_base(tag: str, tag_type: str) -> str:
+    """Strip one ``<tag-type>_`` naming prefix so it is never doubled."""
+    prefix = "%s_" % tag_type
+    if tag_type and tag.startswith(prefix) and len(tag) > len(prefix):
+        return tag[len(prefix):]
     return tag
 
 
@@ -1278,13 +1300,64 @@ class ProjectAssetStore:
         if "role" in changes:
             entry["role"] = _role_for_kind(kind, changes["role"])
         if "tag" in changes:
-            tag = _safe_tag(changes["tag"], entry.get("tag") or "asset")
+            entry["tag"] = _safe_tag(changes["tag"], entry.get("tag") or "asset")
+        if any(key in changes for key in (
+                "tag", "tag_type", "tag_type_prefix")):
+            previous_type = str(entry.get("tag_type") or "")
+            previous_prefix = bool(entry.get("tag_type_prefix"))
+            tag_type = normalize_asset_tag_type(
+                changes["tag_type"]) if "tag_type" in changes \
+                else previous_type
+            prefix = bool(changes["tag_type_prefix"]) \
+                if "tag_type_prefix" in changes \
+                else bool(entry.get("tag_type_prefix"))
+            if tag_type:
+                entry["tag_type"] = tag_type
+            else:
+                entry.pop("tag_type", None)
+            if prefix:
+                entry["tag_type_prefix"] = True
+            else:
+                entry.pop("tag_type_prefix", None)
+            # The naming prefix is derived: re-base the tag on every change
+            # so switching type or unchecking the box never stacks prefixes.
+            # Only a prefix this flag added is removed; a user's own
+            # "char_..." tag survives setting a type with the box off.
+            base = str(entry.get("tag") or "")
+            if previous_prefix:
+                base = _tag_type_base(base, previous_type)
+            if prefix:
+                base = _tag_type_base(base, tag_type)
+            tag = _safe_tag(
+                "%s_%s" % (tag_type, base) if prefix and tag_type else base,
+                entry.get("tag") or "asset")
             if any(str(item.get("tag") or "") == tag
                    and str(item.get("id") or "") != wanted
                    and bool(item.get("enabled", True))
                    for item in catalog["assets"]):
                 raise ValueError("Another enabled project asset already uses @%s." % tag)
             entry["tag"] = tag
+        if "description" in changes:
+            description = str(changes["description"] or "").replace(
+                "\r\n", "\n").replace("\r", "\n")
+            if len(description) > MAX_ASSET_DESCRIPTION_CHARACTERS:
+                raise ValueError(
+                    "Asset description cannot exceed %d characters." %
+                    MAX_ASSET_DESCRIPTION_CHARACTERS)
+            if description.strip():
+                entry["description"] = description
+            else:
+                entry.pop("description", None)
+        if "subject" in changes:
+            subject = " ".join(str(changes["subject"] or "").split())
+            if len(subject) > MAX_ASSET_SUBJECT_CHARACTERS:
+                raise ValueError(
+                    "Asset subject cannot exceed %d characters." %
+                    MAX_ASSET_SUBJECT_CHARACTERS)
+            if subject:
+                entry["subject"] = subject
+            else:
+                entry.pop("subject", None)
         if "enabled" in changes:
             entry["enabled"] = bool(changes["enabled"])
         if "folder_id" in changes:
@@ -1579,6 +1652,14 @@ class ProjectAssetStore:
                 "options": {"audio_tracks": {
                     role: mapped[value] if value else ""
                     for role, value in bindings.items()}}})
+        caption = {key: source_entry[key] for key in (
+            "tag_type", "subject", "description") if source_entry.get(key)}
+        if caption and not wanted_slot:
+            # The imported tag already carries any naming prefix; restoring
+            # the flag re-bases it without doubling the prefix.
+            if source_entry.get("tag_type_prefix"):
+                caption["tag_type_prefix"] = True
+            result = self.update(target_name, result["asset"]["id"], caption)
         lyrics = str(source_entry.get("lyrics") or "")
         if lyrics and result.get("asset", {}).get("kind") == "audio":
             bound_slot_id = result.get("bound_slot_id")

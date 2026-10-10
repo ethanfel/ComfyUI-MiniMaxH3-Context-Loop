@@ -4,6 +4,20 @@ Newest first. This file keeps release history out of the onboarding README.
 
 ## Unreleased
 
+- Add asset tag-types and descriptions to the Carousel editor. Pick a
+  tag-type (char, scene, object, or style) from a drop-down, optionally prefix the
+  prompt tag with it, and keep an editable description that the configured
+  Direct API model can generate from the asset's image, video, or audio. These
+  are project notes: they do not enter prompts or the reference fingerprint.
+- Use asset descriptions in the Rich Scene Prompt Editor. Optimize now sends
+  the descriptions of the scene's tagged assets to the prompt optimizer, and
+  the new Asset details button inserts them as editable `@tag is …` lines:
+  characters and objects into subject_definitions, scenes and styles into the
+  detailed (or main) description, or at the top of an unformatted prompt. The
+  button flags inserted lines whose Carousel description later changed and
+  refreshes them without touching lines you edited.
+- Wrap long names and paths in the Carousel asset editor instead of scrolling
+  it sideways.
 - Restore all seven Prompt optimizer settings by assigning unique display
   paths. Keep saved setting IDs, values and API-key masking unchanged.
 - Fix scene names containing spaces or punctuation breaking saved context-take
