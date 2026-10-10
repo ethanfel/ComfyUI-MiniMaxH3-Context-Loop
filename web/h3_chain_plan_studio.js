@@ -746,7 +746,7 @@ function mount(node) {
         subtitleTimelineHost:null,
         panelHost:null,
         planNotifyTimer:null, editorialTimer:null, editorialPending:null,
-        editorialSavePromise:null, lastEditorialSignature:"",
+        editorialSavePromise:null, lastEditorialSignature:"", editorialBranchBlocked:false,
         editorialReady:false, editorialRun:"", editorialBindingError:"",
         editorialStored:null, editorialBaseline:null, editorialDraft:null, editorialEditEpoch:0,
         editorial:{revision:"", placements:[], trims:[], locked_scene_ids:[], subtitles:{},
@@ -891,6 +891,7 @@ function mount(node) {
                 // Don't let the in-flight saved-cut read overwrite this recovered
                 // draft, and don't publish it until the user explicitly retries.
                 state.editorialSaveError = "Local cut edits recovered; use Retry save or Reload saved cut.";
+                state.editorialBranchBlocked = false;
                 syncAlternateTakeWidget();
             }
             if (recovery.history) state.history.pendingDraft = recovery.history;
@@ -901,6 +902,7 @@ function mount(node) {
             if (state.editorialTimer != null) clearTimeout(state.editorialTimer);
             if (state.editorialPending) {
                 state.editorialSaveError = "Pending cut edits kept locally; use Retry save if you stay on this branch.";
+                state.editorialBranchBlocked = false;
             }
             state.editorialTimer = null; state.editorialPending = null;
             if (state.history.saveTimer != null) clearTimeout(state.history.saveTimer);
@@ -928,7 +930,8 @@ function mount(node) {
     });
 
     function branchToolbar() {
-        const bar = element("div", "h3studio-toolbar");
+        const bar = element("div", "h3studio-toolbar h3studio-branch-toolbar");
+        bar.tabIndex = -1;
         const records = visibleWorkingBranches(branches.records, currentBranch(), branches.defaultBranch);
         const selected = records.findIndex(item => item.id === currentBranch());
         const previous = button("←", "Previous working branch", () => void branches.switchTo(records[selected - 1]?.id));
@@ -1740,6 +1743,7 @@ function mount(node) {
                 // flight. Only this request's edits have now been saved.
                 if (state.lastEditorialSignature === signature) {
                     state.editorialSaveError = "";
+                    state.editorialBranchBlocked = false;
                     state.editorialDraft = null;
                     state.lastEditorialSignature = editorialSignature(state.editorialStored);
                 }
@@ -1754,6 +1758,7 @@ function mount(node) {
             if (state.editorial === binding && state.lastEditorialSignature === signature) {
                 state.lastEditorialSignature = "";
                 state.editorialSaveError = error?.message || String(error);
+                state.editorialBranchBlocked = false;
                 if (!state.disposed) renderStatus();
             }
             console.warn(
@@ -1837,10 +1842,12 @@ function mount(node) {
             state.editorialTimer = null; state.editorialPending = null;
             state.lastEditorialSignature = "";
             state.editorialSaveError = blocked;
+            state.editorialBranchBlocked = !state.editorialBindingError;
             void branches?.observe?.();
             renderStatus();
             return;
         }
+        state.editorialBranchBlocked = false;
         state.lastEditorialSignature = signature;
         payload.branch_id = currentBranch();
         if (state.editorialTimer != null) clearTimeout(state.editorialTimer);
@@ -1862,6 +1869,16 @@ function mount(node) {
         let editorialError = null;
         try {
             if (run && state.editorialRun === run) {
+                // A branch recovery choice resolves the guard, not the cut.
+                // Rebuild that blocked draft on an explicit save/switch retry.
+                // Never auto-retry transport/CAS errors or a restored cut that
+                // still requires its own explicit Retry save / Reload choice.
+                if (state.editorialBranchBlocked && branches?.ready
+                        && !branches.draftRecovery && !branches.conflict
+                        && !state.editorialBindingError
+                        && !state.editorialPending && !state.editorialSavePromise) {
+                    scheduleEditorialSave(0);
+                }
                 if (state.editorialTimer != null) {
                     clearTimeout(state.editorialTimer);
                     state.editorialTimer = null;
@@ -2163,6 +2180,7 @@ function mount(node) {
                 if (state.editorialSavePromise || state.editorialTimer != null) return;
                 if (!window.confirm("Discard the unsaved editorial edits in this Studio and reload the saved final cut?")) return;
                 state.editorialSaveError = "";
+                state.editorialBranchBlocked = false;
                 state.editorialEditEpoch = (state.editorialEditEpoch ?? 0) + 1;
                 void refreshCheckpoints();
             });
@@ -7215,6 +7233,7 @@ function mount(node) {
                 state.editorialReady = false; state.editorialRun = "";
                 state.editorialBindingError = "";
                 state.editorialSaveError = "";
+                state.editorialBranchBlocked = false;
                 state.editorialUnusedSceneIds = [];
                 state.editorialDraft = null;
                 state.editorial = cached?.editorial
@@ -7335,6 +7354,19 @@ function mount(node) {
         apply:applyWorkingBranch,
         lock:value => { node._h3ProjectPlanSwitch = value; },
         refresh:() => { loadPlan(true); publishActiveScene(); },
+        recoveryNeeded:run => !state.disposed && run === runName()
+            && Boolean(branches.draftRecovery || branches.conflict || state.editorialSaveError),
+        openRecovery:run => {
+            if (state.disposed || run !== runName()) return false;
+            if (node.flags?.collapsed) node.collapse?.(false);
+            app.canvas?.centerOnNode?.(node);
+            renderShell();
+            root.scrollTop = 0;
+            const toolbar = root.querySelector(".h3studio-branch-toolbar");
+            toolbar?.scrollIntoView({block:"nearest"});
+            toolbar?.focus({preventScroll:true});
+            return true;
+        },
     };
     function onProjectOwnershipChanged(payload) {
         if (state.disposed || !(payload?.owned_by_requester === true || payload?.locking_enabled === false)) return;

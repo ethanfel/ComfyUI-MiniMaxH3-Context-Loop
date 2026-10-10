@@ -62,6 +62,7 @@ async function browserChecks() {
     window.addEventListener("error", event => report.failures.push(event.message));
     window.addEventListener("unhandledrejection", event => report.failures.push(String(event.reason?.stack || event.reason)));
     const extensions=[], records=new Map(), requests=[];
+    window.confirm=()=>true;
     const graph={_nodes:[],links:{},setDirtyCanvas(){},
         getNodeById(id){return this._nodes.find(node=>node.id===id);}};
     window.app={graph,configuringGraph:false,registerExtension(value){extensions.push(value);}};
@@ -108,7 +109,9 @@ async function browserChecks() {
                     data={...record,revision:String(++revision),authoring:body.authoring};records.set(run,structuredClone(data));
                 } else throw Error("Unexpected branch mutation "+body.action);
             }
-            else if(url.pathname.endsWith("/checkpoints")) data={run_name:run,working_branch_id:"main",checkpoints:[],editorial:{}};
+            else if(url.pathname.endsWith("/checkpoints")) data={run_name:run,working_branch_id:"main",checkpoints:[],editorial:{run_name:run}};
+            else if(url.pathname.endsWith("/editorial") && options?.method==="POST")
+                data={editorial:{...body,revision:"cut-"+String(++revision)}};
             else if(url.pathname.endsWith("/prompt-history")) data={revisions:[],draft:null};
             else if(url.pathname.endsWith("/runs")) data={runs:[]};
             else if(options?.method==="POST") throw Error("Unexpected mutation "+route);
@@ -199,6 +202,41 @@ async function browserChecks() {
             await waitFor(()=>carousel.root.textContent.includes("Stayed on alpha"));
             check(widget(plan,"run_name").value==="alpha","failed load keeps source project");
             check(JSON.parse(widget(plan,"plan_json").value).shots[0].prompt[0]==="alpha edited","failed load keeps prompt");
+            if(studio){
+                failRead=false;
+                const controller=studio._h3ProjectPlanSession.controller;
+                const state=studio._h3PlanStudioState;
+                await waitFor(()=>controller.ready&&state.editorialReady&&state.editorialRun==="alpha");
+                controller.draftRecovery={authoring:captureProjectPlan(plan),revision:controller.binding.revision};
+                state.editorial.locked_scene_ids=["one"];
+                state.editorialBranchBlocked=true;
+                state.editorialSaveError="Resolve the local recovery draft before saving the cut.";
+                state.lastEditorialSignature="";
+                controller.changed();
+                switchTo("beta");
+                const recoveryButton=()=>[...carousel.root.querySelectorAll("button")]
+                    .find(button=>button.textContent==="Open Plan recovery");
+                await waitFor(()=>recoveryButton());
+                check(widget(plan,"run_name").value==="alpha","recovery blocks project switch without discarding source");
+                const writesBefore=requests.filter(item=>item.action==="save"||item.path.endsWith("/editorial")).length;
+                recoveryButton().click();
+                check(document.activeElement===studio.root.querySelector(".h3studio-branch-toolbar"),"Carousel opens and focuses actual Plan recovery controls");
+                check(requests.filter(item=>item.action==="save"||item.path.endsWith("/editorial")).length===writesBefore,
+                    "opening recovery does not write project data");
+                const keep=[...studio.root.querySelectorAll("button")].find(button=>button.textContent==="Update active branch");
+                check(keep&&!keep.disabled,"keep displayed Plan is accessible from recovery");
+                keep.click();
+                await waitFor(()=>!controller.busy&&!controller.draftRecovery);
+                check(state.editorialSaveError!=="","branch choice alone does not silently publish cut edits");
+                switchTo("beta");
+                await waitFor(()=>widget(carousel,"run_name").value==="beta");
+                check(requests.some(item=>item.path.endsWith("/editorial")&&item.run_name==="alpha"
+                    &&item.locked_scene_ids?.includes("one")),
+                    "explicit switch retry drains the old cut guard after recovery");
+                switchTo("alpha");
+                await waitFor(()=>widget(carousel,"run_name").value==="alpha");
+                check(JSON.parse(widget(plan,"plan_json").value).shots[0].prompt[0]==="alpha edited","recovery keeps displayed prompts");
+            }
             if(locking){
                 failRead=false;owners.set("beta","another-workflow");
                 switchTo("beta");
