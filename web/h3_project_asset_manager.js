@@ -32,6 +32,16 @@ import {
     collectChildItems,
     computeCarouselPlacement,
 } from "./h3_project_asset_carousel_core.mjs?v=0.7.26";
+import {
+    promptOptimizerBackend,
+    promptOptimizerDirectConfig,
+} from "./h3_prompt_optimizer_settings.js";
+import {directOptimizerConfigurationError} from "./h3_prompt_optimizer_core.mjs?v=0.7.3";
+import {
+    ASSET_DETAILS_CHANGED_EVENT,
+    assetDescribeBlocker,
+    generatedDescriptionAction,
+} from "./h3_asset_details_core.mjs?v=0.7.33";
 
 const NODE_NAME = "MiniMaxH3ProjectAssetManager";
 const TREE_NODE_NAME = "MiniMaxH3ProjectAssetTree";
@@ -44,6 +54,16 @@ const ROLES = {
     video: ["video", "motion", "source_track"],
     audio: ["audio_reference", "source_track"],
 };
+const ASSET_TAG_TYPES = [
+    {value: "char", label: "Character",
+        help: "Character: describes the character's look; ignores objects, background, and lighting."},
+    {value: "scene", label: "Scene",
+        help: "Scene: describes the environment; ignores characters and objects."},
+    {value: "object", label: "Object",
+        help: "Object: describes the specific prop; ignores characters, background, and lighting."},
+    {value: "style", label: "Style",
+        help: "Style: extracts the visual style details, not the depicted content."},
+];
 const ROLE_LABELS = {
     picture: "picture reference",
     semantic_anchor: "semantic anchor",
@@ -285,9 +305,15 @@ function injectStyles() {
         .h3pa-lyrics textarea{flex:1;min-width:0;min-height:150px;width:100%;padding:10px 11px;resize:none;
           border:1px solid var(--h3pa-border);border-radius:7px;background:var(--h3pa-panel);color:var(--h3pa-text);font:13px/1.55 system-ui;
           white-space:pre-wrap}.h3pa-lyrics textarea:focus{outline:1px solid var(--h3pa-accent);border-color:var(--h3pa-accent)}
-        .h3pa-editor{display:flex;flex-direction:column;gap:8px;padding:10px;overflow:auto;border:1px solid
-          var(--h3pa-border);border-radius:9px;background:var(--h3pa-panel)}
+        .h3pa-editor{display:flex;flex-direction:column;gap:8px;padding:10px;overflow-x:hidden;overflow-y:auto;min-width:0;border:1px solid
+          var(--h3pa-border);border-radius:9px;background:var(--h3pa-panel);overflow-wrap:anywhere}
+        .h3pa-editor>*{min-width:0;max-width:100%}.h3pa-editor input,.h3pa-editor select,.h3pa-editor textarea{max-width:100%;box-sizing:border-box}
+        .h3pa-editor .h3pa-status{white-space:normal;overflow:visible;text-overflow:clip;overflow-wrap:anywhere}
         .h3pa-editor label{display:flex;flex-direction:column;gap:3px;color:var(--h3pa-muted)}.h3pa-editor textarea{min-height:62px;resize:vertical}
+        .h3pa-editor textarea.h3pa-description{min-height:120px;color:var(--h3pa-text);line-height:1.4}
+        .h3pa-description-review{display:flex;flex-direction:column;gap:6px;padding:8px;border:1px solid var(--h3pa-accent);border-radius:7px;background:var(--h3pa-soft)}
+        .h3pa-description-review-text{white-space:pre-wrap;color:var(--h3pa-text);line-height:1.4}
+        .h3pa-description-review-actions{display:flex;gap:6px;flex-wrap:wrap}
         .h3pa-editor label.h3pa-toggle,.h3pa-crop-controls label.h3pa-toggle{display:grid;grid-template-columns:18px minmax(0,1fr);gap:8px;align-items:start;
           padding:8px;border:1px solid color-mix(in srgb,var(--h3pa-border) 72%,transparent);border-radius:7px;
           background:var(--h3pa-soft);cursor:pointer}
@@ -615,6 +641,16 @@ function mount(node) {
     // Tokens distinguish A -> B -> A from an uninterrupted operation on A.
     let projectEpoch = 0;
     let projectDisposed = false;
+    const describing = new Set();
+    // Generated descriptions that arrived after the user changed the field;
+    // they are shown for explicit approval instead of being saved.
+    const pendingDescriptions = new Map();
+    // Unsaved description text per asset. The textarea is rebuilt on every
+    // render, so the draft, not the element, is what autosave persists and
+    // what a rebuilt field shows.
+    const descriptionDrafts = new Map();
+    const descriptionSaveTimers = new Map();
+    const descriptionSavesInFlight = new Map();
     function captureProjectOperation() {
         return {run:project(), epoch:projectEpoch};
     }
@@ -952,10 +988,289 @@ function mount(node) {
                     body: JSON.stringify({project: operation.run, asset_id: asset.id, changes}),
                 }, operation);
             persistCatalog(result.catalog);
+            // Descriptions do not change the catalog revision, so scene
+            // editors are told separately to re-check inserted details.
+            if (["description", "tag_type", "tag"].some((key) => key in changes)) {
+                globalThis.dispatchEvent?.(new CustomEvent(ASSET_DETAILS_CHANGED_EVENT, {
+                    detail: {project: operation.run, assetId: asset.id},
+                }));
+            }
             if (options.renderAfter !== false) render();
             setStatus(options.success || `Updated ${promptTag(result.asset)}.`);
             return result;
-        } catch (error) { if (!error.staleProject) setStatus(error.message, true); return null; }
+        } catch (error) {
+            if (error.status === 409 && options.onConflict) {
+                options.onConflict(error);
+                return null;
+            }
+            if (!error.staleProject) setStatus(error.message, true);
+            return null;
+        }
+    }
+    function appendDescriptionFields(asset) {
+        const typeHelp = el("small", "h3pa-help");
+        const showTypeHelp = (value) => {
+            const preset = ASSET_TAG_TYPES.find((item) => item.value === value);
+            typeHelp.textContent = preset
+                ? preset.help
+                : (value ? `Custom tag-type: descriptions focus on "${value}".` : "");
+            typeHelp.hidden = !typeHelp.textContent;
+        };
+        const typeLabel = el("label", "", "Tag-type");
+        typeLabel.title = "Categorizes this asset for LLM descriptions.";
+        const tagType = el("select");
+        const current = String(asset.tag_type ?? "");
+        const choices = [{value: "", label: "None"}, ...ASSET_TAG_TYPES];
+        // Keep a stored value outside the presets selectable instead of
+        // silently clearing it on the next change.
+        if (current && !choices.some((item) => item.value === current)) {
+            choices.push({value: current, label: current});
+        }
+        for (const item of choices) {
+            const option = el("option", "", item.value ? `${item.label} (${item.value})` : item.label);
+            option.value = item.value; option.selected = item.value === current;
+            tagType.append(option);
+        }
+        tagType.addEventListener("change", () => {
+            showTypeHelp(tagType.value);
+            updateAsset(asset, {tag_type: tagType.value});
+        });
+        typeLabel.append(tagType); editor.append(typeLabel);
+        showTypeHelp(asset.tag_type ?? ""); editor.append(typeHelp);
+        const operation = captureProjectOperation();
+        let subject = null;
+        if (asset.tag_type === "object") {
+            const subjectLabel = el("label", "", "Object to describe");
+            subjectLabel.title = "Name the object, or which object in the media to describe (for example \"the brass pocket watch on the table\"). It is sent to the model with Generate description and saved with the asset.";
+            subject = el("input");
+            subject.value = String(asset.subject ?? "");
+            subject.placeholder = "e.g. the red umbrella held by the woman";
+            subject.addEventListener("change", () => updateAsset(
+                asset, {subject: subject.value}, {
+                    operation, renderAfter: false,
+                    success: `Saved the object for ${promptTag(asset)}.`,
+                }));
+            subjectLabel.append(subject); editor.append(subjectLabel);
+        }
+
+        const prefixHelp = "Name the prompt tag <tag-type>_<tag>. Turning it off, or changing the tag-type, renames the tag without stacking prefixes. Scene prompts that use the old tag are not rewritten.";
+        const prefixLabel = el("label", "h3pa-toggle");
+        prefixLabel.title = prefixHelp;
+        const prefix = el("input"); prefix.type = "checkbox";
+        prefix.checked = Boolean(asset.tag_type_prefix);
+        prefix.disabled = !asset.tag_type && !prefix.checked;
+        prefix.title = prefixHelp;
+        prefix.setAttribute("aria-label", "Prefix the tag with its tag-type");
+        prefix.addEventListener("change", () => updateAsset(
+            asset, {tag_type_prefix: prefix.checked}));
+        const prefixCopy = el("span", "h3pa-toggle-copy");
+        prefixCopy.append(
+            el("strong", "", "Prefix tag with tag-type"),
+            el("small", "", asset.tag_type
+                ? `Tag becomes @${asset.tag_type}_<tag>.`
+                : "Set a tag-type first."),
+        );
+        prefixLabel.append(prefix, prefixCopy); editor.append(prefixLabel);
+
+        const descriptionLabel = el("label", "", "Description");
+        descriptionLabel.title = "Details about this asset, saved with it in the project catalog. Type your own, or generate them with the configured Direct API model. Changes save shortly after you stop typing and when you leave the field.";
+        const description = el("textarea", "h3pa-description");
+        const key = descriptionKey(operation.run, asset.id);
+        description.dataset.project = operation.run;
+        description.dataset.assetId = asset.id;
+        description.placeholder = "Describe this asset, or generate a description…";
+        const draft = descriptionDrafts.get(key);
+        description.value = draft ?? String(asset.description ?? "");
+        // A draft kept from an earlier visit (for example across a Run
+        // switch) is saved again now that its project is current.
+        if (draft !== undefined && normalizedDescription(draft) !== normalizedDescription(asset.description)) {
+            scheduleDescriptionSave(asset, operation);
+        }
+        description.addEventListener("input", () => {
+            descriptionDrafts.set(key, description.value);
+            scheduleDescriptionSave(asset, operation);
+        });
+        description.addEventListener("change", () => void saveDescriptionDraft(asset, operation));
+        const busy = describing.has(key);
+        const generate = button(busy ? "Generating…" : "Generate description",
+            () => describeAsset(asset, tagType.value, subject?.value ?? "", description.value),
+            "Send this asset's media and a tag-type specific instruction to the Direct API model configured in Settings → MiniMax H3 Context Loop → Prompt optimizer. Requires \"Allow Direct API to read reference media\".");
+        generate.disabled = busy;
+        descriptionLabel.append(description); editor.append(descriptionLabel, generate);
+        const pending = pendingDescriptions.get(key);
+        if (pending !== undefined) {
+            const review = el("div", "h3pa-description-review");
+            review.append(
+                el("strong", "", "Generated description waiting for review"),
+                el("small", "h3pa-help", "The description changed while this was generating, so it was not saved. Replace the current description with it, or discard it."),
+                el("div", "h3pa-description-review-text", pending),
+            );
+            const reviewActions = el("div", "h3pa-description-review-actions");
+            reviewActions.append(
+                button("Replace description", () => {
+                    pendingDescriptions.delete(key);
+                    clearTimeout(descriptionSaveTimers.get(key));
+                    descriptionSaveTimers.delete(key);
+                    descriptionDrafts.delete(key);
+                    void updateAsset(asset, {description: pending}, {
+                        operation,
+                        success: `Replaced the description for ${promptTag(asset)}.`,
+                    });
+                }, "Save the generated text over the current description"),
+                button("Discard", () => {
+                    pendingDescriptions.delete(key);
+                    renderPreservingDescription();
+                    setStatus(`Discarded the generated description for ${promptTag(asset)}.`);
+                }, "Keep the current description"),
+            );
+            review.append(reviewActions);
+            editor.append(review);
+        }
+    }
+    // Description drafts, held results, timers and in-flight saves belong to
+    // one project's asset. Duplicated projects reuse asset IDs, so the Run
+    // is part of every key, and a callback from an earlier Run only ever
+    // touches that Run's own entries.
+    function descriptionKey(run, assetId) {
+        return `${run}\u0000${assetId}`;
+    }
+    function descriptionField(run, assetId) {
+        return [...editor.querySelectorAll("textarea.h3pa-description")]
+            .find((item) => item.dataset.project === run && item.dataset.assetId === assetId) ?? null;
+    }
+    function normalizedDescription(value) {
+        return String(value ?? "").replaceAll("\r\n", "\n").replaceAll("\r", "\n");
+    }
+    function scheduleDescriptionSave(asset, operation, delay = 1200) {
+        const key = descriptionKey(operation.run, asset.id);
+        clearTimeout(descriptionSaveTimers.get(key));
+        descriptionSaveTimers.set(key, setTimeout(
+            () => void saveDescriptionDraft(asset, operation), delay));
+    }
+    async function saveDescriptionDraft(asset, operation) {
+        const key = descriptionKey(operation.run, asset.id);
+        clearTimeout(descriptionSaveTimers.get(key));
+        descriptionSaveTimers.delete(key);
+        // After a Run switch the draft stays with its own project and is
+        // saved when that project is open again; it is never compared with,
+        // or written into, the destination's catalog.
+        if (!isCurrentProjectOperation(operation) || !descriptionDrafts.has(key)) return;
+        const next = normalizedDescription(descriptionDrafts.get(key));
+        const stored = (state.catalog.assets ?? []).find((item) => item.id === asset.id);
+        if (next === normalizedDescription(stored?.description)) {
+            descriptionDrafts.delete(key);
+            return;
+        }
+        // A blur right after an autosave started must not send it twice.
+        if (descriptionSavesInFlight.get(key) === next) return;
+        descriptionSavesInFlight.set(key, next);
+        try {
+            const result = await updateAsset(asset, {description: next}, {
+                operation, renderAfter: false,
+                success: `Saved description for ${promptTag(asset)}.`,
+            });
+            // Keep a rejected or stale-Run draft for a later retry; drop it
+            // once saved unless the user kept typing meanwhile.
+            if (result && normalizedDescription(descriptionDrafts.get(key)) === next) {
+                descriptionDrafts.delete(key);
+            }
+        } finally {
+            if (descriptionSavesInFlight.get(key) === next) descriptionSavesInFlight.delete(key);
+        }
+    }
+    // Re-render without disturbing someone typing a description: the draft
+    // comes back through descriptionDrafts, focus and caret are restored.
+    function renderPreservingDescription() {
+        const active = document.activeElement;
+        const typing = active?.matches?.("textarea.h3pa-description") && editor.contains(active)
+            ? {run: active.dataset.project, id: active.dataset.assetId,
+                start: active.selectionStart, end: active.selectionEnd,
+                scrollTop: active.scrollTop}
+            : null;
+        render();
+        if (!typing) return;
+        const field = descriptionField(typing.run, typing.id);
+        if (!field) return;
+        field.focus({preventScroll: true});
+        field.setSelectionRange(typing.start, typing.end);
+        field.scrollTop = typing.scrollTop;
+    }
+    function holdGeneratedDescription(asset, operation, text) {
+        pendingDescriptions.set(descriptionKey(operation.run, asset.id), text);
+        // A result for a Run that is no longer open waits there for review.
+        if (projectDisposed || operation.run !== project()) return;
+        renderPreservingDescription();
+        setStatus(`The description of ${promptTag(asset)} changed while generating; review the generated text before it replaces yours.`, true);
+    }
+    async function describeAsset(asset, tagType, subject = "", requested = "") {
+        const backend = promptOptimizerBackend();
+        if (backend !== "direct") {
+            setStatus("Asset descriptions use the Direct API. Set Settings → MiniMax H3 Context Loop → Prompt optimizer backend to Direct API.", true);
+            return;
+        }
+        const config = promptOptimizerDirectConfig();
+        const configError = directOptimizerConfigurationError(config);
+        if (configError) {
+            setStatus(`${configError} Open Settings → MiniMax H3 Context Loop → Prompt optimizer.`, true);
+            return;
+        }
+        // Media leaves this machine only with the explicit setting; there is
+        // deliberately no confirmation that overrides it.
+        const blocked = assetDescribeBlocker(config);
+        if (blocked) {
+            setStatus(blocked, true);
+            return;
+        }
+        const operation = captureProjectOperation();
+        const key = descriptionKey(operation.run, asset.id);
+        if (describing.has(key)) return;
+        pendingDescriptions.delete(key);
+        describing.add(key); render();
+        try {
+            setStatus(`Generating a description for ${promptTag(asset)}…`);
+            const result = await jsonRequest(
+                "/minimax_h3_context_loop/project-assets/describe", {
+                    method: "POST", headers: {"Content-Type": "application/json"},
+                    body: JSON.stringify({
+                        project: operation.run, asset_id: asset.id,
+                        tag_type: tagType, subject,
+                        api_format: config.api_format, api_url: config.api_url,
+                        api_key: config.api_key, model: config.model,
+                        allow_media: config.allow_media === true,
+                    }),
+                });
+            describing.delete(key);
+            // The Run changed while generating: keep the result with its own
+            // project for review there instead of judging it against, or
+            // saving it into, the project now open.
+            if (!isCurrentProjectOperation(operation)) {
+                holdGeneratedDescription(asset, operation, result.description);
+                return;
+            }
+            const saved = (state.catalog.assets ?? []).find((item) => item.id === asset.id)?.description ?? "";
+            const live = descriptionField(operation.run, asset.id);
+            const action = generatedDescriptionAction({
+                requested, saved, live: live ? live.value : null,
+            });
+            if (action === "review") {
+                holdGeneratedDescription(asset, operation, result.description);
+                return;
+            }
+            // The server re-checks the base text, covering edits saved from
+            // another tab while this request was running.
+            await updateAsset(asset, {
+                description: result.description, expected_description: requested,
+            }, {
+                operation,
+                success: `Generated a description for ${promptTag(asset)}.`,
+                onConflict: () => holdGeneratedDescription(asset, operation, result.description),
+            });
+        } catch (error) {
+            describing.delete(key);
+            if (error.staleProject || !isCurrentProjectOperation(operation)) return;
+            renderPreservingDescription();
+            setStatus(`Description failed: ${error.message}`, true);
+        }
     }
     async function reorderAssets(assetIds) {
         try {
@@ -1695,6 +2010,7 @@ function mount(node) {
         const tag = el("input"); tag.value = asset.tag ?? "";
         tag.addEventListener("change", () => updateAsset(asset, {tag: tag.value}));
         tagLabel.append(tag); editor.append(tagLabel);
+        appendDescriptionFields(asset);
         const folderLabel = el("label", "", "Folder");
         folderLabel.title = "Presentation only. Folder membership never changes prompts, references, fingerprints, or generation.";
         const folderSelect = el("select");
