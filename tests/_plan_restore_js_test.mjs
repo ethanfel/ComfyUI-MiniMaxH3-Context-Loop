@@ -9,6 +9,44 @@ import {
     restoreConnectedPolicyInputs,
 } from "../web/h3_plan_restore_core.mjs";
 import {branchWidgetTransaction} from "../web/h3_working_branches.mjs";
+import {captureProjectPlan} from "../web/h3_project_plan_switch.mjs";
+
+// Old Plans retain hidden 0.4 defaults. Connected policy nodes override them
+// at runtime, including when the Plan itself has never executed.
+for (const planType of ["MiniMaxH3ChainPlan", "MiniMaxH3ChainPlanModern", "MiniMaxH3ChainPlanStudio"]) {
+    for (const [type, settings, mode, context, audioContext] of [
+        ["MiniMaxH3GenerationProfile", {scene_continuity:"Hard picture + smooth audio", audio_profile:"Generate audio"}, "audio_feathered_av", 39, 39],
+        ["MiniMaxH3ChainPolicy", {incoming_transition:"hard_av"}, "masked_av", 39, 39],
+        ["MiniMaxH3AdvancedPolicy", {incoming_transition:"drift_av"}, "drift_control_av", 39, 39],
+        ["MiniMaxH3Legacy04PolicyAdapter", {continuation_mode:"guide", context_length:17, audio_context_length:22}, "guide", 17, 22],
+        ["MiniMaxH3Legacy04PolicyAdapter", {continuation_mode:"masked_av", context_length:39, audio_context_length:17}, "masked_av", 39, 17],
+        ["MiniMaxH3GenerationProfile", {scene_continuity:"Independent scenes", audio_profile:"Generate audio"}, "guide", 0, 0],
+    ]) {
+        const policy = {id:2, type, inputs:[], widgets:Object.entries(settings).map(([name,value])=>widget(name,value))};
+        const plan = {id:1, type:planType, inputs:[{name:"chain_policy",link:1}], widgets:[
+            widget("plan_json", JSON.stringify({shots:[{id:"one",prompt:"Keep this prompt"}]})),
+            widget("context_length",22), widget("continuation_mode","guide"), widget("audio_context_length",22),
+        ]};
+        const graph = {links:{1:{origin_id:2}},getNodeById:id=>id===2?policy:plan};
+        plan.graph=policy.graph=graph;
+        const original = plan.widgets.map(w=>w.value);
+        const saved = captureProjectPlan(plan);
+        assert.equal(saved.context_length, context);
+        assert.equal(saved.continuation_mode, mode);
+        assert.equal(saved.audio_context_length, audioContext);
+        assert.equal(saved.policy_inputs.audio_context_length, audioContext);
+        assert.deepEqual(plan.widgets.map(w=>w.value), original, "capture is read-only");
+        const expected = policy.widgets.map(w=>w.value);
+        restoreBranchPolicyInputs(plan, saved);
+        assert.deepEqual(policy.widgets.map(w=>w.value), expected, `${planType}/${type} round trip`);
+        // Runtime archive policy also wins over a stale widget retained in an
+        // old workflow/API archive. It must not mutate the saved record.
+        const archived = {...saved, audio_context_length:99};
+        restoreBranchPolicyInputs(plan, archived);
+        assert.deepEqual(policy.widgets.map(w=>w.value), expected);
+        assert.equal(archived.audio_context_length,99);
+    }
+}
 
 {
     const policy = {id:2, type:"MiniMaxH3ChainPolicy", inputs:[], widgets:[
@@ -206,6 +244,24 @@ const compactMismatch = restoreConnectedPolicyInputs(compactPlan, {
 }, {audio_context_length: 22});
 assert.deepEqual(compactMismatch.applied, []);
 assert.match(compactMismatch.unavailable[0], /Advanced Policy.*Legacy 0\.4/);
+assert.match(compactMismatch.unavailable[0], /context_length=39, audio_context_length=22/);
+assert.match(compactMismatch.unavailable[0], /require audio_context_length=39/);
+// Explicit mixed contexts are still rejected, even if the raw Plan fallback
+// happens to match the destination preset.
+const explicitMismatch = restoreConnectedPolicyInputs(compactPlan, {
+    audio_context_length:17,
+    transition_policy:{preset:"hard_av",expert_override:false},
+}, {audio_context_length:39});
+assert.deepEqual(explicitMismatch.applied,[]);
+assert.match(explicitMismatch.unavailable[0],/audio_context_length=17/);
+for (const invalid of [null, "39", -1, 1.5, true]) {
+    const before = compactPolicy.widgets.map(w=>w.value);
+    const result = restoreConnectedPolicyInputs(compactPlan, {
+        audio_context_length:invalid, transition_policy:{preset:"guide"},
+    });
+    assert.match(result.unavailable[0], /invalid saved effective policy/);
+    assert.deepEqual(compactPolicy.widgets.map(w=>w.value),before);
+}
 
 const profileGraph = {
     links: {60: {origin_id: 17, target_id: 16}},

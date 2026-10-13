@@ -4,6 +4,10 @@ Newest first. This file keeps release history out of the onboarding README.
 
 ## Unreleased
 
+- Save effective connected-policy context lengths when switching projects or
+  working branches, instead of unused legacy Plan widget values. Restore the
+  effective audio boundary from runtime archives and retain custom mixed AV
+  lengths. Report the saved boundary values when a policy cannot represent them.
 - Add asset tag-types and descriptions to the Carousel editor. Pick a
   tag-type (char, scene, object, or style) from a drop-down, optionally prefix the
   prompt tag with it, and keep an editable description that the configured

@@ -1,7 +1,7 @@
 import {parsePlanJson, planToJson} from "./h3_chain_plan_core.mjs?v=0.7.12";
 import {StudioBranches, authoringSignature, branchWidgetTransaction, workingBranchId} from "./h3_working_branches.mjs?v=0.7.31";
-import {branchPolicyNodes, captureBranchPolicyInputs, restoreBranchPolicyInputs,
-    refreshRestoredPlanEditors} from "./h3_plan_restore_core.mjs?v=0.7.21";
+import {branchPolicyNodes, captureBranchPlanInputs, restoreBranchPolicyInputs,
+    refreshRestoredPlanEditors} from "./h3_plan_restore_core.mjs?v=0.7.22";
 import {connectedProjectAssetPlans} from "./h3_project_asset_sync_core.mjs?v=0.7.3";
 
 export const PLAN_SETTING_WIDGETS = Object.freeze([
@@ -24,8 +24,7 @@ export function captureProjectPlan(plan) {
         if (name !== "run_name" && widget(plan, name)) result[name] = widget(plan, name).value;
     }
     result.plan_json = planToJson(parsePlanJson(result.plan_json));
-    result.policy_inputs = captureBranchPolicyInputs(plan);
-    return result;
+    return captureBranchPlanInputs(plan, result);
 }
 
 function applyProjectPlan(plan, record) {

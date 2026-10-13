@@ -298,7 +298,7 @@ def _archive_inputs(archive: Any, run_name: str) -> dict[str, Any]:
     return restored
 
 
-def archive_policy_inputs(archive: Any) -> dict[str, dict[str, Any]]:
+def archive_policy_inputs(archive: Any) -> dict[str, Any]:
     """Return exact widget values for connected 0.5 policy nodes.
 
     Plan archives store resolved typed policies in compatibility metadata.  A
@@ -312,7 +312,13 @@ def archive_policy_inputs(archive: Any) -> dict[str, dict[str, Any]]:
     if not isinstance(compatibility, dict):
         return {}
 
-    restored: dict[str, dict[str, Any]] = {}
+    restored: dict[str, Any] = {}
+    # Runtime compatibility contains the effective boundary. Workflow/API
+    # archives can still contain an unused legacy Plan widget with another
+    # value, so retain this alongside the normalized policy for restoration.
+    audio_context = compatibility.get("audio_context_length")
+    if type(audio_context) is int and audio_context >= 0:
+        restored["audio_context_length"] = audio_context
     saved_audio = compatibility.get("audio_policy")
     try:
         if (isinstance(saved_audio, dict) and
@@ -565,7 +571,7 @@ class RunArchiveManager:
             raise ValueError("H3 run %r does not exist." % run)
 
         restored: dict[str, Any] = {}
-        policy_inputs: dict[str, dict[str, Any]] = {}
+        policy_inputs: dict[str, Any] = {}
         sources = []
         warnings = []
         archive_map, immutable = self._archive_paths(directory, run)

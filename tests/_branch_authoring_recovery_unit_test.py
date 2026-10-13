@@ -54,6 +54,7 @@ async def check():
         result = json.loads(restored["authoring"]["plan_json"])
         assert restored["authoring"]["width"] == 960
         assert restored["authoring"]["height"] == 544
+        assert restored["authoring"]["policy_inputs"]["audio_context_length"] == 39
         assert result["chapters"][0]["resolution"] == {"width": 960, "height": 544}
         assert result["chapters"][1]["resolution"] == {"width": 1344, "height": 768}
         for scene, seed in enumerate(seeds, 1):

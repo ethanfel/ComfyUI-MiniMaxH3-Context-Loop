@@ -12,8 +12,8 @@ import {CONTEXT_MASK_MODES} from "./h3_context_mask_core.mjs?v=0.7.1";
 import {contextMaskEditor} from "./h3_context_mask_editor.mjs?v=0.7.2";
 import {StudioBranches, BranchDrafts, branchOperationId, branchWidgetTransaction, branchRequestPath, workingBranchId, visibleWorkingBranches} from "./h3_working_branches.mjs?v=0.7.31";
 import {browserBranchRecoveryStorage} from "./h3_branch_recovery_storage.mjs?v=0.7.23";
-import {PLAN_SETTING_WIDGETS} from "./h3_project_plan_switch.mjs?v=0.7.5";
-import {branchPolicyNodes, captureBranchPolicyInputs, restoreBranchPolicyInputs} from "./h3_plan_restore_core.mjs?v=0.7.21";
+import {PLAN_SETTING_WIDGETS} from "./h3_project_plan_switch.mjs?v=0.7.6";
+import {branchPolicyNodes, captureBranchPlanInputs, restoreBranchPolicyInputs} from "./h3_plan_restore_core.mjs?v=0.7.22";
 import {inputSource as resolvedInputSource} from "./h3_reference_preview_core.mjs?v=0.7.27";
 import {syncManagedPlanRunName} from "./h3_project_asset_sync_core.mjs?v=0.7.3";
 import {
@@ -809,8 +809,7 @@ function mount(node) {
         // still publish either prompt-only or non-prompt changes.
         result.plan_json = planToJson(liveText !== null && liveText !== state.lastValue
             ? parsePlanJson(liveText) : state.plan);
-        result.policy_inputs = captureBranchPolicyInputs(owner);
-        return result;
+        return captureBranchPlanInputs(owner, result);
     }
     function applyWorkingBranch(record) {
         if (!branchWidget) throw new Error("Restart ComfyUI to load the working-branch input.");

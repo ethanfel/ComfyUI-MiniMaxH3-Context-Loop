@@ -9,6 +9,12 @@ import {spawn} from "node:child_process";
 const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "h3-project-plan-switch-"));
 const server = http.createServer((req, res) => {
     const url = new URL(req.url, "http://localhost");
+    if (url.pathname === "/test-tick") {
+        // IndexedDB uses real I/O; Chrome's virtual clock can otherwise burn
+        // through every polling timeout before a draft transaction completes.
+        setTimeout(() => { res.writeHead(204); res.end(); }, 10);
+        return;
+    }
     if (url.pathname === "/") {
         res.setHeader("Content-Type", "text/html; charset=utf-8");
         res.end(`<!doctype html><style>.host{width:920px;height:860px}</style>
@@ -56,7 +62,11 @@ async function browserChecks() {
     const check = (value, message) => { report.checks++; if (!value) throw Error(message); };
     const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
     const waitFor = async predicate => {
-        for(let i=0;i<1000;i++){if(predicate())return;await wait(10);}
+        for(let i=0;i<500;i++){
+            if(predicate())return;
+            await fetch("/test-tick");
+            await wait(10);
+        }
         throw Error("Timed out: "+document.body.innerText.slice(-1600));
     };
     window.addEventListener("error", event => report.failures.push(event.message));
@@ -163,11 +173,14 @@ async function browserChecks() {
                 await extension.beforeRegisterNodeDef?.(Node,{name});
             }
             const carousel=new Carousel(),plan=new Plan(),studio=useStudio?new Studio():null;
+            const policy=new BaseNode("MiniMaxH3GenerationProfile", {
+                scene_continuity:"Hard picture + smooth audio", audio_profile:"Generate audio"});
+            connect(policy,plan,"chain_policy");
             const rich=useStudio?new Rich():null;
             connect(carousel,plan,"project_assets");if(studio)connect(plan,studio,"plan");
             if(rich)connect(studio,rich,"plan");
             records.set("beta",{id:"main",run_name:"beta",revision:"beta",name:"Original",
-                authoring:{...captureProjectPlan(plan),width:1280,plan_json:planText("beta")}});
+                authoring:{...captureProjectPlan(plan),audio_context_length:22,width:1280,plan_json:planText("beta")}});
             plan.onNodeCreated();studio?.onNodeCreated();rich?.onNodeCreated();carousel.onNodeCreated();
             const menu=()=>carousel.root?.querySelector('[aria-label="Switch Asset Carousel project"]');
             await waitFor(()=>[...(menu()?.options ?? [])].some(option=>option.value==="beta")
@@ -182,6 +195,9 @@ async function browserChecks() {
             await wait(150);
             check(JSON.parse(records.get("alpha").authoring.plan_json).shots[0].prompt[0]==="alpha edited","source prompts saved");
             check(widget(plan,"width").value===1280,"target dimensions restored");
+            check(records.get("alpha").authoring.audio_context_length===39,"capture saves effective policy audio length");
+            check(records.get("alpha").authoring.policy_inputs.audio_context_length===39,"effective audio survives branch save");
+            check(widget(policy,"scene_continuity").value==="Hard picture + smooth audio","restore accepts effective policy despite stale archived Plan widget");
             check(JSON.parse(widget(plan,"plan_json").value).shots[0].seed==="18446744073709551615","exact scene seed retained");
             check([...plan.root.querySelectorAll("textarea")].some(field=>field.value==="beta"),"Modern Plan shows target prompt");
             if(studio){
