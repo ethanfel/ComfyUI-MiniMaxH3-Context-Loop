@@ -1,7 +1,7 @@
 import {app} from "/scripts/app.js";
 import {bindNodeWheel} from "./h3_dom_wheel.mjs?v=0.7.1";
 import {api} from "/scripts/api.js";
-import {prepareProjectPlanSwitch} from "./h3_project_plan_switch.mjs?v=0.7.5";
+import {prepareProjectPlanSwitch} from "./h3_project_plan_switch.mjs?v=0.7.6";
 import {
     coupledOutputDimensions,
     AUDIO_TRACK_ROLES,

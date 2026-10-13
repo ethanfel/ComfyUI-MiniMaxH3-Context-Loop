@@ -4,7 +4,7 @@ import vm from "node:vm";
 import {parsePlanJson, planToJson, promptValueToText} from "../web/h3_chain_plan_core.mjs";
 import {StudioBranches, BranchDrafts, authoringSignature, branchWidgetTransaction} from "../web/h3_working_branches.mjs";
 import {workingBranchId} from "../web/h3_working_branches.mjs";
-import {branchPolicyNodes, captureBranchPolicyInputs, restoreBranchPolicyInputs} from "../web/h3_plan_restore_core.mjs";
+import {branchPolicyNodes, captureBranchPlanInputs, restoreBranchPolicyInputs} from "../web/h3_plan_restore_core.mjs";
 
 const id = "a".repeat(32);
 const authoring = seed => ({plan_json:JSON.stringify({shots:[{id:"one",prompt:"keep this",seed}],
@@ -649,9 +649,22 @@ assert.equal(authoringSignature(reordered),authoringSignature(authoring('2')));
     const node={};
     const context=vm.createContext({state:{plan:JSON.parse(original),lastValue:original,
         planWidget:{value:JSON.stringify(live)},planOwner:node},node,PLAN_SETTING_WIDGETS:[],
-        captureBranchPolicyInputs, preserveDelegatedPrompts(){},parsePlanJson:JSON.parse,planToJson:JSON.stringify});
+        captureBranchPlanInputs, preserveDelegatedPrompts(){},parsePlanJson:JSON.parse,planToJson:JSON.stringify,
+        widget:(node,name)=>node.widgets?.find(w=>w.name===name)});
     vm.runInContext(handler,context);
     assert.equal(JSON.parse(context.captureBranchAuthoring().plan_json).shots[0].prompt,live.shots[0].prompt);
+    const policy={id:2,type:'MiniMaxH3GenerationProfile',inputs:[],widgets:[
+        {name:'scene_continuity',value:'Hard picture + smooth audio'},
+        {name:'audio_profile',value:'Generate audio'}]};
+    Object.assign(node,{type:'MiniMaxH3ChainPlan',inputs:[{name:'chain_policy',link:1}],
+        widgets:[{name:'audio_context_length',value:22}],
+        graph:{links:{1:{origin_id:2}},getNodeById:()=>policy}});
+    policy.graph=node.graph;
+    context.PLAN_SETTING_WIDGETS.push('audio_context_length');
+    const captured=context.captureBranchAuthoring();
+    assert.equal(captured.audio_context_length,39,'real Studio capture must override stale Plan widget');
+    assert.equal(captured.policy_inputs.audio_context_length,39);
+    assert.equal(node.widgets[0].value,22,'capture must not edit the workflow');
 }
 for (const wrap of [value => value, value => new Proxy(value, {})]) {
     // Execute the actual production callback, including its state rollback.

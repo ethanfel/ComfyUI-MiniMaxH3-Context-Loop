@@ -7,7 +7,7 @@ import {
     transitionPreset,
     transitionPresetName,
 } from "./h3_policy_core.mjs?v=0.7.10";
-import {resolveAudioPolicy, resolveTransitionPolicy} from "./h3_socket_presentation_core.mjs?v=0.7.11";
+import {resolveAudioContextLength, resolveAudioPolicy, resolveTransitionPolicy} from "./h3_socket_presentation_core.mjs?v=0.7.11";
 
 const CHAIN_POLICY_NODE = "MiniMaxH3ChainPolicy";
 const PROFILE_POLICY_NODE = "MiniMaxH3GenerationProfile";
@@ -51,7 +51,20 @@ export function captureBranchPolicyInputs(planNode) {
         preset: transition.preset, expert_override: transition.expertOverride,
         expert_continuation_mode: transition.continuationMode, expert_context_length: transition.contextLength,
     };
+    // Keep the effective audio boundary beside the resolved transition. The
+    // old Plan widget is ignored at runtime when a chain policy is connected.
+    if (transition.known) result.audio_context_length = resolveAudioContextLength(planNode);
     return result;
+}
+
+export function captureBranchPlanInputs(planNode, planInputs) {
+    const policy_inputs = captureBranchPolicyInputs(planNode);
+    const effective = effectiveTransition(policy_inputs.transition_policy);
+    return {...planInputs, policy_inputs, ...(effective ? {
+        continuation_mode: effective.continuationMode,
+        context_length: effective.contextLength,
+        audio_context_length: policy_inputs.audio_context_length,
+    } : {})};
 }
 
 export function restoreBranchPolicyInputs(planNode, authoring) {
@@ -140,6 +153,13 @@ function effectiveTransition(values) {
     } : null;
 }
 
+function boundaryDetails(effective, planInputs) {
+    return `saved continuation_mode=${JSON.stringify(effective?.continuationMode ?? null)}, `
+        + `context_length=${effective?.contextLength ?? "unknown"}, `
+        + `audio_context_length=${planInputs?.audio_context_length ?? "unspecified"}; `
+        + `preset-based policies require audio_context_length=${effective?.contextLength ?? "context_length"}`;
+}
+
 function restoreCompactAudio(node, policyInputs, applied, unavailable) {
     const audio = policyInputs.audio_policy;
     if (audio && typeof audio === "object") {
@@ -207,7 +227,7 @@ function restoreCompactTransition(node, policyInputs, planInputs,
             || !audioContextMatches) {
         unavailable.push(
             "transition_policy (saved boundary needs Advanced Policy or the "
-            + "Legacy 0.4 Policy Adapter)",
+            + `Legacy 0.4 Policy Adapter; ${boundaryDetails(effective, planInputs)})`,
         );
         return;
     }
@@ -233,7 +253,7 @@ function restoreProfileTransition(node, policyInputs, planInputs,
     if (!selected || !audioContextMatches) {
         unavailable.push(
             "transition_policy (saved boundary needs Advanced Policy or the "
-            + "Legacy 0.4 Policy Adapter)",
+            + `Legacy 0.4 Policy Adapter; ${boundaryDetails(effective, planInputs)})`,
         );
         return;
     }
@@ -316,7 +336,7 @@ function restoreAdvancedTransition(node, policyInputs, planInputs,
             || !audioContextMatches) {
         unavailable.push(
             "transition_policy (saved raw boundary needs the Legacy 0.4 "
-            + "Policy Adapter as the final policy layer)",
+            + `Policy Adapter as the final policy layer; ${boundaryDetails(effective, planInputs)})`,
         );
         return;
     }
@@ -335,6 +355,16 @@ export function restoreConnectedPolicyInputs(
     const unavailable = [];
     if (!policyInputs || typeof policyInputs !== "object") {
         return {applied, unavailable};
+    }
+    if (Object.hasOwn(policyInputs, "audio_context_length")) {
+        const audioContext = policyInputs.audio_context_length;
+        if (!Number.isInteger(audioContext) || audioContext < 0) {
+            return {applied, unavailable:["audio_context_length (invalid saved effective policy value)"]};
+        }
+        // New UI snapshots and runtime archives carry authoritative policy
+        // data. Older records without it remain guarded: an unequal AV pair
+        // could be intentional and must not be guessed from today's graph.
+        planInputs = {...planInputs, audio_context_length:audioContext};
     }
     const graph = planNode?.graph;
     graph?.beforeChange?.();

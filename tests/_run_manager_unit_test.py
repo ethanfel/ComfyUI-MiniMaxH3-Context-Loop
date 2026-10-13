@@ -19,6 +19,15 @@ def write(path, value):
 
 
 def main():
+    for audio_context in (0, 17, 22, 39):
+        restored_policy = archive_policy_inputs({"compatibility": {
+            "continuation_mode": "masked_av", "context_length": 39,
+            "audio_context_length": audio_context,
+        }})
+        assert restored_policy["audio_context_length"] == audio_context
+    for invalid in (None, "39", True, -1, 1.5):
+        assert "audio_context_length" not in archive_policy_inputs({
+            "compatibility": {"audio_context_length": invalid}})
     locked_policy = archive_policy_inputs({
         "compatibility": {
             "audio_policy": {
@@ -103,6 +112,7 @@ def main():
             "editor_plan": editor_plan,
             "compatibility": {
                 "width": 960, "height": 544, "context_length": 22,
+                "audio_context_length": 39,
                 "generation_fingerprint": "",
                 "audio_policy": {
                     "version": "h3_audio_policy_v1",
@@ -254,6 +264,7 @@ def main():
                     if key != "plan_json"}
         assert loaded["scene_count"] == 1
         assert loaded["policy_inputs"] == {
+            "audio_context_length": 39,
             "audio_policy": {
                 "final_audio": "source",
                 "source_reference": "on",
@@ -267,6 +278,9 @@ def main():
             },
         }
         assert loaded["sources"][-1] == "api_prompt.json"
+        assert loaded["plan_inputs"]["audio_context_length"] == 22
+        assert loaded["policy_inputs"]["audio_context_length"] == 39, \
+            "runtime policy must survive a stale legacy widget in api_prompt.json"
         plan_only = manager.load_plan("variant_exact")
         assert plan_only["plan_inputs"] == loaded["plan_inputs"]
         assert plan_only["policy_inputs"] == loaded["policy_inputs"]
@@ -299,6 +313,7 @@ def main():
         assert restored_plan["shots"][0]["audio_context_length"] == 33
         assert restored_plan["shots"][0]["lora_route"] == "c"
         assert fallback_payload["policy_inputs"] == {
+            "audio_context_length": 5,
             "audio_policy": {
                 "final_audio": "source",
                 "source_reference": "on",

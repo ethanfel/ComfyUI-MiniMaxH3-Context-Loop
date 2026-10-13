@@ -42,7 +42,7 @@ import * as promptCompanionSync from "./h3_prompt_companion_sync.mjs?v=0.7.26";
 import {
     refreshRestoredPlanEditors,
     restoreConnectedPolicyInputs,
-} from "./h3_plan_restore_core.mjs?v=0.7.21";
+} from "./h3_plan_restore_core.mjs?v=0.7.22";
 import {projectMutationOptions} from "./h3_project_ownership.mjs?v=0.7.6";
 
 const NODE_NAME = "MiniMaxH3ChainCheckpointManager";
