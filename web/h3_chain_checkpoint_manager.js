@@ -321,9 +321,13 @@ function injectStyles() {
         background:var(--h3cm-accent); }
       .h3cm-preview-resizer:focus-visible { outline:1px solid var(--h3cm-accent); outline-offset:-1px; }
       .h3cm-audio { width:100%; height:36px; }
-      .h3cm-inspector { display:grid; grid-template-columns:auto minmax(0,1fr); gap:3px 9px; }
-      .h3cm-inspector dt { color:var(--h3cm-muted); }
-      .h3cm-inspector dd { margin:0; overflow-wrap:anywhere; }
+      .h3cm-inspector { display:grid; grid-template-columns:fit-content(35%) minmax(0,1fr); gap:3px 9px; }
+      .h3cm-inspector dt { grid-column:1; color:var(--h3cm-muted); overflow-wrap:anywhere; }
+      .h3cm-inspector dd { grid-column:2; min-width:0; margin:0; overflow-wrap:anywhere; }
+      .h3cm-inspector .h3cm-inspector-option { grid-column:1 / -1; }
+      .h3cm-inspector-option > dt { position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%); }
+      .h3cm-inspector-option label { display:flex; gap:8px; align-items:center; margin:8px 0; }
+      .h3cm-inspector-option input { flex:0 0 auto; }
       .h3cm-prompt { max-height:90px; overflow:auto; padding:6px; border-radius:5px;
         background:var(--h3cm-panel); white-space:pre-wrap; overflow-wrap:anywhere; }
       .h3cm-attribution { padding:7px; border:1px dashed var(--h3cm-accent);
@@ -1729,7 +1733,6 @@ function mount(node) {
             const position = (saved.lineage ?? []).findIndex(item =>
                 Number(item.scene) === Number(record.scene) && item.revision === record.revision);
             const label = document.createElement("label");
-            label.style.cssText = "display:flex;gap:8px;align-items:center;margin:8px 0";
             label.title = "For the new pixel USDU continuity workflow only. Protect this continuous shot with the previous upscaled tail. Leave hard cuts off. Saved in this workflow; generation and project files stay unchanged.";
             const toggle = document.createElement("input");
             toggle.type = "checkbox";
@@ -1749,7 +1752,10 @@ function mount(node) {
             const caption = document.createElement("span");
             caption.textContent = "Continue previous shot (pixel upscale)";
             label.append(toggle, caption);
-            inspector.append(label);
+            const option = element("div", "h3cm-inspector-option");
+            option.append(element("dt", "", "Pixel upscale"), element("dd", ""));
+            option.lastChild.append(label);
+            inspector.append(option);
         }
         if (record.inactive_reason) addInspector("Inactive", record.inactive_reason);
         addInspector("Parent", state.attribution

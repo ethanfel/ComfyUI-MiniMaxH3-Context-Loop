@@ -87,6 +87,7 @@ async function browserChecks() {
         "MiniMaxH3ContexLoop.PromptOptimizer.ApiFormat": "openai",
         "MiniMaxH3ContexLoop.PromptOptimizer.ApiUrl": "https://api.openai.com/v1",
         "MiniMaxH3ContexLoop.PromptOptimizer.Model": "mock-model",
+        "MiniMaxH3ContexLoop.PromptOptimizer.TimeoutSeconds": 1800,
         "MiniMaxH3ContexLoop.PromptOptimizer.AllowMedia": true,
     };
     window.app = {graph, ui:{settings:{getSettingValue: id => settings[id]}},
@@ -154,6 +155,7 @@ async function browserChecks() {
         generate.click();
         await until(() => describeCalls.length === 1 && releaseDescribe, "Generate sends one describe request");
         check(describeCalls[0].allow_media === true, "Media access was explicitly enabled for this request");
+        check(describeCalls[0].timeout_seconds === 1800, "Asset descriptions use the configured Direct API timeout");
 
         // 2. Type while it runs, without waiting for autosave.
         const first = "Original. Manual first sentence.";

@@ -7,6 +7,7 @@ import {
     makeDirectPromptOptimizeRequest,
     normalizePromptOptimizerApiFormat,
     normalizePromptOptimizerBackend,
+    normalizePromptOptimizerTimeoutSeconds,
 } from "../web/h3_prompt_optimizer_core.mjs";
 
 assert.equal(normalizePromptOptimizerBackend(undefined), "direct");
@@ -31,6 +32,20 @@ const withoutMedia = makeDirectPromptOptimizeRequest({
 assert.equal(withoutMedia.allow_media, false);
 assert.deepEqual(withoutMedia.resources, []);
 assert.equal(withoutMedia.api_format, "openai");
+assert.equal(withoutMedia.timeout_seconds, 300, "Older configurations retain the five-minute default");
+assert.equal(normalizePromptOptimizerTimeoutSeconds("1800"), 1800);
+for (const value of [30, 1800, 7200]) {
+    assert.equal(makeDirectPromptOptimizeRequest({
+        config:{api_url:"https://example.invalid", model:"local", timeout_seconds:value},
+        instruction:"Polish.", context:{source_prompt:"A tracking shot."},
+    }).timeout_seconds, value);
+}
+for (const value of [null, false, true, "", " ", "invalid", 29, 7201, 30.5, NaN, Infinity, {}, []]) {
+    assert.throws(() => normalizePromptOptimizerTimeoutSeconds(value), /whole number/);
+    assert.match(directOptimizerConfigurationError({
+        api_url:"https://example.invalid", model:"local", timeout_seconds:value,
+    }), /timeout/);
+}
 
 const withMedia = makeDirectPromptOptimizeRequest({
     config:{api_format:"gemini", api_url:"https://example.invalid", api_key:"secret", model:"models/gemini-test", allow_media:true},
@@ -56,6 +71,7 @@ const saved = new Map([
     ["MiniMaxH3ContexLoop.PromptOptimizer.ApiUrl", "https://example.invalid/v1"],
     ["MiniMaxH3ContexLoop.PromptOptimizer.ApiKey", "synthetic-test-key"],
     ["MiniMaxH3ContexLoop.PromptOptimizer.Model", "test-model"],
+    ["MiniMaxH3ContexLoop.PromptOptimizer.TimeoutSeconds", 1800],
     ["MiniMaxH3ContexLoop.PromptOptimizer.AllowMedia", true],
 ]);
 const before = new Map(saved);
@@ -94,20 +110,21 @@ for (const definition of definitions.values()) {
     assert.ok(definition.category[2]);
     visible.set(JSON.stringify(definition.category), definition.id);
 }
-assert.equal(visible.size, 7, "All seven optimizer controls must survive settings-tree grouping");
+assert.equal(visible.size, 8, "All optimizer controls must survive settings-tree grouping");
 assert.deepEqual(new Set(visible.values()), new Set(saved.keys()));
 assert.equal(settings.promptOptimizerBackend(), "mcp");
 assert.equal(settings.promptOptimizerMcpProvider(), "ollama");
 assert.deepEqual(settings.promptOptimizerDirectConfig(), {
     api_format:"responses", api_url:"https://example.invalid/v1",
     api_key:"synthetic-test-key", model:"test-model", allow_media:true,
+    timeout_seconds:1800,
 });
 assert.deepEqual(saved, before, "Registration and reads must not mutate saved settings");
 const apiKeyDefinition = definitions.get("MiniMaxH3ContexLoop.PromptOptimizer.ApiKey");
 assert.equal(apiKeyDefinition.attrs.type, "password");
 assert.equal(apiKeyDefinition.telemetry.trackChanges, false);
 for (const definition of definitions.values()) definition.onChange("test", "previous");
-assert.deepEqual(notifications, Array(7).fill("h3-prompt-optimizer-settings-changed"));
+assert.deepEqual(notifications, Array(8).fill("h3-prompt-optimizer-settings-changed"));
 assert.equal(await settings.openPromptOptimizerSettings(), true);
 assert.deepEqual(commands, ["Comfy.ShowSettingsDialog"]);
 saved.clear();
@@ -115,6 +132,43 @@ assert.equal(settings.promptOptimizerBackend(), "direct");
 assert.equal(settings.promptOptimizerMcpProvider(), "codex");
 assert.deepEqual(settings.promptOptimizerDirectConfig(), {
     api_format:"openai", api_url:"", api_key:"", model:"", allow_media:false,
+    timeout_seconds:300,
 });
+
+// Exercise the production cancellation/late-result guard with a deliberately
+// delayed mock request. Aborting the browser must not apply its late result.
+const editorSource = fs.readFileSync(new URL("../web/h3_chain_rich_scene_prompt_editor.js", import.meta.url), "utf8");
+const optimizeDirect = editorSource.match(/^    async function optimizeDirect\([^]*?^    }/m)?.[0];
+const stopOptimizer = editorSource.match(/^    function stopOptimizer\([^]*?^    }/m)?.[0];
+assert.ok(optimizeDirect && stopOptimizer);
+let finish, sent;
+const mockApi = {fetchApi(_url, options) {
+    sent = options;
+    return new Promise(resolve => { finish = resolve; });
+}};
+const runner = new Function("api", "makeDirectPromptOptimizeRequest", `
+    const state = {optimizer:{}};
+    const applied = [];
+    const refreshOptimizerUi = () => {};
+    const applyOptimizerResponse = (...args) => applied.push(args);
+    ${optimizeDirect}
+    ${stopOptimizer}
+    return {state, applied, optimizeDirect, stopOptimizer};
+`)(mockApi, makeDirectPromptOptimizeRequest);
+const config = {api_url:"https://example.invalid", model:"test", timeout_seconds:1800};
+const run = runner.optimizeDirect("one", "Rewrite.", {source_prompt:"Unchanged."}, [], {}, config);
+assert.equal(JSON.parse(sent.body).timeout_seconds, 1800);
+runner.stopOptimizer();
+assert.equal(sent.signal.aborted, true);
+assert.match(runner.state.optimizer.message, /not changed/);
+finish({ok:true, json:async () => ({prompt:"Late replacement"})});
+await run;
+assert.deepEqual(runner.applied, []);
+const next = runner.optimizeDirect("two", "Rewrite.", {source_prompt:"Unchanged."}, [], {}, config);
+finish({ok:false, json:async () => ({error:"Direct API request timed out (1800 seconds). See Settings."})});
+await next;
+assert.match(runner.state.optimizer.error, /1800 seconds/);
+assert.equal(runner.state.optimizer.requestId, null);
+assert.deepEqual(runner.applied, []);
 
 console.log("H3 Direct prompt optimizer: settings and request contract pass");

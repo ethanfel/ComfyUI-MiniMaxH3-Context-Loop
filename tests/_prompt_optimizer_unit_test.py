@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Standalone direct prompt-provider transport checks."""
 
+import asyncio
 import importlib.util
 import json
 import os
@@ -8,6 +9,7 @@ import pathlib
 import sys
 import tempfile
 import types
+import urllib.error
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -108,6 +110,76 @@ assert timeout == optimizer.REQUEST_TIMEOUT_SECONDS
 payload = json.loads(request.data)
 assert payload["model"] == "local-model"
 assert payload["messages"][0]["role"] == "system"
+
+# All supported transports use the selected connection/read timeout, not
+# the old hardcoded value. No provider is contacted and no real wait occurs.
+for api_format, response in (
+        ("openai", {"choices": [{"message": {"content": "Done."}}]}),
+        ("responses", {"output_text": "Done."}),
+        ("gemini", {"candidates": [{"content": {"parts": [{"text": "Done."}]}}]})):
+    def respond(request, timeout):
+        requests.append((request, timeout))
+        return FakeResponse(response)
+    optimizer._open_direct_api_request = respond
+    for seconds in (30, 1800, 7200):
+        assert optimizer.call_direct_optimizer(
+            "https://api.example/v1", "test", "model", api_format,
+            "Rewrite.", timeout_seconds=seconds) == "Done."
+        assert requests[-1][1] == seconds
+
+optimizer._open_direct_api_request = fake_urlopen
+request_body = {
+    "api_url": "http://127.0.0.1:1234/v1", "model": "local-model",
+    "instruction": "Rewrite.", "context": {"source_prompt": "A tracking shot."},
+}
+for seconds in (None, 1800):
+    body = dict(request_body)
+    if seconds is not None:
+        body["timeout_seconds"] = seconds
+    assert asyncio.run(optimizer.optimize_prompt_payload(body))["prompt"] == "Rewritten H3 prompt."
+    assert requests[-1][1] == (300 if seconds is None else seconds)
+
+for invalid in (None, False, True, "1800", "", -1, 0, 29, 7201, 30.5,
+                float("nan"), float("inf"), {}, []):
+    before = len(requests)
+    assert "timeout" in rejected(optimizer.request_timeout_seconds, invalid)
+    try:
+        asyncio.run(optimizer.optimize_prompt_payload({**request_body, "timeout_seconds": invalid}))
+    except ValueError as exc:
+        assert "timeout" in str(exc)
+    else:
+        raise AssertionError("Invalid timeout was accepted")
+    assert len(requests) == before, "Invalid settings must be rejected before network I/O"
+
+for failure in (TimeoutError("timed out"), urllib.error.URLError(TimeoutError("timed out")),
+                urllib.error.URLError("connection refused"), OSError("connection reset")):
+    def fail(_request, _timeout):
+        raise failure
+    optimizer._open_direct_api_request = fail
+    try:
+        optimizer.call_direct_optimizer(
+            "https://api.example/v1", "", "model", "openai", "Rewrite.", timeout_seconds=1800)
+    except RuntimeError as exc:
+        if isinstance(failure, TimeoutError) or isinstance(getattr(failure, "reason", None), TimeoutError):
+            assert "1800 seconds" in str(exc) and "Settings" in str(exc)
+        else:
+            assert "request failed" in str(exc) and "timed out" not in str(exc)
+        assert exc.__cause__ is failure
+    else:
+        raise AssertionError("Provider failure was swallowed")
+
+class SlowResponse(FakeResponse):
+    def read(self, *_args):
+        raise TimeoutError("response read timed out")
+
+optimizer._open_direct_api_request = lambda *_args: SlowResponse({})
+try:
+    optimizer.call_direct_optimizer(
+        "https://api.example/v1", "", "model", "openai", "Rewrite.", timeout_seconds=1800)
+except RuntimeError as exc:
+    assert "1800 seconds" in str(exc) and "Settings" in str(exc)
+else:
+    raise AssertionError("Response read timeout was swallowed")
 os.environ.pop(optimizer.ALLOWED_ORIGINS_ENV, None)
 
 with tempfile.TemporaryDirectory() as temporary:

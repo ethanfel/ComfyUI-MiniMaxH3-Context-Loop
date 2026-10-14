@@ -2,7 +2,7 @@ import {app} from "/scripts/app.js";
 import {
     normalizePromptOptimizerApiFormat,
     normalizePromptOptimizerBackend,
-} from "./h3_prompt_optimizer_core.mjs?v=0.7.3";
+} from "./h3_prompt_optimizer_core.mjs?v=0.7.4";
 
 export const PROMPT_OPTIMIZER_SETTING_IDS = Object.freeze({
     backend: "MiniMaxH3ContexLoop.PromptOptimizer.Backend",
@@ -11,6 +11,7 @@ export const PROMPT_OPTIMIZER_SETTING_IDS = Object.freeze({
     apiUrl: "MiniMaxH3ContexLoop.PromptOptimizer.ApiUrl",
     apiKey: "MiniMaxH3ContexLoop.PromptOptimizer.ApiKey",
     model: "MiniMaxH3ContexLoop.PromptOptimizer.Model",
+    timeout: "MiniMaxH3ContexLoop.PromptOptimizer.TimeoutSeconds",
     allowMedia: "MiniMaxH3ContexLoop.PromptOptimizer.AllowMedia",
 });
 
@@ -36,6 +37,7 @@ export function promptOptimizerDirectConfig() {
         api_url: String(settingValue(PROMPT_OPTIMIZER_SETTING_IDS.apiUrl, "") ?? ""),
         api_key: String(settingValue(PROMPT_OPTIMIZER_SETTING_IDS.apiKey, "") ?? ""),
         model: String(settingValue(PROMPT_OPTIMIZER_SETTING_IDS.model, "") ?? ""),
+        timeout_seconds: settingValue(PROMPT_OPTIMIZER_SETTING_IDS.timeout, 300),
         allow_media: settingValue(PROMPT_OPTIMIZER_SETTING_IDS.allowMedia, false) === true,
     };
 }
@@ -125,6 +127,14 @@ app.registerExtension({
             type: "text",
             defaultValue: "",
             attrs: {placeholder: "model identifier"},
+        });
+        add({
+            id: PROMPT_OPTIMIZER_SETTING_IDS.timeout,
+            name: "Direct API timeout (seconds)",
+            tooltip: "How long to wait for the Direct API provider (30–7200 seconds, default 300). Increase for slow/reasoning models, e.g. 1800 for 30 minutes. Applies to prompt optimization and asset descriptions, not the MCP agent. Provider/proxy time limits still apply.",
+            type: "number",
+            defaultValue: 300,
+            attrs: {min: 30, max: 7200, step: 30},
         });
         add({
             id: PROMPT_OPTIMIZER_SETTING_IDS.allowMedia,

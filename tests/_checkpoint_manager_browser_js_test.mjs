@@ -20,7 +20,7 @@ const out = mkdtempSync(join(tmpdir(), "h3-checkpoint-ui-"));
 const html = '<!doctype html><meta charset="utf-8"><style>body{margin:8px;background:#171717}'
     + '#host{width:1500px;height:960px}</style><div id="host"></div><script>\n'
     + modules + "\n" + "(" + browserChecks.toString() + ")(" + JSON.stringify(extension).replace(/<\/script/gi,"<\\/script")
-    + "," + process.argv.includes("--storage") + ");</script>";
+    + "," + process.argv.includes("--storage") + "," + process.argv.includes("--inspector") + ");</script>";
 const file = join(out, "fixture.html");
 writeFileSync(file, html);
 const run = spawnSync(process.env.H3_TEST_BROWSER || "/opt/google/chrome/chrome", [
@@ -37,7 +37,7 @@ console.log(report);
 console.log("Isolated screenshot: " + join(out,"checkpoint-manager.png"));
 assert.deepEqual(report.failures,[]);
 
-async function browserChecks(extensionSource, keepStorageOpen) {
+async function browserChecks(extensionSource, keepStorageOpen, inspectorOnly) {
     const report = {checks:0,failures:[]};
     const check = (condition, message) => {report.checks++; if (!condition) report.failures.push(message);};
     try {
@@ -48,6 +48,7 @@ async function browserChecks(extensionSource, keepStorageOpen) {
         window.cancelAnimationFrame = clearTimeout;
         const seven = Array.from({length:7},(_,i)=>({scene:i + 1,revision:String(i + 1).repeat(32),
             active:i === 0,ready:true,compatibility:{width:960,height:544},
+            metadata_path:`h3_chains/demo/checkpoints/clip_${String(i+1).padStart(4,"0")}.${"long-metadata-path".repeat(12)}.json`,
             created_at:`2026-09-09T${String(10 + i).padStart(2,"0")}:00:00Z`,
             ...(i ? {parent:{scene:i,revision:String(i).repeat(32)}} : {})}));
         const payload = {revisions:seven,scenes:seven.map(item=>({scene:item.scene,scene_id:`scene_${item.scene}`,revision_count:1})),
@@ -185,6 +186,38 @@ async function browserChecks(extensionSource, keepStorageOpen) {
         const initialScroll = initialViewport.scrollLeft;
         check(initialScroll > 0, "Saved path overflows horizontally before selecting its last clip");
         card.click(); await new Promise(resolve=>setTimeout(resolve,100));
+        // #116: the standalone checkbox must not consume one cell and invert
+        // every later dt/dd pair. Use actual rendering, long paths and widths.
+        const inspector = root.querySelector(".h3cm-inspector");
+        const inspectSnapshot = node.widgets[0].value;
+        const pair = name => [...inspector.children].find(item => item.tagName === "DT" && item.textContent === name);
+        for (const width of [650, 390, 260]) {
+            inspector.style.width = `${width}px`;
+            const area = inspector.getBoundingClientRect();
+            for (const name of ["Identity", "Incoming", "Parent", "Following", "Storage", "Canvas", "Audio mode", "Encoding", "Metadata"]) {
+                const term = pair(name), value = term?.nextElementSibling;
+                check(Boolean(term && value?.tagName === "DD"), `${name} remains a label/value pair`);
+                if (!term || !value) continue;
+                const labelBox = term.getBoundingClientRect(), valueBox = value.getBoundingClientRect();
+                check(Math.abs(labelBox.top - valueBox.top) < 1 && labelBox.right < valueBox.left,
+                    `${width}px: ${name} label stays left of its value on the same row`);
+                check(valueBox.width > width / 2 && valueBox.right <= area.right + 1,
+                    `${width}px: ${name} has room for readable values`);
+            }
+            const option = inspector.querySelector(".h3cm-inspector-option");
+            check(option && Math.abs(option.getBoundingClientRect().width - area.width) < 1,
+                `${width}px: pixel upscale option spans both columns`);
+            check(inspector.scrollWidth <= inspector.clientWidth + 1,
+                `${width}px: long metadata wraps without horizontal overflow`);
+        }
+        inspector.style.removeProperty("width");
+        check(node.widgets[0].value === inspectSnapshot, "Inspector layout never changes output selection");
+        if (inspectorOnly) {
+            inspector.scrollIntoView({block:"center"});
+            node.onRemoved?.();
+            document.body.dataset.report = btoa(JSON.stringify(report));
+            return;
+        }
         const contextButton = [...root.querySelectorAll("button")].find(item=>item.textContent === "Use as context for Scene 8");
         check(contextButton && !contextButton.disabled, "Saved take can be selected as context with standalone Studio");
         const originalPlan = parsePlanJson(studio.widgets.find(item=>item.name === "plan_json").value);

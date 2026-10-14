@@ -29,6 +29,8 @@ MAX_CONTEXT_JSON = 240_000
 MAX_OUTPUT_TOKENS = 50_000
 MAX_RESULT = 60_000
 REQUEST_TIMEOUT_SECONDS = 300
+MIN_REQUEST_TIMEOUT_SECONDS = 30
+MAX_REQUEST_TIMEOUT_SECONDS = 7200
 MAX_MEDIA = 9
 MAX_MEDIA_BYTES = 32 * 1024 * 1024
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
@@ -326,10 +328,29 @@ def _media_parts(resources: list[Any], api_format: str) -> list[dict[str, Any]]:
     return parts
 
 
+def request_timeout_seconds(value: Any = REQUEST_TIMEOUT_SECONDS) -> int:
+    if (isinstance(value, bool) or not isinstance(value, (int, float))
+            or not MIN_REQUEST_TIMEOUT_SECONDS <= value <= MAX_REQUEST_TIMEOUT_SECONDS
+            or int(value) != value):
+        raise ValueError("Direct API timeout must be a whole number between %d and %d seconds."
+                         % (MIN_REQUEST_TIMEOUT_SECONDS, MAX_REQUEST_TIMEOUT_SECONDS))
+    return int(value)
+
+
+def _request_timeout_error(timeout_seconds: int) -> RuntimeError:
+    return RuntimeError(
+        "Direct API request timed out waiting for the provider (timeout: %d seconds). "
+        "For slow or reasoning models, increase Direct API timeout (seconds) in "
+        "Settings -> MiniMax H3 Context Loop -> Prompt optimizer. "
+        "Provider or proxy time limits may also apply." % timeout_seconds)
+
+
 def call_direct_optimizer(api_url: str, api_key: str, model: str,
                           api_format: str, user_prompt: str,
                           media_parts: list[dict[str, Any]] | None = None,
-                          system_prompt: str = DIRECT_OPTIMIZER_SYSTEM) -> str:
+                          system_prompt: str = DIRECT_OPTIMIZER_SYSTEM, *,
+                          timeout_seconds: int = REQUEST_TIMEOUT_SECONDS) -> str:
+    timeout_seconds = request_timeout_seconds(timeout_seconds)
     url = optimizer_url(api_url, api_format, model)
     media_parts = list(media_parts or [])
     headers = {"Content-Type": "application/json", "Accept": "application/json"}
@@ -385,16 +406,20 @@ def call_direct_optimizer(api_url: str, api_key: str, model: str,
         headers=headers, method="POST")
     try:
         with _open_direct_api_request(
-                request, REQUEST_TIMEOUT_SECONDS) as response:
+                request, timeout_seconds) as response:
             raw_response = response.read(MAX_RESPONSE_BYTES + 1)
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
         raise RuntimeError("Direct prompt API error (%d): %s" %
                            (exc.code, detail[:1000])) from exc
     except urllib.error.URLError as exc:
+        if isinstance(exc.reason, TimeoutError):
+            raise _request_timeout_error(timeout_seconds) from exc
         raise RuntimeError("Direct prompt API request failed: %s" %
                            exc.reason) from exc
-    except (OSError, TimeoutError) as exc:
+    except TimeoutError as exc:
+        raise _request_timeout_error(timeout_seconds) from exc
+    except OSError as exc:
         raise RuntimeError("Direct prompt API request failed: %s" % exc) \
             from exc
     if len(raw_response) > MAX_RESPONSE_BYTES:
@@ -427,6 +452,7 @@ def call_direct_optimizer(api_url: str, api_key: str, model: str,
 async def optimize_prompt_payload(value: Any) -> dict[str, str]:
     if not isinstance(value, Mapping):
         raise ValueError("Prompt optimizer request must contain a JSON object.")
+    timeout_seconds = request_timeout_seconds(value.get("timeout_seconds", REQUEST_TIMEOUT_SECONDS))
     api_format = str(value.get("api_format") or "openai").strip().lower()
     if api_format not in API_FORMATS:
         raise ValueError("Unsupported Direct API format '%s'." % api_format)
@@ -448,7 +474,7 @@ async def optimize_prompt_payload(value: Any) -> dict[str, str]:
         value.get("allow_media") is True) else []
     result = await asyncio.to_thread(
         call_direct_optimizer, api_url, api_key, model, api_format, user_prompt,
-        media_parts)
+        media_parts, timeout_seconds=timeout_seconds)
     return {
         "message": "Optimized with the configured Direct API provider.",
         "prompt": result,
@@ -642,6 +668,7 @@ async def describe_asset_payload(
             "provider, and \"Allow Direct API to read reference media\" is "
             "off. Enable it in Settings -> MiniMax H3 Context Loop -> Prompt "
             "optimizer first; nothing was sent.")
+    timeout_seconds = request_timeout_seconds(value.get("timeout_seconds", REQUEST_TIMEOUT_SECONDS))
     api_format = str(value.get("api_format") or "openai").strip().lower()
     if api_format not in API_FORMATS:
         raise ValueError("Unsupported Direct API format '%s'." % api_format)
@@ -657,7 +684,7 @@ async def describe_asset_payload(
         asset_describe_media_parts, kind, path, api_format, poster_path)
     result = await asyncio.to_thread(
         call_direct_optimizer, api_url, api_key, model, api_format,
-        instruction, media_parts, ASSET_DESCRIBE_SYSTEM)
+        instruction, media_parts, ASSET_DESCRIBE_SYSTEM, timeout_seconds=timeout_seconds)
     if len(result) > MAX_ASSET_DESCRIPTION:
         result = result[:MAX_ASSET_DESCRIPTION].rstrip()
     return {
