@@ -20,7 +20,7 @@ import {PromptAssistantClient} from "./h3_prompt_assistant_client.mjs?v=0.7.0";
 import {
     directOptimizerConfigurationError,
     makeDirectPromptOptimizeRequest,
-} from "./h3_prompt_optimizer_core.mjs?v=0.7.0";
+} from "./h3_prompt_optimizer_core.mjs?v=0.7.4";
 import {
     openPromptOptimizerSettings,
     promptOptimizerBackend,
@@ -184,9 +184,9 @@ function injectStyles() {
       }
       .h3rp-basic-prompt:focus { border-color:var(--h3rp-accent);
         box-shadow:0 0 0 1px color-mix(in srgb,var(--h3rp-accent) 40%,transparent); }
-      .h3rp-history-tree-basic-prompt { margin-top:3px; padding:4px 6px;
+      .h3rp-history-tree-basic-prompt { flex:0 0 100%; min-width:0; margin-top:3px; padding:4px 6px;
         border-left:2px solid var(--h3rp-border); color:var(--h3rp-muted);
-        font-size:12px; white-space:pre-wrap; }
+        font-size:12px; white-space:pre-wrap; overflow-wrap:anywhere; }
       .h3rp-editor[contenteditable="false"] { opacity:.68; cursor:wait; }
       .h3rp-token { display:inline-flex; align-items:center; gap:3px; max-width:320px; margin:0 1px;
         padding:1px 4px 1px 2px; border:1px solid currentColor; border-radius:5px; vertical-align:1px;
@@ -233,35 +233,36 @@ function injectStyles() {
       .h3rp-ref-card-title,.h3rp-ref-card-detail { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
       .h3rp-ref-card-title { font-weight:700; }
       .h3rp-ref-card-detail { color:var(--h3rp-muted); font-size:10px; }
-      .h3rp-footer { display:grid; grid-template-columns:minmax(0,1fr) auto minmax(0,1fr); color:var(--h3rp-muted); }
+      .h3rp-footer { position:relative; display:grid; grid-template-columns:minmax(0,1fr) minmax(0,3fr) minmax(0,1fr); color:var(--h3rp-muted); }
+      .h3rp-footer > span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
       .h3rp-footer-status { text-align:right; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-      .h3rp-history { justify-content:center; }
-      .h3rp-history-nav { display:flex; align-items:center; border:1px solid var(--h3rp-border); border-radius:999px; padding:1px 3px; }
+      .h3rp-history { min-width:0; flex-wrap:wrap; justify-content:center; }
+      .h3rp-history-nav { display:flex; flex:0 0 auto; align-items:center; border:1px solid var(--h3rp-border); border-radius:999px; padding:1px 3px; }
       .h3rp-history-nav button { min-width:25px; min-height:22px; padding:1px 5px; border:0; border-radius:999px; background:transparent; }
       .h3rp-history-count { min-width:43px; text-align:center; color:var(--h3rp-text); font-variant-numeric:tabular-nums; }
       .h3rp-history-meta { max-width:240px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:11px; }
-      .h3rp-history-tree { position:relative; flex:0 0 auto; }
+      .h3rp-history-tree { flex:0 0 auto; }
       .h3rp-history-tree > summary { list-style:none; cursor:pointer; padding:3px 7px;
         border:1px solid var(--h3rp-border); border-radius:999px; background:var(--comfy-input-bg,#11141a);
         color:var(--h3rp-text); user-select:none; }
       .h3rp-history-tree > summary::-webkit-details-marker { display:none; }
       .h3rp-history-tree[open] > summary { border-color:var(--h3rp-accent); }
       .h3rp-history-tree-panel { position:absolute; z-index:20; bottom:calc(100% + 7px); left:50%;
-        transform:translateX(-50%); width:min(440px,calc(100vw - 30px)); max-height:310px; overflow:auto;
+        transform:translateX(-50%); width:min(440px,100%); max-height:310px; overflow:auto;
         padding:7px; border:1px solid var(--h3rp-border); border-radius:8px; background:var(--h3rp-bg);
         box-shadow:0 14px 36px rgba(0,0,0,.48); }
-      .h3rp-history-tree-row { display:flex; align-items:center; gap:4px; min-width:0; margin:2px 0; border-radius:5px; }
+      .h3rp-history-tree-row { display:flex; flex-wrap:wrap; align-items:center; gap:4px; min-width:0; margin:2px 0; border-radius:5px; }
       .h3rp-history-tree-row.h3rp-history-active { background:rgba(142,181,255,.12); }
       .h3rp-history-tree-row.h3rp-history-archived { opacity:.58; }
-      .h3rp-history-tree-select { flex:1 1 auto; min-width:0; justify-content:flex-start !important;
+      .h3rp-history-tree-select { flex:1 1 140px; min-width:0; max-width:100%; justify-content:flex-start !important;
         min-height:26px !important; padding:3px 6px !important; border-color:transparent !important;
         background:transparent !important; text-align:left; }
       .h3rp-history-branch { flex:0 0 auto; color:var(--h3rp-muted); }
       .h3rp-history-tree-label { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
         color:var(--h3rp-text); }
       .h3rp-history-tree-badge { flex:0 0 auto; color:var(--h3rp-muted); font-size:10px; }
-      .h3rp-history-tree-action { min-width:25px !important; min-height:25px !important; padding:2px 5px !important; }
-      .h3rp-history-tree-tools { display:flex; justify-content:space-between; align-items:center; gap:8px;
+      .h3rp-history-tree-action { flex:0 0 auto; min-width:25px !important; min-height:25px !important; padding:2px 5px !important; }
+      .h3rp-history-tree-tools { display:flex; flex-wrap:wrap; justify-content:space-between; align-items:center; gap:8px;
         margin-top:6px; padding-top:6px; border-top:1px solid var(--h3rp-border);
         color:var(--h3rp-muted); font-size:10px; }
       .h3rp-history-tree-tools button { min-height:24px; padding:2px 6px; }
@@ -913,7 +914,9 @@ function mount(node) {
         for (const row of tree.rows) {
             const rowHost = element("div",
                 `h3rp-history-tree-row${row.isActive ? " h3rp-history-active" : ""}${row.isArchived ? " h3rp-history-archived" : ""}`);
-            rowHost.style.paddingLeft = `${row.depth * 15}px`;
+            // Keep deep ancestry readable without pushing actions off the node.
+            rowHost.style.paddingLeft = `${Math.min(row.depth, 4) * 12}px`;
+            rowHost.title = `Ancestry depth: ${row.depth}`;
             const select = button("", `Activate ${row.displayLabel} in the Plan`, () => {
                 if (!row.isActive) void selectHistoryRevision(row.revision.id);
             });

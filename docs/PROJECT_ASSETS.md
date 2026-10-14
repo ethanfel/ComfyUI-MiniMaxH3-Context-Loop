@@ -229,6 +229,14 @@ to two or three sentences and start with "is" so they read naturally after the
 tag (`@cabinet is a tall, narrow wooden linen cabinet…`). The previous
 description is not sent, so a poor result never biases the next attempt.
 
+For slow or reasoning models, increase **Direct API timeout (seconds)** in
+the same settings (default **300**, range **30–7200**; **1800** is 30 minutes).
+This sets the provider connection/read timeout for both prompt optimization
+and asset descriptions. Requests are still non-streaming, so reasoning tokens
+are not a progress signal; provider/proxy time limits and output-token limits
+are separate. Stopping prompt optimization discards a late result, but the
+provider may continue processing the request.
+
 Generating always sends the asset's media, so it requires **Allow Direct API to
 read reference media** in the same settings. While that is off, the button
 explains why and nothing is sent; there is no per-click override. If you edit

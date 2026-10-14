@@ -36,7 +36,7 @@ import {
     promptOptimizerBackend,
     promptOptimizerDirectConfig,
 } from "./h3_prompt_optimizer_settings.js";
-import {directOptimizerConfigurationError} from "./h3_prompt_optimizer_core.mjs?v=0.7.3";
+import {directOptimizerConfigurationError, normalizePromptOptimizerTimeoutSeconds} from "./h3_prompt_optimizer_core.mjs?v=0.7.4";
 import {
     ASSET_DETAILS_CHANGED_EVENT,
     assetDescribeBlocker,
@@ -1236,6 +1236,7 @@ function mount(node) {
                         tag_type: tagType, subject,
                         api_format: config.api_format, api_url: config.api_url,
                         api_key: config.api_key, model: config.model,
+                        timeout_seconds: normalizePromptOptimizerTimeoutSeconds(config.timeout_seconds),
                         allow_media: config.allow_media === true,
                     }),
                 });

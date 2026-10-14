@@ -181,8 +181,8 @@ def describe_checks(root, picture):
 
     calls = []
 
-    def fake_call(*args):
-        calls.append(args)
+    def fake_call(*args, **kwargs):
+        calls.append((args, kwargs))
         return "A red square."
 
     original = optimizer.call_direct_optimizer
@@ -204,14 +204,15 @@ def describe_checks(root, picture):
         assert calls == [], "no provider request may be made"
         result = asyncio.run(optimizer.describe_asset_payload(
             {"api_url": "https://api.openai.com/v1", "model": "m",
-             "allow_media": True,
+             "allow_media": True, "timeout_seconds": 1800,
              "notes": "Not visible.", "subject": "the red block"},
             {"kind": "image", "tag": "alice"}, str(picture),
             tag_type="object"))
     finally:
         optimizer.call_direct_optimizer = original
     assert result["description"] == "A red square."
-    (_url, _key, _model, api_format, instruction, media, system) = calls[0]
+    (_url, _key, _model, api_format, instruction, media, system), kwargs = calls[0]
+    assert kwargs == {"timeout_seconds": 1800}
     assert api_format == "openai" and len(media) == 1
     # A previous description is never fed back as a hint.
     assert "Category: object" in instruction

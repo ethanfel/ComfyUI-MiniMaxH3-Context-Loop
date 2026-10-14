@@ -4,6 +4,13 @@ Newest first. This file keeps release history out of the onboarding README.
 
 ## Unreleased
 
+- Add a configurable Direct API timeout for prompt optimization and asset
+  descriptions (30–7200 seconds, default 300), with an actionable timeout error
+  for slow/reasoning models (#114). Keep media permission and destination guards.
+- Fix prompt ancestry layout: original prompts wrap below revision controls,
+  actions stay readable, and the popup fits inside narrow nodes (#115).
+- Fix Checkpoint Manager info labels/values shifting columns after the pixel
+  upscale checkbox; keep long metadata readable at narrow widths (#116).
 - Save effective connected-policy context lengths when switching projects or
   working branches, instead of unused legacy Plan widget values. Restore the
   effective audio boundary from runtime archives and retain custom mixed AV
